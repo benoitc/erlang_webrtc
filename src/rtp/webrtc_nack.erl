@@ -32,7 +32,10 @@
     max_age :: pos_integer(),
     max_missing :: pos_integer(),
     min_interval :: non_neg_integer(),
-    reorder_delay :: non_neg_integer()
+    reorder_delay :: non_neg_integer(),
+    %% No entry is due before this time (it may be earlier than the
+    %% real deadline, never later): timeouts do nothing until then.
+    next_due = infinity :: integer() | infinity
 }).
 
 -opaque state() :: #nack{}.
@@ -60,8 +63,11 @@ new(Opts) ->
     }.
 
 -spec set_rtt(non_neg_integer(), state()) -> state().
-set_rtt(Rtt, S) when is_integer(Rtt), Rtt >= 0 ->
-    S#nack{rtt = Rtt}.
+set_rtt(Rtt, #nack{missing = M} = S0) when is_integer(Rtt), Rtt >= 0 ->
+    %% The interval changes every deadline (reports are rare: recompute).
+    S = S0#nack{rtt = Rtt},
+    Interval = max(Rtt, S#nack.min_interval),
+    S#nack{next_due = maps:fold(fun(_, V, Min) -> min(Min, deadline(V, S, Interval)) end, infinity, M)}.
 
 %% @doc Sequence numbers currently missing, oldest first.
 -spec missing(state()) -> [0..65535].
@@ -75,19 +81,27 @@ packet(Seq, Now, #nack{newest = Newest, missing = M} = S) ->
     Ext = webrtc_rtp_seq:seq_unwrap(Seq, Newest),
     if
         Ext > Newest + 1 + S#nack.max_missing ->
-            {S1, A1} = handle_timeout(Now, S#nack{newest = Ext, missing = #{}}),
+            {S1, A1} = handle_timeout(Now, S#nack{newest = Ext, missing = #{}, next_due = infinity}),
             {S1, [request_keyframe | A1]};
         Ext > Newest ->
-            M1 = lists:foldl(
-                fun(E, Acc) -> Acc#{E => {Now, 0, undefined}} end,
-                M,
-                lists:seq(Newest + 1, Ext - 1)
-            ),
+            New = lists:seq(Newest + 1, Ext - 1),
+            Interval = max(S#nack.rtt, S#nack.min_interval),
+            %% Without a reorder delay the new gaps are requested at once,
+            %% as a timeout would, without visiting the older entries.
+            {Entry, Due, Immediate} =
+                case S#nack.reorder_delay of
+                    0 -> {{Now, 1, Now}, Now + Interval, [{nack, seqs(New)} || New =/= []]};
+                    D -> {{Now, 0, undefined}, Now + D, []}
+                end,
+            M1 = lists:foldl(fun(E, Acc) -> Acc#{E => Entry} end, M, New),
             {M2, Trimmed} = trim(M1, S#nack.max_missing),
-            {S1, A1} = handle_timeout(Now, S#nack{newest = Ext, missing = M2}),
+            Requested = [{nack, seqs([E || E <- New, is_map_key(E, M2)])} || Immediate =/= [], New =/= []],
+            Next = case New of [] -> S#nack.next_due; _ -> min(S#nack.next_due, Due) end,
+            {S1, A1} = handle_timeout(Now, S#nack{newest = Ext, missing = M2, next_due = Next}),
+            A2 = merge_nacks(Requested, A1),
             case Trimmed of
-                true -> {S1, [request_keyframe | A1]};
-                false -> {S1, A1}
+                true -> {S1, [request_keyframe | A2]};
+                false -> {S1, A2}
             end;
         true ->
             handle_timeout(Now, S#nack{missing = maps:remove(Ext, M)})
@@ -101,28 +115,44 @@ trim(M, Max) ->
 
 %% @doc Send due NACKs and drop expired entries.
 -spec handle_timeout(integer(), state()) -> {state(), [action()]}.
+handle_timeout(Now, #nack{next_due = Next} = S) when Now < Next ->
+    {S, []};
 handle_timeout(Now, #nack{missing = M} = S) ->
     Interval = max(S#nack.rtt, S#nack.min_interval),
-    {Nack, GiveUp, M1} = maps:fold(
-        fun(E, {First, Retries, _Last} = V, {N, G, Acc}) ->
+    {Nack, GiveUp, M1, Next} = maps:fold(
+        fun(E, {First, Retries, _Last} = V, {N, G, Acc, Min}) ->
             Due = due(V, S#nack.reorder_delay, Interval),
             if
                 Now - First > S#nack.max_age ->
-                    {N, [E | G], Acc};
+                    {N, [E | G], Acc, Min};
                 Now >= Due, Retries >= S#nack.max_retries ->
-                    {N, [E | G], Acc};
+                    {N, [E | G], Acc, Min};
                 Now >= Due ->
-                    {[E | N], G, Acc#{E => {First, Retries + 1, Now}}};
+                    V1 = {First, Retries + 1, Now},
+                    {[E | N], G, Acc#{E => V1}, min(Min, deadline(V1, S, Interval))};
                 true ->
-                    {N, G, Acc#{E => V}}
+                    {N, G, Acc#{E => V}, min(Min, deadline(V, S, Interval))}
             end
         end,
-        {[], [], #{}},
+        {[], [], #{}, infinity},
         M
     ),
     Actions =
         [{nack, seqs(Nack)} || Nack =/= []] ++ [{give_up, seqs(GiveUp)} || GiveUp =/= []],
-    {S#nack{missing = M1}, Actions}.
+    {S#nack{missing = M1, next_due = Next}, Actions}.
+
+%% One NACK action for the new gaps and those a timeout found due.
+merge_nacks([{nack, A}], Acts) ->
+    case lists:keytake(nack, 1, Acts) of
+        {value, {nack, B}, Rest} -> [{nack, lists:usort(A ++ B)} | Rest];
+        false -> [{nack, A} | Acts]
+    end;
+merge_nacks(_, Acts) ->
+    Acts.
+
+%% When an entry next needs attention: its next NACK or its expiry.
+deadline({First, _, _} = V, S, Interval) ->
+    min(due(V, S#nack.reorder_delay, Interval), First + S#nack.max_age + 1).
 
 due({First, _, undefined}, Delay, _) -> First + Delay;
 due({_, _, Last}, _, Interval) -> Last + Interval.
@@ -134,13 +164,5 @@ seqs(Ext) ->
 -spec next_timeout(state()) -> integer() | infinity.
 next_timeout(#nack{missing = M}) when map_size(M) =:= 0 ->
     infinity;
-next_timeout(#nack{missing = M} = S) ->
-    Interval = max(S#nack.rtt, S#nack.min_interval),
-    maps:fold(
-        fun(_, {First, _, _} = V, Min) ->
-            T = min(due(V, S#nack.reorder_delay, Interval), First + S#nack.max_age + 1),
-            min(T, Min)
-        end,
-        infinity,
-        M
-    ).
+next_timeout(#nack{next_due = Next}) ->
+    Next.

@@ -82,3 +82,22 @@ old_packets_ignored_test() ->
     {S1, []} = feed([10, 11, 12], 0, ?N:new(#{})),
     {S2, []} = ?N:packet(5, 1, S1),
     {_, []} = ?N:packet(12, 1, S2).
+
+%% The next deadline is kept in the state; when the packet it was for
+%% arrives, the early deadline only costs a timeout that does nothing.
+cached_deadline_test() ->
+    %% 2 is requested at once, again at 100.
+    {S1, _} = feed([1, 3], 0, ?N:new(#{rtt => 100})),
+    ?assertEqual(100, ?N:next_timeout(S1)),
+    %% 4 is requested at 50, again at 150.
+    {S2, [{nack, [4]}]} = ?N:packet(5, 50, S1),
+    ?assertEqual(100, ?N:next_timeout(S2)),
+    %% 2 arrives: the deadline at 100 is now early.
+    {S3, []} = ?N:packet(2, 60, S2),
+    ?assertEqual(100, ?N:next_timeout(S3)),
+    {S4, []} = ?N:handle_timeout(100, S3),
+    ?assertEqual(150, ?N:next_timeout(S4)),
+    ?assertEqual({S4, []}, ?N:handle_timeout(149, S4)),
+    {S5, [{nack, [4]}]} = ?N:handle_timeout(150, S4),
+    ?assertEqual([4], ?N:missing(S5)),
+    ?assertEqual(250, ?N:next_timeout(S5)).

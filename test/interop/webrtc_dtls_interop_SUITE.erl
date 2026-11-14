@@ -27,6 +27,7 @@
     openssl13_client_key_update/1,
     openssl13_rsa_certificates/1,
     openssl13_rejected_fingerprint/1,
+    openssl13_client_without_certificate/1,
     openssl_any_client_our_server/1,
     openssl_any_client_our_12_server/1,
     openssl_any_server_our_12_client/1,
@@ -63,6 +64,7 @@ groups() ->
             openssl13_client_key_update,
             openssl13_rsa_certificates,
             openssl13_rejected_fingerprint,
+            openssl13_client_without_certificate,
             openssl_any_client_our_server,
             openssl_any_client_our_12_server,
             openssl_any_server_our_12_client,
@@ -490,6 +492,19 @@ openssl13_rejected_fingerprint(Config) ->
     close_port(Port),
     ?assert(lists:member({failed, fingerprint_mismatch}, Ev)),
     ?assertNot(connected(Ev)).
+
+%% An OpenSSL client without a certificate answers our CertificateRequest
+%% with an empty Certificate: WebRTC requires one (RFC 8827 §6.5).
+openssl13_client_without_certificate(Config) ->
+    Mine = webrtc_dtls_cert:generate(),
+    {Sock, P} = webrtc_dtls_udp:open(),
+    Cmd = lists:flatten(io_lib:format("~s s_client -dtls1_3 -use_srtp SRTP_AEAD_AES_128_GCM -connect 127.0.0.1:~b",
+                                      [?config(openssl, Config), P])),
+    Port = open_port({spawn, Cmd}, [binary, stderr_to_stdout, exit_status]),
+    D0 = webrtc_dtls:new(#{role => server, cert => Mine}),
+    {ok, _, _, Ev} = webrtc_dtls_udp:run(Sock, undefined, D0, #{stop => fun failed/1}),
+    close_port(Port),
+    ?assertEqual([{failed, certificate_required}], Ev).
 
 %% Version negotiation with an OpenSSL that offers or accepts both.
 

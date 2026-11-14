@@ -674,6 +674,35 @@ downgrade_sentinel_ignored_by_12_client_test() ->
     #{random := R} = first_server_hello(W),
     ?assertEqual(<<"DOWNGRD", 1>>, binary:part(R, 24, 8)).
 
+%% Rewrite the first handshake message of a plaintext record with F.
+rewrite_hello(Type, F, <<22, V:16, E:16, Seq:48, Len:16, Rest/binary>>) ->
+    <<Frag:Len/binary, Tail/binary>> = Rest,
+    {ok, [#{data := Body, seq := MS} | _]} = webrtc_dtls_msg:decode_fragment(Frag),
+    {ok, M} = webrtc_dtls_msg:decode_body(Type, Body),
+    F1 = webrtc_dtls_msg:full(Type, MS, webrtc_dtls_msg:encode_body(Type, F(M))),
+    <<22, V:16, E:16, Seq:48, (byte_size(F1)):16, F1/binary, Tail/binary>>.
+
+%% RFC 9147 §5.3: a DTLS 1.3 ClientHello has an empty legacy_cookie.
+legacy_cookie_test() ->
+    {C, S} = pair(#{}, #{use_cookie => false}),
+    F = fun
+        (c, 1, D) -> [rewrite_hello(client_hello, fun(M) -> M#{cookie => <<1, 2, 3>>} end, D)];
+        (_, _, D) -> [D]
+    end,
+    #{ev := #{c := CE, s := SE}} = run(C, S, F),
+    ?assertEqual([{failed, legacy_cookie_not_empty}], SE),
+    ?assertEqual([{failed, {alert, 47}}], CE).
+
+%% Erratum 8066: the client rejects a non-empty legacy_session_id_echo.
+session_id_echo_test() ->
+    {C, S} = pair(#{}, #{use_cookie => false}),
+    F = fun
+        (s, 1, D) -> [rewrite_hello(server_hello, fun(M) -> M#{session_id => <<7>>} end, D)];
+        (_, _, D) -> [D]
+    end,
+    #{ev := #{c := CE}} = run(C, S, F),
+    ?assertEqual([{failed, bad_session_id_echo}], CE).
+
 strip_versions(c, 1, <<22, V:16, E:16, Seq:48, _Len:16, Frag/binary>>) ->
     {ok, [#{data := Body, seq := MS}]} = webrtc_dtls_msg:decode_fragment(Frag),
     {ok, #{extensions := Exts} = M} = webrtc_dtls_msg:decode_body(client_hello, Body),

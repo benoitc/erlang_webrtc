@@ -6,6 +6,8 @@ Run it with `make test-interop` after building the adapters (`make -C interop al
 
 ## DTLS (webrtc_dtls_interop_SUITE)
 
+DTLS 1.3 is offered by default. It was negotiated with OpenSSL 4.1 (`-dtls1_3`, both roles, all three suites, KeyUpdate, HelloRetryRequest, matching exported keys) and Chromium (both DTLS roles, data channel and SRTP keyed from the 1.3 exporter). Pion, aiortc and OTP ssl only support DTLS 1.2: our offer falls back, and a stripped ClientHello is detected through the downgrade sentinel. The rows below are the DTLS 1.2 cases.
+
 | Peer | Our role | Handshake | SRTP profile | Exported keys match | App data | Status |
 |---|---|---|---|---|---|---|
 | OTP ssl 11.7.8 (DTLS 1.2) | client | yes | AEAD_AES_128_GCM | yes | both ways | Pass (with `require_ems => false`, OTP has no RFC 7627) |

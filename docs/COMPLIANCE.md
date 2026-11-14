@@ -21,7 +21,7 @@ What works today, end to end and against independent implementations (see [INTER
 
 - Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, TURN relay over UDP.
 - Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved without blocking the transport; optional mDNS names for our own host candidates.
-- DTLS 1.2 with use_srtp and extended master secret, interoperable with OTP ssl, OpenSSL, Pion, aiortc and Chromium.
+- DTLS 1.3 (RFC 9147) by default with fallback to DTLS 1.2 (use_srtp, extended master secret): 1.3 verified with OpenSSL 4.1 and Chromium in both roles, 1.2 with OTP ssl, OpenSSL, Pion and aiortc.
 - SRTP and SRTCP (AES-CM and AES-GCM profiles).
 - RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
@@ -34,7 +34,7 @@ Known gaps that matter for a full WebRTC deployment:
 
 | Gap | Effect | Page |
 |---|---|---|
-| DTLS 1.3 (RFC 9147) | Peers negotiate DTLS 1.2, which every current implementation supports | [dtls](compliance/dtls.md) |
+| DTLS 1.3 extras: connection ID, PSK and resumption, 3x amplification limit without cookies, RTT based timers | Not needed by WebRTC peers seen so far; see DTLS-57 to DTLS-59 | [dtls](compliance/dtls.md) |
 | Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
 | Bandwidth probing, RFC 8888 feedback as estimator input, enforcing circuit breakers | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link); breakers only emit events | [rtp](compliance/rtp.md) |
 | mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |

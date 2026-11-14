@@ -44,8 +44,11 @@ xref:
 fmt:
 	$(REBAR) fmt
 
+## Benchmarks are separate from the functional suites.
 bench:
-	$(REBAR) as test shell --eval 'webrtc_bench:run(), halt().'
+	$(REBAR) as test compile
+	erl -noshell -pa _build/test/lib/*/ebin -pa _build/test/lib/webrtc/bench \
+	    -eval 'webrtc_srtp_bench:run(), halt().'
 
 clean:
 	$(REBAR) clean

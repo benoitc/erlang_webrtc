@@ -10,6 +10,9 @@
 
 -export([handle_request/6, replay_early/2]).
 
+%% Checks remembered before the remote credentials are known.
+-define(MAX_EARLY, 64).
+
 %%====================================================================
 
 %% @doc Binding request received on `Via' from `From'. `Bin' is the raw
@@ -127,8 +130,15 @@ accepted(current, Via, From, Prio, UseCand, RU, Now, S) ->
         {ok, LId} ->
             case S#ice.remote_ufrag of
                 undefined ->
+                    %% Bounded: one entry per source and local base.
                     Early = {Via, From, LId, Prio, UseCand, RU},
-                    {S#ice{early = S#ice.early ++ [Early]}, []};
+                    Kept = [E || {V, F, L, _, _, _} = E <- S#ice.early, {V, F, L} =/= {Via, From, LId}],
+                    Room =
+                        case length(Kept) >= ?MAX_EARLY of
+                            true -> tl(Kept);
+                            false -> Kept
+                        end,
+                    {S#ice{early = Room ++ [Early]}, []};
                 RU ->
                     learned(LId, From, Prio, UseCand, Now, S);
                 _ ->

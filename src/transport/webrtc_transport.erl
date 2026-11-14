@@ -479,9 +479,16 @@ ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
         Out
     ),
     St#st{filter = {F, FS1}};
-ice_action({event, {data, _Via, Peer, Bin}}, St) ->
-    %% Relayed non-STUN data: demultiplex as if received from Peer.
-    secure_relayed(Peer, Bin, St);
+ice_action({event, {data, Via, Peer, Bin}}, St) ->
+    %% Relayed non-STUN data: demultiplex as if received from Peer, under
+    %% the same rule as direct traffic. TURN permissions are per IP
+    %% (RFC 8656 §9), so any port of a permitted host gets through the
+    %% relay; only a validated candidate pair may reach DTLS and SRTP
+    %% (RFC 8445 §12.2, RFC 8826 §4.2).
+    case webrtc_ice_agent:is_valid_remote(Via, Peer, St#st.ice) of
+        true -> secure_relayed(Peer, Bin, St);
+        false -> St
+    end;
 ice_action({event, {selected_pair, L, R}}, St) ->
     to_pc({selected_pair, L, R}, St),
     start_dtls_if_ready(St);

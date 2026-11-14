@@ -4,7 +4,7 @@
 |---|---|---|---|---|---|
 | TR-1 | 7983 §7, 9443 §3 | Demultiplex by first byte: STUN 0-3, DTLS 20-63, TURN ChannelData 64-79, RTP/RTCP 128-191, others dropped | webrtc_demux | webrtc_demux_tests | Unit tested |
 | TR-2 | 8835 §3.4 | STUN, DTLS, SRTP and SCTP share one UDP 5-tuple per BUNDLE group | webrtc_transport | webrtc_pc_SUITE, webrtc_pc_interop_SUITE | Interoperability tested |
-| TR-3 | 8445 §12.2, 8826 §4.2 | Media and DTLS only accepted from validated candidate pairs | webrtc_transport | webrtc_security_SUITE:spoofed_traffic_dropped | E2E tested |
+| TR-3 | 8445 §12.2, 8826 §4.2 | Media and DTLS only accepted from validated candidate pairs, direct or relayed through TURN | webrtc_transport | webrtc_security_SUITE:spoofed_traffic_dropped, webrtc_turn_interop_SUITE:relayed_spoofing_dropped | Interoperability tested |
 | TR-4 | 7675 | No data sent without fresh consent | webrtc_ice_agent, webrtc_transport | webrtc_ice_net_tests (consent loss) | Unit tested |
 | TR-5 | 8842 §4 | DTLS association kept across ICE restarts | webrtc_transport, webrtc_pc | webrtc_pc_SUITE:ice_restart | E2E tested |
 | TR-6 | 8842 §5 | DTLS role from a=setup, client starts the handshake once ICE has a pair, early DTLS datagrams buffered (bounded) | webrtc_transport | webrtc_pc_SUITE, interop suites | Interoperability tested |

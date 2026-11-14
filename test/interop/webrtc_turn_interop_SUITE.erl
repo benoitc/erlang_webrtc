@@ -86,7 +86,11 @@ connect(A, B) ->
         ?S:connect(A, B, 30000)
     catch
         C:R:Stk ->
-            [ct:pal("~p stats: ~p", [N, webrtc:get_stats(P)]) || {N, P} <- [{a, A}, {b, B}]],
+            [begin
+                 ct:pal("~p stats: ~p", [N, webrtc:get_stats(P)]),
+                 {ok, T} = gen_server:call(P, transport_pid),
+                 ct:pal("~p transport state: ~P", [N, sys:get_state(T), 80])
+             end || {N, P} <- [{a, A}, {b, B}]],
             erlang:raise(C, R, Stk)
     end.
 

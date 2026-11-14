@@ -1,0 +1,255 @@
+%% @doc Google Congestion Control (draft-ietf-rmcat-gcc-02), sender side,
+%% as a sans-IO engine.
+%%
+%% Inputs:
+%% <ul>
+%% <li>`feedback/3': per-packet results of transport-wide feedback
+%%     (`webrtc_twcc_sender:feedback/3'). They drive the delay-based
+%%     controller (`webrtc_gcc_delay', `webrtc_gcc_aimd') with the
+%%     acknowledged rate over 500 ms of arrivals as R_hat, and the
+%%     loss-based controller.</li>
+%% <li>`loss_report/3': the fraction lost of an RTCP receiver report,
+%%     used by the loss-based controller while no transport-wide
+%%     feedback has been received.</li>
+%% <li>`remb/3': a receiver estimated maximum bitrate
+%%     (draft-alvestrand-rmcat-remb), an upper bound of the
+%%     estimate.</li>
+%% <li>`set_rtt/2': round-trip time from RTCP reports. Without it the
+%%     RTT is estimated from feedback (send time of the newest packet
+%%     reported to the feedback arrival).</li>
+%% <li>`sent/3': every packet sent, for the feedback timeout.</li>
+%% </ul>
+%%
+%% Loss-based controller (§6), run once at least 20 packets have been
+%% reported since the previous run (as libwebrtc does, so that a single
+%% loss in a small report does not count as 20%): below 2% loss the
+%% estimate As_hat grows by 5%, between 2% and 10% it is held at the
+%% current target, above 10% it becomes target x (1 - 0.5 p), at most
+%% once per 300 ms + RTT. The target is min(A_hat, As_hat, REMB),
+%% clamped to [min, max] bitrate.
+%%
+%% Lack of feedback (RFC 8836 §2 item 10): when packets were sent but no
+%% feedback arrived for `feedback_timeout' ms (default 1500) after
+%% feedback had been flowing, the target is cut by 20%, once per
+%% timeout.
+%%
+%% Output: `target/1', and `{bandwidth_estimate, Bps}' events returned
+%% by every call that may change it, when the target moved by more than
+%% `change_threshold' (default 0.05) of the last reported value. No
+%% estimate is reported before the first feedback or REMB.
+-module(webrtc_gcc).
+
+-export([
+    new/1,
+    feedback/3,
+    loss_report/3,
+    remb/3,
+    set_rtt/2,
+    sent/3,
+    handle_timeout/2,
+    next_timeout/1,
+    target/1,
+    has_input/1,
+    set_limits/2,
+    info/1
+]).
+
+-export_type([state/0, event/0]).
+
+-type event() :: {bandwidth_estimate, pos_integer()}.
+
+-define(LOSS_MIN_PACKETS, 20).
+
+-record(gcc, {
+    min :: pos_integer(),
+    max :: pos_integer(),
+    start :: pos_integer(),
+    delay :: webrtc_gcc_delay:state(),
+    aimd :: webrtc_gcc_aimd:state(),
+    acked :: webrtc_cc_rate:rate(),
+    delay_active = false :: boolean(),
+    loss_based :: pos_integer(),
+    loss_rx = 0 :: non_neg_integer(),
+    loss_lost = 0 :: non_neg_integer(),
+    last_loss_decrease :: undefined | integer(),
+    remb :: undefined | pos_integer(),
+    rtt = 100 :: pos_integer(),
+    rtt_from_rr = false :: boolean(),
+    target :: pos_integer(),
+    reported :: undefined | pos_integer(),
+    change_threshold :: float(),
+    last_feedback :: undefined | integer(),
+    last_sent :: undefined | integer(),
+    last_cut :: undefined | integer(),
+    feedback_timeout :: pos_integer()
+}).
+
+-opaque state() :: #gcc{}.
+
+%% @doc Options: `start_bitrate' (default 300000), `min_bitrate'
+%% (30000), `max_bitrate' (50000000), `startup_gain' (1.5),
+%% `change_threshold' (0.05), `feedback_timeout' (1500).
+-spec new(map()) -> state().
+new(Opts) ->
+    Min = maps:get(min_bitrate, Opts, 30000),
+    Max = maps:get(max_bitrate, Opts, 50000000),
+    Start = min(max(maps:get(start_bitrate, Opts, 300000), Min), Max),
+    #gcc{
+        min = Min,
+        max = Max,
+        start = Start,
+        delay = webrtc_gcc_delay:new(),
+        aimd = webrtc_gcc_aimd:new(#{
+            start => Start, min => Min, max => Max, startup_gain => maps:get(startup_gain, Opts, 1.5)
+        }),
+        acked = webrtc_cc_rate:new(500),
+        loss_based = Max,
+        target = Start,
+        change_threshold = maps:get(change_threshold, Opts, 0.05),
+        feedback_timeout = maps:get(feedback_timeout, Opts, 1500)
+    }.
+
+-spec target(state()) -> pos_integer().
+target(#gcc{target = T}) -> T.
+
+%% @doc True once an estimate is backed by feedback (transport-wide
+%% feedback or REMB).
+-spec has_input(state()) -> boolean().
+has_input(#gcc{delay_active = D, remb = R}) -> D orelse R =/= undefined.
+
+-spec feedback([webrtc_twcc_sender:result()], integer(), state()) -> {[event()], state()}.
+feedback([], _Now, G) ->
+    {[], G};
+feedback(Results, Now, G0) ->
+    Received = [{S, A, Sz} || {S, A, Sz} <- Results, A =/= lost],
+    Lost = length(Results) - length(Received),
+    G1 = G0#gcc{delay_active = true, last_feedback = Now},
+    G2 = case Received of
+        [] -> G1;
+        _ -> delay_based(Received, Now, G1)
+    end,
+    G3 = loss_counts(length(Received), Lost, Now, G2),
+    update_target(G3).
+
+delay_based(Received, Now, G) ->
+    Acked = lists:foldl(fun({_, A, Sz}, R) -> webrtc_cc_rate:add(A div 1000, Sz, R) end, G#gcc.acked, Received),
+    LastArr = lists:max([A || {_, A, _} <- Received]) div 1000,
+    G1 = feedback_rtt(lists:max([S || {S, _, _} <- Received]), Now, G#gcc{acked = Acked}),
+    {Signal, D} = webrtc_gcc_delay:batch([{S, A} || {S, A, _} <- Received], G1#gcc.delay),
+    RHat = webrtc_cc_rate:rate(LastArr, Acked),
+    Aimd = webrtc_gcc_aimd:update(Signal, RHat, G1#gcc.rtt, Now, G1#gcc.aimd),
+    G1#gcc{delay = D, aimd = Aimd}.
+
+feedback_rtt(_NewestSendUs, _Now, #gcc{rtt_from_rr = true} = G) ->
+    G;
+feedback_rtt(NewestSendUs, Now, #gcc{rtt = Rtt} = G) ->
+    Sample = max(1, Now - NewestSendUs div 1000),
+    G#gcc{rtt = max(1, round(0.875 * Rtt + 0.125 * Sample))}.
+
+loss_counts(Rx, Lost, Now, G) ->
+    Rx1 = G#gcc.loss_rx + Rx,
+    Lost1 = G#gcc.loss_lost + Lost,
+    case Rx1 + Lost1 >= ?LOSS_MIN_PACKETS of
+        true -> loss_based(Lost1 / (Rx1 + Lost1), Now, G#gcc{loss_rx = 0, loss_lost = 0});
+        false -> G#gcc{loss_rx = Rx1, loss_lost = Lost1}
+    end.
+
+%% draft-ietf-rmcat-gcc-02 §6.
+loss_based(P, _Now, #gcc{loss_based = As, max = Max} = G) when P < 0.02 ->
+    G#gcc{loss_based = min(round(As * 1.05), Max)};
+loss_based(P, _Now, #gcc{loss_based = As, target = T} = G) when P =< 0.10 ->
+    G#gcc{loss_based = min(As, T)};
+loss_based(P, Now, #gcc{loss_based = As, target = T, last_loss_decrease = Last, rtt = Rtt} = G) ->
+    case Last =:= undefined orelse Now - Last >= 300 + Rtt of
+        true ->
+            New = max(round(min(As, T) * (1 - 0.5 * P)), G#gcc.min),
+            G#gcc{loss_based = New, last_loss_decrease = Now};
+        false ->
+            G#gcc{loss_based = min(As, T)}
+    end.
+
+%% @doc Fraction lost (0..255) of an RTCP report block for one of our
+%% streams. Ignored once transport-wide feedback drives the estimate.
+-spec loss_report(0..255, integer(), state()) -> {[event()], state()}.
+loss_report(_Fraction, _Now, #gcc{delay_active = true} = G) ->
+    {[], G};
+loss_report(Fraction, Now, G) ->
+    update_target(loss_based(Fraction / 256, Now, G)).
+
+-spec remb(non_neg_integer(), integer(), state()) -> {[event()], state()}.
+remb(Bps, _Now, G) ->
+    update_target(G#gcc{remb = max(Bps, 1)}).
+
+-spec set_rtt(non_neg_integer(), state()) -> state().
+set_rtt(Ms, G) ->
+    G#gcc{rtt = max(1, Ms), rtt_from_rr = true}.
+
+-spec sent(non_neg_integer(), integer(), state()) -> state().
+sent(_Size, Now, G) ->
+    G#gcc{last_sent = Now}.
+
+%% @doc Change the bitrate limits (`min_bitrate', `max_bitrate').
+-spec set_limits(map(), state()) -> {[event()], state()}.
+set_limits(Opts, #gcc{} = G) ->
+    Min = maps:get(min_bitrate, Opts, G#gcc.min),
+    Max = max(Min, maps:get(max_bitrate, Opts, G#gcc.max)),
+    update_target(G#gcc{
+        min = Min,
+        max = Max,
+        aimd = webrtc_gcc_aimd:set_limits(Min, Max, G#gcc.aimd),
+        loss_based = min(G#gcc.loss_based, Max)
+    }).
+
+-spec next_timeout(state()) -> integer() | infinity.
+next_timeout(#gcc{last_feedback = undefined}) ->
+    infinity;
+next_timeout(#gcc{last_sent = undefined}) ->
+    infinity;
+next_timeout(#gcc{last_feedback = F, last_sent = S}) when S =< F ->
+    infinity;
+next_timeout(#gcc{last_feedback = F, last_cut = C, feedback_timeout = T}) ->
+    case C of
+        undefined -> F + T;
+        _ -> max(F, C) + T
+    end.
+
+-spec handle_timeout(integer(), state()) -> {[event()], state()}.
+handle_timeout(Now, G) ->
+    case next_timeout(G) of
+        infinity ->
+            {[], G};
+        At when Now >= At ->
+            T = G#gcc.target,
+            Cut = max(round(T * 0.8), G#gcc.min),
+            Aimd = webrtc_gcc_aimd:set_rate(min(Cut, webrtc_gcc_aimd:rate(G#gcc.aimd)), G#gcc.aimd),
+            update_target(G#gcc{aimd = Aimd, loss_based = min(G#gcc.loss_based, Cut), last_cut = Now});
+        _ ->
+            {[], G}
+    end.
+
+-spec info(state()) -> map().
+info(#gcc{} = G) ->
+    #{
+        target => G#gcc.target,
+        delay_based => case G#gcc.delay_active of true -> webrtc_gcc_aimd:rate(G#gcc.aimd); false -> undefined end,
+        loss_based => G#gcc.loss_based,
+        remb => G#gcc.remb,
+        rtt => G#gcc.rtt,
+        detector => webrtc_gcc_delay:info(G#gcc.delay),
+        controller => webrtc_gcc_aimd:info(G#gcc.aimd)
+    }.
+
+update_target(#gcc{} = G) ->
+    Bounds = [G#gcc.loss_based]
+        ++ [webrtc_gcc_aimd:rate(G#gcc.aimd) || G#gcc.delay_active]
+        ++ [R || R <- [G#gcc.remb], R =/= undefined]
+        ++ [G#gcc.start || not has_input(G)],
+    T = min(max(lists:min(Bounds), G#gcc.min), G#gcc.max),
+    G1 = G#gcc{target = T},
+    case has_input(G1) andalso changed(T, G1#gcc.reported, G1#gcc.change_threshold) of
+        true -> {[{bandwidth_estimate, T}], G1#gcc{reported = T}};
+        false -> {[], G1}
+    end.
+
+changed(_T, undefined, _) -> true;
+changed(T, R, Th) -> abs(T - R) > Th * R.

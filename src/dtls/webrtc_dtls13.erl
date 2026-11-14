@@ -1,7 +1,8 @@
 %% @private DTLS 1.3 engine (RFC 9147): inbound records with epoch and
 %% record number reconstruction, replay protection, the ACK mechanism
-%% (§7) with selective retransmission (§5.8), flights and timers, and
-%% KeyUpdate (§8). Handshake messages are handled by
+%% (§7) with selective retransmission (§5.8), flights and timers.
+%% Epoch keys and KeyUpdate (§8) are in `webrtc_dtls13_epoch'.
+%% Handshake messages are handled by
 %% `webrtc_dtls13_hs' and `webrtc_dtls13_server'; the public API is in
 %% `webrtc_dtls'.
 -module(webrtc_dtls13).
@@ -13,19 +14,14 @@
     flush/2,
     timeout/2,
     send/2,
-    start_key_update/2,
     encode_record/4,
-    install_read/3,
-    install_write/3,
-    implicit_ack/1,
-    peer_key_update/2
+    implicit_ack/1
 ]).
 
 -import(webrtc_dtls, [fail/3, emit/2]).
 
 -define(MAX_EARLY, 32).
 -define(MAX_HELD, 64).
--define(MAX_EPOCH, 16#FFFF).
 %% RFC 9147 §4.5.3: records failing authentication per key.
 -define(INTEGRITY_LIMIT, (1 bsl 36)).
 %% RFC 8446 §5.5: 2^24.5 full-size records for AES-GCM.
@@ -64,7 +60,7 @@ one(R, Now, #dtls{version = dtls13} = St) ->
     record(R, Now, St);
 one(#{format := plain} = R, Now, St) ->
     %% Hello exchange, version not chosen yet.
-    webrtc_dtls:plain_record(maps:remove(format, R), Now, St);
+    webrtc_dtls12:record(maps:remove(format, R), Now, St);
 one(#{format := unified} = R, _Now, #dtls{role = client, state = wait_server_hello} = St) ->
     %% Possibly the server's encrypted flight overtaking its ServerHello.
     buffer(R, St);
@@ -242,7 +238,7 @@ ack(Recs, E, Now, St) ->
 flight_done(St0) ->
     St = St0#dtls{last_flight = [], sent_recs = #{}, acked = #{}, rtx_at = infinity},
     case St of
-        #dtls{ku_pending = true} -> key_update_acked(St);
+        #dtls{ku_pending = true} -> webrtc_dtls13_epoch:key_update_acked(St);
         #dtls{state = wait_ack} -> webrtc_dtls13_hs:final_flight_acked(St);
         _ -> St
     end.
@@ -283,70 +279,6 @@ resend(Now, #dtls{last_peer_rtx = Last, rtx_initial = I} = St) when Last =:= und
     St2#dtls{rtx_at = Now + St2#dtls.rtx_interval};
 resend(_Now, St) ->
     St.
-
-%%====================================================================
-%% Keys
-%%====================================================================
-
-%% @doc Install the read keys of `Epoch'. From epoch 4 on (KeyUpdate),
-%% only the previous epoch is kept for reordered records (§8).
--spec install_read(non_neg_integer(), binary(), #dtls{}) -> #dtls{}.
-install_read(Epoch, Secret, #dtls{suite13 = Suite, read_keys = RK, replay = Rp} = St) ->
-    Keys = webrtc_dtls13_keys:traffic_keys(webrtc_dtls13_keys:prefix(), Suite, Secret),
-    RK1 = RK#{Epoch => Keys#{failures => 0}},
-    {RK2, Rp1} =
-        case Epoch >= 4 of
-            true ->
-                Keep = fun(E, _) -> E >= Epoch - 1 end,
-                {maps:filter(Keep, RK1), maps:filter(fun(E, V) -> E =:= 0 orelse Keep(E, V) end, Rp)};
-            false ->
-                {RK1, Rp}
-        end,
-    St#dtls{read_keys = RK2, replay = Rp1}.
-
-%% @doc Install the write keys of `Epoch' and make it the write epoch.
--spec install_write(non_neg_integer(), binary(), #dtls{}) -> #dtls{}.
-install_write(Epoch, Secret, #dtls{suite13 = Suite} = St) ->
-    Keys = webrtc_dtls13_keys:traffic_keys(webrtc_dtls13_keys:prefix(), Suite, Secret),
-    St#dtls{
-        write_ciphers = maps:put(Epoch, Keys, St#dtls.write_ciphers),
-        write_seq = maps:put(Epoch, 0, St#dtls.write_seq),
-        write_epoch = Epoch
-    }.
-
-%% @doc Queue a KeyUpdate (§8). Our keys change once it is acknowledged.
--spec start_key_update(update_requested | update_not_requested, #dtls{}) -> #dtls{}.
-start_key_update(_Req, #dtls{ku_pending = true} = St) ->
-    St;
-start_key_update(_Req, #dtls{write_epoch = E} = St) when E >= ?MAX_EPOCH ->
-    St;
-start_key_update(Req, St) ->
-    Body = webrtc_dtls13_msg:encode(key_update, Req),
-    {_, St1} = webrtc_dtls:queue_handshake(key_update, Body, false, St),
-    St1#dtls{ku_pending = true}.
-
-key_update_acked(#dtls{write_epoch = E, write_ciphers = WC} = St) ->
-    #{secret := S, hash := H} = maps:get(E, WC),
-    Next = webrtc_dtls13_keys:next_secret(webrtc_dtls13_keys:prefix(), H, S),
-    St1 = install_write(E + 1, Next, St#dtls{ku_pending = false}),
-    St1#dtls{
-        write_ciphers = maps:with([E + 1], St1#dtls.write_ciphers),
-        write_seq = maps:with([0, E + 1], St1#dtls.write_seq)
-    }.
-
-%% @doc The peer updated its keys: install the next read epoch,
-%% acknowledge, and update ours if asked to (§8).
--spec peer_key_update({update_requested | update_not_requested, non_neg_integer()}, #dtls{}) -> #dtls{}.
-peer_key_update({Req, E}, #dtls{read_keys = RK} = St) ->
-    E =:= lists:max(maps:keys(RK)) orelse fail(?ALERT_UNEXPECTED_MESSAGE, key_update_wrong_epoch, St),
-    E < ?MAX_EPOCH orelse fail(?ALERT_INTERNAL_ERROR, epoch_exhausted, St),
-    #{secret := S, hash := H} = maps:get(E, RK),
-    Next = webrtc_dtls13_keys:next_secret(webrtc_dtls13_keys:prefix(), H, S),
-    St1 = (install_read(E + 1, Next, St))#dtls{ack_now = true},
-    case Req of
-        update_requested -> start_key_update(update_not_requested, St1);
-        update_not_requested -> St1
-    end.
 
 %%====================================================================
 %% Outbound
@@ -449,7 +381,7 @@ send(Bin, #dtls{write_epoch = E, write_seq = WS, write_ciphers = WC} = St) ->
             case Seq + 1 >= St1#dtls.rekey_records andalso not St1#dtls.ku_pending of
                 true ->
                     Now = erlang:monotonic_time(millisecond),
-                    St2 = flush(Now, start_key_update(update_requested, St1#dtls{out = []})),
+                    St2 = flush(Now, webrtc_dtls13_epoch:start_key_update(update_requested, St1#dtls{out = []})),
                     {ok, St2#dtls{out = []}, [{send, Rec} | lists:reverse(St2#dtls.out)]};
                 false ->
                     {ok, St1, [{send, Rec}]}
@@ -493,7 +425,7 @@ transmit(Items, St0) ->
         {[], St0},
         Items
     ),
-    {St, webrtc_dtls:pack(lists:append(lists:reverse(Recs)), St#dtls.mtu)}.
+    {St, webrtc_dtls12:pack(lists:append(lists:reverse(Recs)), St#dtls.mtu)}.
 
 item_records({handshake, E, Type, MS, Body} = Item, St) ->
     Max = max(1, St#dtls.mtu - header(E) - 12),

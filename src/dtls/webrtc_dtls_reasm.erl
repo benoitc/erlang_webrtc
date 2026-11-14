@@ -25,7 +25,7 @@ fragment(#{seq := Seq, type := client_hello} = F, E, Now, #dtls{state = wait_cli
     fragment(F, E, Now, St#dtls{recv_msg_seq = Seq, reasm = #{}});
 fragment(F, E, Now, St) ->
     case classify(F, St) of
-        old -> webrtc_dtls:peer_retransmitted(Now, St);
+        old -> webrtc_dtls12:peer_retransmitted(Now, St);
         new -> deliver(Now, add(F, E, St));
         ignore -> St
     end.

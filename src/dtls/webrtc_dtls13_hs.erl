@@ -269,7 +269,7 @@ client(wait_finished, finished, VD, Full, _Now, St) ->
     verify_finished(SHS, VD, St),
     St1 = derive_application(add(Full, St)),
     #{sap := SAP} = St1#dtls.secrets,
-    St2 = webrtc_dtls13:install_read(3, SAP, St1#dtls{peer_finished = true}),
+    St2 = webrtc_dtls13_epoch:install_read(3, SAP, St1#dtls{peer_finished = true}),
     St3 =
         case St2#dtls.cert_requested of
             true ->
@@ -281,14 +281,14 @@ client(wait_finished, finished, VD, Full, _Now, St) ->
     #{chs := CHS, cap := CAP} = St3#dtls.secrets,
     St4 = queue(finished, finished_body(CHS, St3), St3),
     %% Application data uses epoch 3 once our Finished is sent.
-    webrtc_dtls13:install_write(3, CAP, St4#dtls{state = wait_ack});
+    webrtc_dtls13_epoch:install_write(3, CAP, St4#dtls{state = wait_ack});
 client(S, new_session_ticket, _M, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
     %% No resumption: the ticket is acknowledged and dropped. The server
     %% only sends it after our Finished, so it also confirms our flight.
     St1 = maybe_final(St),
     St1#dtls{ack_now = true};
 client(S, key_update, Req, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
-    webrtc_dtls13:peer_key_update(Req, maybe_final(St));
+    webrtc_dtls13_epoch:peer_key_update(Req, maybe_final(St));
 client(_State, Type, _M, _Full, _Now, St) ->
     fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St).
 
@@ -334,8 +334,8 @@ install_handshake_keys(HS, St) ->
             server -> {SHS, CHS}
         end,
     St1 = St#dtls{secrets = #{hs => HS, chs => CHS, shs => SHS}},
-    St2 = webrtc_dtls13:install_read(2, Theirs, St1),
-    webrtc_dtls13:install_write(2, Mine, St2).
+    St2 = webrtc_dtls13_epoch:install_read(2, Theirs, St1),
+    webrtc_dtls13_epoch:install_write(2, Mine, St2).
 
 %% @doc Application traffic and exporter secrets from the transcript
 %% up to the server Finished (RFC 8446 §7.1).

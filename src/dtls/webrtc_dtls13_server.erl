@@ -175,7 +175,7 @@ proceed(Group, Shares, T0, CR, M, #dtls{suite13 = #{id := SuiteId, hash := H}} =
     #{sap := SAP} = St9#dtls.secrets,
     %% Install the epoch 3 write keys; they are used once the client
     %% Finished is verified.
-    St10 = webrtc_dtls13:install_write(3, SAP, St9),
+    St10 = webrtc_dtls13_epoch:install_write(3, SAP, St9),
     St10#dtls{write_epoch = 2, state = wait_client_cert}.
 
 %%====================================================================
@@ -199,12 +199,12 @@ handle(wait_client_finished, finished, VD, Full, _Now, St) ->
     #{chs := CHS, cap := CAP} = St#dtls.secrets,
     webrtc_dtls13_hs:verify_finished(CHS, VD, St),
     St1 = add(Full, St),
-    St2 = webrtc_dtls13:install_read(3, CAP, St1#dtls{peer_finished = true}),
+    St2 = webrtc_dtls13_epoch:install_read(3, CAP, St1#dtls{peer_finished = true}),
     %% The final flight is acknowledged (RFC 9147 §5.7), in epoch 3.
     St3 = St2#dtls{write_epoch = 3, state = connected, handshake_done = true, ack_now = true},
     webrtc_dtls_hs:maybe_verify(St3);
 handle(connected, key_update, Req, _Full, _Now, St) ->
-    webrtc_dtls13:peer_key_update(Req, St);
+    webrtc_dtls13_epoch:peer_key_update(Req, St);
 handle(_State, Type, _M, _Full, _Now, St) ->
     fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St).
 

@@ -15,6 +15,12 @@
 %% `{webrtc_transport, self(), Event}'. Media and data channel messages
 %% go straight to the application as `{webrtc, Pc, Event}', so the hot
 %% path does not pass through the peer connection process.
+%%
+%% This module is the process: its API, the gen_server callbacks and the
+%% single timer. `webrtc_transport_net' handles sockets, received
+%% datagrams and ICE actions; `webrtc_transport_secure' handles DTLS,
+%% SRTP, media actions and SCTP. All three share the state record of
+%% `webrtc_transport.hrl'.
 -module(webrtc_transport).
 -behaviour(gen_server).
 
@@ -41,44 +47,10 @@
     set_app/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+%% Internal, for webrtc_transport_net and webrtc_transport_secure.
+-export([to_pc/2, to_app/2, now_ms/0]).
 
--define(ACTIVE_N, 100).
--define(MAX_EARLY_DTLS, 16).
-
--record(st, {
-    pc :: pid(),
-    app :: pid(),
-    sockets = [] :: [{gen_udp:socket(), {inet:ip_address(), inet:port_number()}}],
-    ice :: term(),
-    dtls :: undefined | term(),
-    dtls_role :: undefined | client | server,
-    cert :: map(),
-    remote_fps = [] :: list(),
-    remote_tls_id :: undefined | binary(),
-    %% DTLS closed or failed: the transport is finished, only stats and
-    %% stop are served.
-    finished = false :: boolean(),
-    %% DTLS datagrams received before the DTLS role is known.
-    early_dtls = [] :: [binary()],
-    %% ICE has a valid pair with consent (connected or completed).
-    ice_usable = false :: boolean(),
-    %% DTLS datagrams produced before ICE could send them (the peer's
-    %% check reached us before ours succeeded); sent once it can.
-    dtls_out = [] :: [binary()],
-    media :: term(),
-    data :: undefined | map(),
-    dcep :: undefined | term(),
-    %% Channels requested before SCTP is up: [{From, Label, Opts}].
-    pending_channels = [] :: list(),
-    timer :: undefined | {reference(), integer()},
-    srtp_profiles :: [non_neg_integer()],
-    connected = false :: boolean(),
-    %% Optional outbound filter used by impairment tests:
-    %% fun((Dest, Bin, FState) -> {[{DelayMs, Bin}], FState}).
-    filter :: undefined | {fun(), term()},
-    %% Host name candidates (mDNS, FQDN) being resolved.
-    mdns :: webrtc_mdns_client:client()
-}).
+-include("webrtc_transport.hrl").
 
 %%====================================================================
 %% API (called by webrtc_pc)
@@ -122,8 +94,8 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
     IceOpts = maps:with(
         [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, consent, nomination], Opts
     ),
-    Addrs = maps:get(addresses, Opts, local_addresses(Opts)),
-    Sockets = [S || A <- Addrs, {ok, S} <- [open_socket(A)]],
+    Addrs = maps:get(addresses, Opts, webrtc_transport_net:local_addresses(Opts)),
+    Sockets = [S || A <- Addrs, {ok, S} <- [webrtc_transport_net:open_socket(A)]],
     case Sockets of
         [] ->
             {stop, no_usable_address};
@@ -142,50 +114,10 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 filter = maps:get(outbound_filter, Opts, undefined),
                 mdns = webrtc_mdns_client:new(
                     (maps:get(mdns, Opts, #{}))#{hide_host => maps:get(mdns_host_candidates, Opts, false)},
-                    lists:usort([family(IP) || {_, {IP, _}} <- Sockets])
+                    lists:usort([webrtc_transport_net:family(IP) || {_, {IP, _}} <- Sockets])
                 )
             }}
     end.
-
-open_socket({IP, Port}) ->
-    Family =
-        case tuple_size(IP) of
-            4 -> inet;
-            8 -> inet6
-        end,
-    case gen_udp:open(Port, [binary, Family, {ip, IP}, {active, ?ACTIVE_N}, {recbuf, 1 bsl 20}, {sndbuf, 1 bsl 20}]) of
-        {ok, S} ->
-            {ok, {_, P}} = inet:sockname(S),
-            {ok, {S, {IP, P}}};
-        {error, _} = E ->
-            E
-    end.
-
-%% Host candidates: every up, non-loopback interface address, unless
-%% `loopback' is set (tests, local interop), and IPv6 link-local
-%% addresses are skipped (RFC 8445 §5.1.1.1).
-local_addresses(Opts) ->
-    case maps:get(loopback, Opts, false) of
-        true ->
-            [{{127, 0, 0, 1}, 0}];
-        false ->
-            {ok, Ifs} = inet:getifaddrs(),
-            lists:usort([
-                {A, 0}
-             || {_Name, Props} <- Ifs,
-                lists:member(up, proplists:get_value(flags, Props, [])),
-                not lists:member(loopback, proplists:get_value(flags, Props, [])),
-                {addr, A} <- Props,
-                usable(A)
-            ])
-    end.
-
-family(IP) when tuple_size(IP) =:= 4 -> inet;
-family(_) -> inet6.
-
-usable({169, 254, _, _}) -> false;
-usable({A, _, _, _, _, _, _, _}) when A band 16#FFC0 =:= 16#FE80 -> false;
-usable(_) -> true.
 
 handle_call(gather, _From, St) ->
     run(St, fun(Now, I) -> webrtc_ice_agent:gather(St#st.sockets, Now, I) end, ok);
@@ -208,14 +140,14 @@ handle_call(end_of_candidates, _From, St) ->
     end;
 handle_call({restart_ice, U, P}, _From, St) ->
     {I1, Acts} = webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, now_ms(), St#st.ice),
-    St0 = ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns)}),
+    St0 = webrtc_transport_net:ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns)}),
     %% The candidates are kept across the restart but belong to the new
     %% ICE generation: signal them again (RFC 8445 §9, RFC 8838 §4.4).
-    St1 = lists:foldl(fun local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),
+    St1 = lists:foldl(fun webrtc_transport_net:local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),
     to_pc({gathering_state, complete}, St1),
     {reply, ok, arm(St1)};
 handle_call({configure, Neg}, _From, St) ->
-    St1 = configure_engines(Neg, St),
+    St1 = webrtc_transport_secure:configure_engines(Neg, St),
     {reply, ok, arm(St1)};
 handle_call(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= send_rtp;
@@ -233,7 +165,7 @@ handle_call({send_rtp_packet, Mid, Pkt}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send_packet(Mid, Pkt, Now, M) end, St);
 handle_call({request_keyframe, Mid}, _From, St) ->
     {Acts, M} = webrtc_media:request_keyframe(Mid, now_ms(), St#st.media),
-    St1 = transmit(Acts, St#st{media = M}),
+    St1 = webrtc_transport_net:transmit(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
 handle_call({resume_stream, Mid}, _From, St) ->
     case webrtc_media:resume(Mid, now_ms(), St#st.media) of
@@ -242,23 +174,23 @@ handle_call({resume_stream, Mid}, _From, St) ->
     end;
 handle_call({set_congestion_control, Opts}, _From, St) ->
     {Acts, M} = webrtc_media:set_congestion_control(Opts, now_ms(), St#st.media),
-    St1 = media_actions(Acts, St#st{media = M}),
+    St1 = webrtc_transport_secure:media_actions(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
 handle_call({open_channel, Label, Opts}, From, #st{dcep = undefined} = St) ->
     {noreply, St#st{pending_channels = St#st.pending_channels ++ [{From, Label, Opts}]}};
 handle_call({open_channel, Label, Opts}, _From, St) ->
-    {Reply, St1} = do_open_channel(Label, Opts, St),
+    {Reply, St1} = webrtc_transport_secure:do_open_channel(Label, Opts, St),
     {reply, Reply, arm(St1)};
 handle_call({send_data, Id, Type, Data}, _From, #st{dcep = D} = St) when D =/= undefined ->
     case webrtc_dcep:send(Id, Type, Data, now_ms(), D) of
-        {ok, D1, Acts} -> {reply, ok, arm(dcep_actions(Acts, St#st{dcep = D1}))};
+        {ok, D1, Acts} -> {reply, ok, arm(webrtc_transport_secure:dcep_actions(Acts, St#st{dcep = D1}))};
         {error, _} = E -> {reply, E, St}
     end;
 handle_call({send_data, _, _, _}, _From, St) ->
     {reply, {error, not_connected}, St};
 handle_call({close_channel, Id}, _From, #st{dcep = D} = St) when D =/= undefined ->
     case webrtc_dcep:close_channel(Id, now_ms(), D) of
-        {ok, D1, Acts} -> {reply, ok, arm(dcep_actions(Acts, St#st{dcep = D1}))};
+        {ok, D1, Acts} -> {reply, ok, arm(webrtc_transport_secure:dcep_actions(Acts, St#st{dcep = D1}))};
         {error, _} = E -> {reply, E, St}
     end;
 handle_call({close_channel, _}, _From, St) ->
@@ -279,12 +211,12 @@ handle_cast(_Msg, St) ->
     {noreply, St}.
 
 handle_info({udp, Sock, IP, Port, Bin}, St) ->
-    St1 = datagram(Sock, {IP, Port}, Bin, now_ms(), St),
+    St1 = webrtc_transport_net:datagram(Sock, {IP, Port}, Bin, now_ms(), St),
     {noreply, arm(St1)};
 handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
     {stop, normal, St};
 handle_info({delayed_send, Sock, Dest, Bin}, St) ->
-    udp_send(Sock, Dest, Bin),
+    webrtc_transport_net:udp_send(Sock, Dest, Bin),
     {noreply, St};
 handle_info({udp_passive, Sock}, St) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
@@ -318,15 +250,15 @@ terminate(_Reason, St0) ->
     St1 =
         case St0#st.dtls of
             undefined -> St0;
-            D -> transmit_dtls(element(2, webrtc_dtls:close(D)), St0)
+            D -> webrtc_transport_secure:transmit_dtls(element(2, webrtc_dtls:close(D)), St0)
         end,
     {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
-    _ = ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    _ = webrtc_transport_net:ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
     _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
     ok.
 
 %%====================================================================
-%% Engines
+%% Driving the engines
 %%====================================================================
 
 %% Run an ICE agent operation and execute its actions.
@@ -335,369 +267,34 @@ run(St, F, Reply) ->
         {error, _} = E ->
             {reply, E, St};
         {I1, Acts} ->
-            St1 = ice_actions(Acts, St#st{ice = I1}),
+            St1 = webrtc_transport_net:ice_actions(Acts, St#st{ice = I1}),
             {reply, Reply, arm(St1)}
     end.
 
-configure_engines(Neg, St0) ->
-    #{dtls := #{role := Role, remote_fingerprints := FPs} = Dtls, media := Media, data := Data} = Neg,
-    TlsId = maps:get(remote_tls_id, Dtls, undefined),
-    %% RFC 8842 §5: changed fingerprints or tls-id mean a new DTLS
-    %% association (JSEP only accepts that with an ICE restart).
-    St00 =
-        case St0#st.dtls =/= undefined andalso
-                 (lists:sort(FPs) =/= lists:sort(St0#st.remote_fps) orelse
-                      tls_id_changed(St0#st.remote_tls_id, TlsId)) of
-            true -> end_association(dtls_identity_changed, St0);
-            false -> St0
-        end,
-    St1 = St00#st{
-        media = webrtc_media:configure(Media, St00#st.media),
-        data = Data,
-        remote_fps = FPs,
-        remote_tls_id = TlsId
-    },
-    St2 =
-        case St1#st.dtls of
-            undefined when Role =/= undefined ->
-                D = webrtc_dtls:new(#{
-                    role => Role,
-                    cert => St1#st.cert,
-                    remote_fingerprints => FPs,
-                    srtp_profiles => St1#st.srtp_profiles
-                }),
-                start_dtls_if_ready(St1#st{dtls = D, dtls_role = Role});
-            _ ->
-                St1
-        end,
-    case St2#st.connected andalso St2#st.dcep =:= undefined andalso Data =/= undefined of
-        true -> start_sctp(St2);
-        false -> St2
-    end.
-
-%% A peer that never sent a tls-id (older stacks) is compared on its
-%% fingerprints only.
-tls_id_changed(undefined, _) -> false;
-tls_id_changed(_, undefined) -> false;
-tls_id_changed(Old, New) -> Old =/= New.
-
-%% Close the DTLS association and everything keyed or carried by it:
-%% SRTP contexts and the SCTP association (its channels are reported
-%% closed). ICE is kept.
-end_association(Reason, #st{dtls = D} = St0) ->
-    St1 =
-        case D of
-            undefined ->
-                St0;
-            _ ->
-                {_, Acts} = webrtc_dtls:close(D),
-                transmit_dtls(Acts, St0)
-        end,
-    St2 =
-        case St1#st.dcep of
-            undefined ->
-                St1;
-            Dc ->
-                _ = [to_pc({datachannel, {channel_closed, Id}}, St1) || Id <- maps:keys(webrtc_dcep:channels(Dc))],
-                to_pc({datachannel, {closed, Reason}}, St1),
-                St1
-        end,
-    St2#st{
-        dtls = undefined,
-        dtls_role = undefined,
-        dcep = undefined,
-        connected = false,
-        early_dtls = [],
-        dtls_out = [],
-        media = webrtc_media:clear_srtp(St2#st.media)
-    }.
-
-%% The client starts the handshake once ICE has a valid pair: data may
-%% use any valid pair before nomination (RFC 8445 §12.1), so DTLS does
-%% not wait for it. Buffered early DTLS datagrams are replayed for the
-%% server.
-start_dtls_if_ready(#st{dtls = undefined} = St) ->
-    St;
-start_dtls_if_ready(#st{dtls = D} = St) ->
-    case St#st.ice_usable orelse webrtc_ice_agent:selected_pair(St#st.ice) =/= undefined of
-        false ->
-            St;
-        true ->
-            Now = now_ms(),
-            {D1, A} = webrtc_dtls:start(Now, D),
-            St1 = dtls_actions(A, St#st{dtls = D1}),
-            lists:foldl(
-                fun(Bin, S) -> dtls_in(Bin, Now, S) end,
-                St1#st{early_dtls = []},
-                lists:reverse(St1#st.early_dtls)
-            )
-    end.
-
-datagram(Sock, Src, Bin, Now, St) ->
-    case webrtc_demux:classify(Bin) of
-        C when C =:= stun; C =:= turn_channel ->
-            {I1, Acts} = webrtc_ice_agent:handle_packet(Sock, Src, Bin, Now, St#st.ice),
-            ice_actions(Acts, St#st{ice = I1});
-        Class ->
-            case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
-                true -> secure_datagram(Class, Bin, Now, St);
-                false -> St
-            end
-    end.
-
-secure_datagram(dtls, Bin, Now, St) ->
-    dtls_in(Bin, Now, St);
-secure_datagram(rtp, Bin, Now, St) ->
-    {M1, Acts} = webrtc_media:handle_packet(Bin, Now, St#st.media),
-    media_actions(Acts, St#st{media = M1});
-secure_datagram(_, _Bin, _Now, St) ->
-    St.
-
-dtls_in(Bin, _Now, #st{dtls = undefined, early_dtls = E} = St) when length(E) < ?MAX_EARLY_DTLS ->
-    St#st{early_dtls = [Bin | E]};
-dtls_in(_Bin, _Now, #st{dtls = undefined} = St) ->
-    St;
-dtls_in(Bin, Now, #st{dtls = D} = St) ->
-    {D1, Acts} = webrtc_dtls:handle_packet(Bin, Now, D),
-    dtls_actions(Acts, St#st{dtls = D1}).
-
 tick(Now, St0) ->
     {I1, A1} = webrtc_ice_agent:handle_timeout(Now, St0#st.ice),
-    St1 = ice_actions(A1, St0#st{ice = I1}),
+    St1 = webrtc_transport_net:ice_actions(A1, St0#st{ice = I1}),
     St2 =
         case St1#st.dtls of
             undefined -> St1;
             D ->
                 {D1, A2} = webrtc_dtls:handle_timeout(Now, D),
-                dtls_actions(A2, St1#st{dtls = D1})
+                webrtc_transport_secure:dtls_actions(A2, St1#st{dtls = D1})
         end,
     {M1, A3} = webrtc_media:handle_timeout(Now, St2#st.media),
-    St3 = media_actions(A3, St2#st{media = M1}),
+    St3 = webrtc_transport_secure:media_actions(A3, St2#st{media = M1}),
     case St3#st.dcep of
         undefined -> St3;
         Dc ->
             {Dc1, A4} = webrtc_dcep:handle_timeout(Now, Dc),
-            dcep_actions(A4, St3#st{dcep = Dc1})
+            webrtc_transport_secure:dcep_actions(A4, St3#st{dcep = Dc1})
     end.
-
-%%====================================================================
-%% Actions
-%%====================================================================
-
-ice_actions(Acts, St) ->
-    lists:foldl(fun ice_action/2, St, Acts).
-
-ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
-    _ = gen_udp:send(Sock, IP, Port, Bin),
-    St;
-ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
-    %% Test hook (impairment): it runs in this process and must not
-    %% block; a crashing filter lets the datagram through.
-    {Out, FS1} =
-        try F(Dest, Bin, FS) of
-            {O, S1} when is_list(O) -> {O, S1}
-        catch
-            _:_ -> {[{0, Bin}], FS}
-        end,
-    lists:foreach(
-        fun
-            ({0, B}) -> udp_send(Sock, Dest, B);
-            ({Delay, B}) -> erlang:send_after(Delay, self(), {delayed_send, Sock, Dest, B})
-        end,
-        Out
-    ),
-    St#st{filter = {F, FS1}};
-ice_action({event, {data, Via, Peer, Bin}}, St) ->
-    %% Relayed non-STUN data: demultiplex as if received from Peer, under
-    %% the same rule as direct traffic. TURN permissions are per IP
-    %% (RFC 8656 §9), so any port of a permitted host gets through the
-    %% relay; only a validated candidate pair may reach DTLS and SRTP
-    %% (RFC 8445 §12.2, RFC 8826 §4.2).
-    case webrtc_ice_agent:is_valid_remote(Via, Peer, St#st.ice) of
-        true -> secure_relayed(Peer, Bin, St);
-        false -> St
-    end;
-ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
-    to_pc(E, St),
-    start_dtls_if_ready(flush_dtls(St#st{ice_usable = true}));
-ice_action({event, {connection_state, _} = E}, St) ->
-    to_pc(E, St),
-    St#st{ice_usable = false};
-ice_action({event, {selected_pair, L, R}}, St) ->
-    to_pc({selected_pair, L, R}, St),
-    start_dtls_if_ready(flush_dtls(St));
-ice_action({event, {local_candidate, C}}, St) ->
-    local_candidate(C, St);
-ice_action({event, {consent_lost, _, _} = E}, St) ->
-    to_pc(E, St),
-    St;
-ice_action({event, E}, St) ->
-    to_pc(E, St),
-    St.
-
-%% Signaled as a candidate-attribute value, with an mDNS name in place
-%% of the host address when `mdns_host_candidates' is set.
-local_candidate(C, St) ->
-    {Value, M} = webrtc_mdns_client:local_candidate(C, St#st.mdns),
-    to_pc({local_candidate, Value}, St),
-    St#st{mdns = M}.
-
-secure_relayed(_Peer, Bin, St) ->
-    case webrtc_demux:classify(Bin) of
-        dtls -> dtls_in(Bin, now_ms(), St);
-        rtp ->
-            {M1, Acts} = webrtc_media:handle_packet(Bin, now_ms(), St#st.media),
-            media_actions(Acts, St#st{media = M1});
-        _ -> St
-    end.
-
-udp_send(Sock, {IP, Port}, Bin) ->
-    _ = gen_udp:send(Sock, IP, Port, Bin),
-    ok.
-
-%% Send a datagram on the selected pair.
-send_out(Bin, St) ->
-    case webrtc_ice_agent:send(Bin, now_ms(), St#st.ice) of
-        {ok, I1, Acts} -> ice_actions(Acts, St#st{ice = I1});
-        {error, _} -> St
-    end.
-
-transmit(Acts, St) ->
-    lists:foldl(fun({send, B}, S) -> send_out(B, S) end, St, [A || {send, _} = A <- Acts]).
-
-transmit_dtls(Acts, St) ->
-    lists:foldl(fun({send, B}, S) -> dtls_send(B, S) end, St, [A || {send, _} = A <- Acts]).
-
-%% A DTLS server never retransmits on its own: a reply ICE cannot send
-%% yet is kept (bounded) instead of waiting for the client's next
-%% retransmission.
-dtls_send(Bin, St) ->
-    case webrtc_ice_agent:send(Bin, now_ms(), St#st.ice) of
-        {ok, I1, Acts} ->
-            ice_actions(Acts, St#st{ice = I1});
-        {error, no_valid_pair} when length(St#st.dtls_out) < ?MAX_EARLY_DTLS ->
-            St#st{dtls_out = St#st.dtls_out ++ [Bin]};
-        {error, _} ->
-            St
-    end.
-
-flush_dtls(#st{dtls_out = []} = St) ->
-    St;
-flush_dtls(#st{dtls_out = Out} = St) ->
-    lists:foldl(fun dtls_send/2, St#st{dtls_out = []}, Out).
-
-dtls_actions(Acts, St) ->
-    lists:foldl(fun dtls_action/2, St, Acts).
-
-dtls_action({send, Bin}, St) ->
-    dtls_send(Bin, St);
-dtls_action({event, {connected, Info}}, St) ->
-    St1 = setup_srtp(Info, St#st{connected = true}),
-    to_pc({dtls_connected, Info}, St1),
-    case St1#st.data of
-        undefined -> St1;
-        _ -> start_sctp(St1)
-    end;
-dtls_action({event, {data, Bin}}, #st{dcep = D} = St) when D =/= undefined ->
-    {D1, Acts} = webrtc_dcep:handle_packet(Bin, now_ms(), D),
-    dcep_actions(Acts, St#st{dcep = D1});
-dtls_action({event, {data, _}}, St) ->
-    St;
-dtls_action({event, {closed, R}}, St) ->
-    to_pc({dtls_closed, R}, St),
-    finish(R, St);
-dtls_action({event, {failed, R}}, St) ->
-    to_pc({dtls_failed, R}, St),
-    finish(R, St).
-
-%% DTLS closed (close_notify) or failed: nothing can be sent or received
-%% securely any more. Drop SRTP keys and SCTP, stop ICE (consent checks
-%% end, TURN allocations are deleted); the peer connection reports the
-%% state and the application closes it.
-finish(Reason, St0) ->
-    St1 = end_association(Reason, St0),
-    {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
-    St2 = ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
-    St2#st{finished = true}.
-
-setup_srtp(#{srtp_profile := undefined}, St) ->
-    St;
-setup_srtp(#{srtp_profile := Id}, #st{dtls = D} = St) ->
-    {ok, Profile} = webrtc_srtp:profile_from_id(Id),
-    Len = webrtc_srtp:key_material_length(Profile),
-    {ok, Material} = webrtc_dtls:export_keying_material(webrtc_srtp:exporter_label(), no_context, Len, D),
-    St#st{media = webrtc_media:set_srtp(Profile, Material, St#st.dtls_role, now_ms(), St#st.media)}.
 
 media_send(F, St) ->
     case F(now_ms(), St#st.media) of
-        {ok, Acts, M1} -> {reply, ok, arm(transmit(Acts, St#st{media = M1}))};
+        {ok, Acts, M1} -> {reply, ok, arm(webrtc_transport_net:transmit(Acts, St#st{media = M1}))};
         {error, _} = E -> {reply, E, St}
     end.
-
-media_actions(Acts, St) ->
-    lists:foldl(
-        fun
-            ({send, B}, S) -> send_out(B, S);
-            ({event, E}, S) -> to_app(E, S), S
-        end,
-        St,
-        Acts
-    ).
-
-%% RFC 8841: SCTP runs over the DTLS association once it is up.
-start_sctp(#st{data = Data, dtls_role = Role} = St) ->
-    LocalMax = maps:get(local_max_message_size, Data, 262144),
-    D0 = webrtc_dcep:new(#{
-        role => Role,
-        max_message_size => maps:get(remote_max_message_size, Data, 65536),
-        sctp => #{
-            local_port => maps:get(local_port, Data, 5000),
-            remote_port => maps:get(remote_port, Data, 5000),
-            %% The limit we announced in SDP bounds incoming messages
-            %% (RFC 8841 §6); the window holds at least two of them.
-            max_message_size => LocalMax,
-            receive_buffer => max(1048576, 2 * LocalMax),
-            %% 1200 byte datagrams minus the DTLS record overhead (13 byte
-            %% header, 8 byte explicit nonce, 16 byte tag), so SCTP
-            %% packets never need IP fragmentation (RFC 8261 §5).
-            mtu => 1200 - 37,
-            %% DTLS protects every packet: CRC32c may be skipped with
-            %% peers that accept it (RFC 9653 §5.1).
-            zero_checksum => true
-        }
-    }),
-    {D1, Acts} = webrtc_dcep:connect(now_ms(), D0),
-    St1 = dcep_actions(Acts, St#st{dcep = D1}),
-    lists:foldl(
-        fun({From, Label, Opts}, S) ->
-            {Reply, S1} = do_open_channel(Label, Opts, S),
-            gen_server:reply(From, Reply),
-            S1
-        end,
-        St1#st{pending_channels = []},
-        St1#st.pending_channels
-    ).
-
-do_open_channel(Label, Opts, #st{dcep = D} = St) ->
-    case webrtc_dcep:open_channel(Label, Opts, now_ms(), D) of
-        {ok, Id, D1, Acts} -> {{ok, Id}, dcep_actions(Acts, St#st{dcep = D1})};
-        {error, _} = E -> {E, St}
-    end.
-
-dcep_actions(Acts, St) ->
-    lists:foldl(fun dcep_action/2, St, Acts).
-
-dcep_action({send, Bin}, #st{dtls = D} = St) ->
-    case webrtc_dtls:send(Bin, D) of
-        {ok, D1, Out} -> transmit(Out, St#st{dtls = D1});
-        {error, _} -> St
-    end;
-dcep_action({event, {channel_message, _, _, _} = E}, St) ->
-    to_app(E, St),
-    St;
-dcep_action({event, E}, St) ->
-    to_pc({datachannel, E}, St),
-    St.
 
 %%====================================================================
 %% Helpers

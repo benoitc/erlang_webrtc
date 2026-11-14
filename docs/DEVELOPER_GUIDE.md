@@ -22,7 +22,9 @@ This page is for contributors. It says where each protocol lives, how the engine
 | Media send path: pacing, TWCC sequence, retransmission, RTCP reports | `src/transport/webrtc_media_out.erl` |
 | Congestion control, pacer, circuit breakers | `src/cc/` |
 | Simulcast layers on receive (rid, repaired-rid) | `src/transport/webrtc_media_rid.erl` |
-| Sockets, demux, wiring of engines | `src/transport/webrtc_transport.erl` |
+| Transport process: API, gen_server callbacks, the single timer | `src/transport/webrtc_transport.erl` |
+| Sockets, received datagrams, ICE actions | `src/transport/webrtc_transport_net.erl` |
+| DTLS lifecycle, SRTP keys, media actions, SCTP and data channels | `src/transport/webrtc_transport_secure.erl` |
 | Peer connection API and states | `src/webrtc.erl`, `src/pc/webrtc_pc.erl` |
 
 ## The engine contract
@@ -41,14 +43,14 @@ Rules for engines:
 - Bounded state: every queue, buffer and table has a limit and a documented behavior when it is reached.
 - Malformed input returns `{State, []}` or `{error, _}`, never an exception.
 
-`webrtc_transport` is the only place that turns actions into I/O. It keeps one timer at the earliest `next_timeout/1` of all engines.
+`webrtc_transport` (with `webrtc_transport_net` and `webrtc_transport_secure`, which share its state) is the only place that turns actions into I/O. It keeps one timer at the earliest `next_timeout/1` of all engines.
 
 ## How the layers talk
 
 ```
 webrtc_pc --configure(Negotiated)--> webrtc_transport
    ^                                     |
-   | {webrtc_transport, T, Event}         | ICE selected pair -> DTLS start
+   | {webrtc_transport, T, Event}         | ICE valid pair -> DTLS start
    |                                     | DTLS connected -> export SRTP keys -> webrtc_media
    |                                     | DTLS connected + data m= line -> webrtc_dcep connect
 application <-- {webrtc, Pc, Event} -----+ (RTP and channel messages go straight here)

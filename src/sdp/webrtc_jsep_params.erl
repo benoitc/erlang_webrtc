@@ -8,10 +8,16 @@
 
 -export([negotiated/3]).
 
--spec negotiated(#sdp{}, #sdp{}, #jsep{}) -> map().
+%% `undefined' when the remote description has no usable section (the
+%% validation of `webrtc_jsep' refuses such descriptions).
+-spec negotiated(#sdp{}, #sdp{}, #jsep{}) -> map() | undefined.
 negotiated(Local, Remote, J) ->
-    [Tag | _] = [M || M <- Remote#sdp.media, M#sdp_media.port =/= 0],
-    {ok, Ice} = webrtc_sdp_media:ice_credentials(Tag, Remote),
+    case [{M, I} || M <- Remote#sdp.media, M#sdp_media.port =/= 0, {ok, I} <- [webrtc_sdp_media:ice_credentials(M, Remote)]] of
+        [{Tag, Ice} | _] -> negotiated(Tag, Ice, Local, Remote, J);
+        [] -> undefined
+    end.
+
+negotiated(Tag, Ice, Local, Remote, J) ->
     Media = [
         media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), Remote)
      || #tr{mline = L, stopped = false} = T <- J#jsep.transceivers,
@@ -57,11 +63,14 @@ negotiated(Local, Remote, J) ->
         end
     }.
 
+media_params(_T, _L, undefined, _Remote) ->
+    undefined;
 media_params(_T, _L, #sdp_media{port = 0}, _Remote) ->
     undefined;
 media_params(T, L, R, _Remote) ->
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
+    LocalExts = webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
     Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R),
     Layers#{
         id => T#tr.id,
@@ -70,8 +79,12 @@ media_params(T, L, R, _Remote) ->
         direction => T#tr.current_direction,
         send_codecs => webrtc_jsep_caps:match_remote(RemoteCodecs, T#tr.codecs),
         recv_codecs => LocalCodecs,
-        send_extensions => webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, R)),
-        recv_extensions => webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
+        %% Only extensions both descriptions have (RFC 8285 §6): the
+        %% remote ids of the ones the local description lists.
+        send_extensions => webrtc_jsep_caps:extension_map(
+            [E || #{uri := U} = E <- webrtc_sdp_media:attrs(extmap, R), maps:is_key(U, LocalExts)]
+        ),
+        recv_extensions => LocalExts,
         ssrc => T#tr.ssrc,
         rtx_ssrc => T#tr.rtx_ssrc,
         cname => undefined,

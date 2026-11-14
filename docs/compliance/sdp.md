@@ -148,7 +148,10 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | JSEP-9 | 3264 §6.1 | Codec intersection with the offerer's payload types; rtx follows its apt | webrtc_jsep_caps | codec_intersection_test, rtx_follows_primary_test | Unit tested |
 | JSEP-10 | 3264 §6 | No common codec: section rejected | webrtc_jsep_build | no_common_codec_rejects_section_test | Unit tested |
 | JSEP-11 | 9429 §5.10 | Transceiver association, recvonly transceivers created for unmatched offered sections | webrtc_jsep | answer_creates_recvonly_transceiver_test | Unit tested |
-| JSEP-12 | 9429 §5.8 | Remote description validation: mid, ICE credentials, fingerprint, setup, rtcp-mux | webrtc_jsep | validation_test_ | Unit tested |
+| JSEP-12 | 9429 §5.8 | Every remote description: at least one active section, unique mids, active sections in one BUNDLE group, and per active section ICE credentials, a fingerprint, `a=setup` other than holdconn, rtcp-mux for RTP, simulcast rids declared | webrtc_jsep | validation_test_ | Unit tested |
+| JSEP-28 | 9429 §5.8.3, 3264 §6 | Answers and pranswers: the offer's m= sections in order with the same mid, media type and protocol; active sections choose `active` or `passive`, keep the established DTLS role unless the association is replaced, use a direction the offer allows and only offered payload types for the same codecs | webrtc_jsep | answer_validation_test_, answer_keeps_dtls_role_test | Unit tested |
+| JSEP-29 | 9429 §5.8.3, §5.2.2 | Re-offers keep every current m= section in place with its mid and media type; only rejected sections are reused | webrtc_jsep | reoffer_validation_test_ | Unit tested |
+| JSEP-30 | 8285 §6 | Header extensions used for sending are the ones both descriptions list; rtcp-fb limited to the local capabilities | webrtc_jsep_params, webrtc_jsep_caps | answer_extensions_filtered_test | Unit tested |
 | JSEP-13 | 8842 §5.3, §5.5 | Answer setup active; established DTLS role kept on renegotiation | webrtc_jsep, webrtc_jsep_build | basic_test, renegotiation_keeps_order_and_role_test | Unit tested |
 | JSEP-14 | 9429 §5.2.1, 8445 §9 | ICE restart with new credentials | webrtc_jsep | ice_restart_test | Unit tested |
 | JSEP-15 | 8285 §5 | Header extension ids from the offer reused in the answer | webrtc_jsep_caps | basic_test | Unit tested |

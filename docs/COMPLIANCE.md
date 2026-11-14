@@ -20,6 +20,7 @@ A protocol is complete only when its mandatory requirements reach E2E tested, an
 What works today, end to end and against independent implementations (see [INTEROP.md](INTEROP.md)):
 
 - Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, TURN relay over UDP.
+- Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved without blocking the transport; optional mDNS names for our own host candidates.
 - DTLS 1.2 with use_srtp and extended master secret, interoperable with OTP ssl, OpenSSL, Pion, aiortc and Chromium.
 - SRTP and SRTCP (AES-CM and AES-GCM profiles).
 - RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
@@ -35,7 +36,7 @@ Known gaps that matter for a full WebRTC deployment:
 | DTLS 1.3 (RFC 9147) | Peers negotiate DTLS 1.2, which every current implementation supports | [dtls](compliance/dtls.md) |
 | Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
 | Congestion control and pacing (RFC 8836, RFC 8888, transport-wide CC) | Feedback is parsed and passed to the application; no built-in bandwidth estimator or pacer | [rtp](compliance/rtp.md) |
-| mDNS host candidates (`.local`) | Rejected; browsers that hide local addresses connect through server-reflexive or relay candidates only | [ice](compliance/ice.md) |
+| mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
 | ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |
 | Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |
 | SCTP priorities, PMTUD | Round robin scheduling between streams, fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
@@ -55,6 +56,8 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | ICE SDP | RFC 8839 | | [ice](compliance/ice.md) |
 | Trickle ICE | RFC 8838 | | [ice](compliance/ice.md) |
 | Consent freshness | RFC 7675 | | [ice](compliance/ice.md) |
+| mDNS ICE candidates | draft-ietf-mmusic-mdns-ice-candidates-03 | | [ice](compliance/ice.md) |
+| Multicast DNS | RFC 6762 | | [ice](compliance/ice.md) |
 | TURN | RFC 8656 | obsoletes RFC 5766 | [turn](compliance/turn.md) |
 | Multiplexing | RFC 7983 | updated by RFC 9443 | [transport](compliance/transport.md) |
 | DTLS 1.2 | RFC 6347 | | [dtls](compliance/dtls.md) |

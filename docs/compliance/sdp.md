@@ -45,7 +45,7 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | SDP-ICE-1 | 8839 5.1 | `candidate`: foundation 1*32 ice-char, component 1 to 256, transport token, priority 1 to 2^31-1, address, port, `typ` host/srflx/prflx/relay or token | webrtc_sdp_candidate | webrtc_sdp_candidate_tests:errors_test_, roundtrip_test_ | Unit tested |
 | SDP-ICE-2 | 8839 5.1 | `raddr` and `rport` in position, other extension attributes kept in order | webrtc_sdp_candidate | webrtc_sdp_candidate_tests:fields_test, trickle_candidates_test | Unit tested |
 | SDP-ICE-3 | 8839 5.1 | IPv6 selected by the presence of a colon; IPv4 and IPv6 parsed strictly | webrtc_sdp_candidate | trickle_candidates_test, webrtc_sdp_candidate_tests:errors_test_ | Unit tested |
-| SDP-ICE-4 | 8839 5.1 | FQDN and mDNS `.local` addresses kept as names | webrtc_sdp_candidate | trickle_candidates_test, webrtc_sdp_candidate_tests:mdns_test | Unit tested. Ignoring unsupported FQDN candidates is the ICE agent's job. |
+| SDP-ICE-4 | 8839 5.1 | FQDN and mDNS `.local` addresses kept as names | webrtc_sdp_candidate | trickle_candidates_test, webrtc_sdp_candidate_tests:mdns_test | Unit tested. The transport resolves the names (ice.md SDP-3, MDNS-1). |
 | SDP-ICE-5 | 6544 4.5 | `tcptype` active/passive/so | webrtc_sdp_candidate | ice_lite_answer_test, webrtc_sdp_candidate_tests:roundtrip_test_ | Unit tested |
 | SDP-ICE-6 | 8840 | Standalone `candidate:` value for trickle signaling | webrtc_sdp_candidate | webrtc_sdp_candidate_tests:forms_test, prop_candidate_roundtrip | Unit tested |
 | SDP-ICE-7 | 8840 | `end-of-candidates` | webrtc_sdp_attr | trickle_candidates_test, pion_answer_test | Unit tested |

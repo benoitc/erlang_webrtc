@@ -1,6 +1,6 @@
-# ICE (RFC 8445, RFC 8863, RFC 8838, RFC 7675, RFC 8839)
+# ICE (RFC 8445, RFC 8863, RFC 8838, RFC 7675, RFC 8839, mDNS candidates)
 
-This page lists the ICE requirements tracked by the stack: the agent itself (RFC 8445, full and lite), the RFC 8863 failure timer, trickle ICE (RFC 8838), consent freshness (RFC 7675) and the candidate semantics of RFC 8839. Read it to know what `webrtc_ice_agent` does before relying on a behavior. Tests named `webrtc_ice_net_tests:*` run two agents over the simulated network of `test/webrtc_ice_net.erl` (fake clock, seeded loss, NATs, test STUN and TURN servers); they are eunit tests, not tests over real sockets.
+This page lists the ICE requirements tracked by the stack: the agent itself (RFC 8445, full and lite), the RFC 8863 failure timer, trickle ICE (RFC 8838), consent freshness (RFC 7675), the candidate semantics of RFC 8839 and mDNS host candidates (draft-ietf-mmusic-mdns-ice-candidates with RFC 6762). Read it to know what `webrtc_ice_agent` does before relying on a behavior. Tests named `webrtc_ice_net_tests:*` run two agents over the simulated network of `test/webrtc_ice_net.erl` (fake clock, seeded loss, NATs, test STUN and TURN servers); they are eunit tests, not tests over real sockets.
 
 ## RFC 8445
 
@@ -120,14 +120,38 @@ This page lists the ICE requirements tracked by the stack: the agent itself (RFC
 |---|---|---|---|---|---|
 | SDP-1 | 5.1 | candidate-attribute: foundation of 1 to 32 ice-chars, component 1 to 256, transport, priority 1 to 2^31-1, address, port, `typ`, `raddr`/`rport`, extension pairs kept | webrtc_ice_candidate | webrtc_ice_candidate_tests:sdp_roundtrip_test_, sdp_parse_test_, prop_webrtc_ice:prop_sdp_roundtrip | Unit tested |
 | SDP-2 | 5.1 | Related address of a server-reflexive candidate is its base, of a relayed candidate the mapped address | webrtc_ice_gather, webrtc_ice_relay | webrtc_ice_net_tests:srflx_candidate_test | Unit tested |
-| SDP-3 | 5.1 | FQDN connection addresses (including mDNS names) | webrtc_ice_candidate | webrtc_ice_candidate_tests:sdp_parse_test_ | Non-compliant / known limitation: reported as `{error, {fqdn, Name}}`, the owner must resolve the name |
+| SDP-3 | 5.1 | FQDN connection addresses: looked up AAAA then A, one address chosen (IPv6 when the transport has an IPv6 socket), the candidate ignored when nothing resolves | webrtc_mdns_client, webrtc_mdns | webrtc_mdns_client_tests:fqdn_family_choice_test, webrtc_mdns_SUITE:fqdn_candidates | E2E tested. The agent itself still takes IP literals only (`{error, {fqdn, Name}}`); the transport resolves names before handing candidates to it |
 | SDP-4 | 5.1 | TCP candidates (`tcptype`) | webrtc_ice_candidate | webrtc_ice_candidate_tests:sdp_roundtrip_test_ | Non-compliant / known limitation: parsed and encoded, never paired (UDP only) |
 | SDP-5 | 5.4 | ice-ufrag 4 to 256 and ice-pwd 22 to 256 ice-chars, checked on input | webrtc_ice_candidate, webrtc_ice_agent | webrtc_ice_candidate_tests:credentials_test_, webrtc_ice_net_tests:restart_requires_new_credentials_test | Unit tested |
 | SDP-6 | 5.5, 5.6 | `a=ice-lite`, `a=ice-options`, `a=ice-pacing` | | | Not implemented here: SDP layer; the agent takes `lite`, `remote_lite` and `ta` options |
 
+## mDNS candidates (draft-ietf-mmusic-mdns-ice-candidates-03, RFC 6762)
+
+Remote `.local` candidates are resolved by the transport with one-shot multicast DNS queries; our own host candidates can be hidden behind names with the `mdns_host_candidates` option (off by default: a server usually wants to expose its address).
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| MDNS-1 | draft 3.2.1 | A remote candidate whose address is a `<uuid>.local` name is resolved with mDNS and added with the resolved address, its other fields unchanged; a name that does not resolve drops that candidate only | webrtc_mdns_client, webrtc_transport | webrtc_mdns_client_tests:mdns_resolved_and_marked_test, webrtc_mdns_SUITE:remote_mdns_candidates, webrtc_pc_interop_SUITE:chromium_mdns | Interoperability tested (Chromium) |
+| MDNS-2 | draft 3.2.2 | Names that are not a version 4 UUID followed by `.local` are not resolved; a name with more than one address is ignored | webrtc_mdns_client | webrtc_mdns_client_tests:non_uuid_local_name_ignored_test, mdns_several_addresses_ignored_test | Unit tested |
+| MDNS-3 | draft 3.3.2 | Relayed local candidates are never paired with remote candidates resolved from an mDNS name | webrtc_ice_candidate | webrtc_ice_candidate_tests:can_pair_test_ | Unit tested |
+| MDNS-4 | RFC 8838 14 | End-of-candidates received while names resolve is applied once they are done, so late candidates are kept | webrtc_mdns_client | webrtc_mdns_client_tests:unresolved_name_and_deferred_end_of_candidates_test, webrtc_mdns_SUITE:remote_mdns_candidates | E2E tested |
+| MDNS-5 | | Bounded: at most 32 candidates waiting for a name (`{error, too_many_pending}` beyond), 32 queries, 64 cached names, 8 DNS lookups; resolution never blocks the transport process | webrtc_mdns_client, webrtc_mdns, webrtc_mdns_resolver | webrtc_mdns_SUITE:pending_candidates_bounded, webrtc_mdns_resolver_tests:max_queries_test, cache_bounded_test | E2E tested |
+| MDNS-6 | RFC 6762 5.1, 5.4 | One-shot queries from an ephemeral port, one question per message (A, then AAAA), QU bit on the first query, QM on the retransmissions at 250 ms and 1.25 s, failure at 3.25 s | webrtc_mdns_resolver | webrtc_mdns_resolver_tests:query_test, retransmit_then_timeout_test | Unit tested |
+| MDNS-7 | RFC 6762 6.7, 18.1 | Legacy unicast answers must echo the query ID and repeat the question; multicast answers (ID ignored) are received on a group socket shared through SO_REUSEPORT | webrtc_mdns_resolver, webrtc_mdns | webrtc_mdns_resolver_tests:legacy_answer_needs_id_and_question_test, multicast_answer_test, webrtc_mdns_tests | Unit tested |
+| MDNS-8 | RFC 6762 6, 11 | Only class IN A/AAAA records naming a pending question are used, from the answer and additional sections; unsolicited answers are ignored and never cached; packets from outside the local subnets are dropped | webrtc_mdns_resolver, webrtc_mdns | webrtc_mdns_resolver_tests:unsolicited_ignored_test, additional_section_test | Unit tested |
+| MDNS-9 | RFC 6762 10, 10.1 | Cache honors record TTLs (capped at one hour); goodbye records (TTL 0) are not used | webrtc_mdns_resolver | webrtc_mdns_resolver_tests:legacy_unicast_answer_test, ttl_capped_test, invalid_responses_ignored_test | Unit tested |
+| MDNS-10 | RFC 1035 4.1.4, RFC 6762 18 | Codec: name compression with backward pointers only (no loops), at most 64 pointers and 255 octets per name, every count and length checked, never raises | webrtc_mdns_msg | webrtc_mdns_msg_tests, prop_webrtc_parsers:prop_decoders_never_raise, prop_mdns_roundtrip | Unit tested |
+| MDNS-11 | draft 3.1.1 | With `mdns_host_candidates`, each host address gets a random version 4 UUID `.local` name (same address, same name), announced without probing | webrtc_mdns_responder, webrtc_mdns_client | webrtc_mdns_client_tests:hidden_local_candidates_test, webrtc_mdns_tests:responder_answers_queries | E2E tested (webrtc_mdns_SUITE:hidden_host_candidates) |
+| MDNS-12 | draft 3.1.2.2 | The related address of our other candidates becomes `0.0.0.0` or `::`, port 9 | webrtc_mdns_client | webrtc_mdns_client_tests:hidden_local_candidates_test | Unit tested |
+| MDNS-13 | RFC 6762 5.4, 6, 6.7, 7.1, 10.1 | Responder: legacy queries answered by unicast with ID and question and TTL 10, QU by unicast, QM by multicast at most once per second per name, known answers suppressed, goodbye on stop | webrtc_mdns_responder | webrtc_mdns_tests:responder_* | Unit tested |
+| MDNS-14 | draft 3.1.2.2 | A STUN check to learn whether a hidden address is public | | | Not implemented: with the option on, every host candidate is hidden |
+| MDNS-15 | RFC 6762 6.1 | Negative (NSEC) answers for the missing address family | | | Not implemented: such questions are not answered |
+| MDNS-16 | RFC 6762 5, 6 | IPv6 multicast transport (ff02::fb) | | | Not implemented: queries and answers use IPv4 multicast only (AAAA records are still asked and served); gen_udp cannot pick the outgoing interface of a link-local IPv6 multicast send |
+
 ## Notes
 
-- Specification status checked on 2026-11-14 at rfc-editor.org: RFC 8445 is updated only by RFC 8863; RFC 8838 is updated by RFC 8863; RFC 8489, RFC 8839, RFC 8863 and RFC 7675 have no update or obsoleting document.
+- Specification status checked on 2026-11-14 at rfc-editor.org: RFC 8445 is updated only by RFC 8863; RFC 8838 is updated by RFC 8863; RFC 8489, RFC 8839, RFC 8863 and RFC 7675 have no update or obsoleting document. draft-ietf-mmusic-mdns-ice-candidates-03 (December 2021) is the latest revision and is expired; browsers implement it as written.
+- Chromium's responder answers only queries with a single QM question, by multicast. The first (QU) query therefore gets no answer from it; the first retransmission, 250 ms later, does.
 
 - Integration with TURN: the agent owns one `webrtc_turn_client` per (host socket, TURN server). See docs/compliance/turn.md.
 - Selection of the pair to keep after a network change is not automatic: the owner calls `restart/2,3` and signals the new credentials and candidates.

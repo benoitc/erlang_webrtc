@@ -179,10 +179,14 @@ is_link_local({A, _, _, _, _, _, _, _}) -> A band 16#FFC0 =:= 16#FE80;
 is_link_local(_) -> false.
 
 %% @doc RFC 8445 §6.1.2.2: same component, same address family, same
-%% transport, and IPv6 link-local only with link-local.
+%% transport, and IPv6 link-local only with link-local. A relayed local
+%% candidate is never paired with a remote candidate resolved from an
+%% mDNS name, which would reveal the peer's host address to the TURN
+%% server (draft-ietf-mmusic-mdns-ice-candidates-03 §3.3.2).
 -spec can_pair(#ice_cand{}, #ice_cand{}) -> boolean().
 can_pair(#ice_cand{} = L, #ice_cand{} = R) ->
-    L#ice_cand.component =:= R#ice_cand.component andalso
+    not (L#ice_cand.type =:= relay andalso lists:keymember(?ICE_EXT_MDNS, 1, R#ice_cand.extensions)) andalso
+        L#ice_cand.component =:= R#ice_cand.component andalso
         L#ice_cand.transport =:= R#ice_cand.transport andalso
         family(L#ice_cand.address) =:= family(R#ice_cand.address) andalso
         (family(L#ice_cand.address) =:= ipv4 orelse

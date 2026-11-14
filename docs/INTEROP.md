@@ -58,11 +58,14 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Not run (1) |
 | Peer sends three simulcast layers (rid q, h, f), Erlang receives 50+ packets on each and a keyframe request reaches one layer only | Skipped (3) | Skipped (3) | Pass | Not run (1) |
 | Erlang sends three simulcast layers, the peer receives each one by rid | Pass | Skipped (4) | Skipped (4) | Not run (1) |
+| Peer offers with mDNS host candidates only, Erlang resolves them, data channel both ways | | | Pass (5) | |
+| Erlang offers, peer answers with mDNS host candidates only, Erlang's checks to the resolved addresses answered | | | Pass (5) | |
 
 1. Firefox cannot launch inside the sandbox of the development machine; the suite reports it as skipped. It runs in the CI interop job.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
 3. The adapter has no simulcast encoder.
 4. Browsers do not receive simulcast (RFC 9429 §3.7); aiortc answers without it.
+5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings
 
@@ -74,3 +77,5 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Chromium | Discards remote candidates of the previous ICE generation on restart. | Our transport now signals its candidates again after `restart_ice` (RFC 8445 §9); this was a bug on our side, hidden by Pion keeping old candidates. |
 | Chromium | Its bandwidth estimate stays at the start value when transport-wide congestion control is negotiated but no feedback comes, so the top simulcast layer is never encoded. | We send no transport-cc feedback or REMB yet; the simulcast case negotiates neither, and Chromium then follows the loss in our receiver reports. With a 640x360 capture Chromium also limits itself to two layers; the case captures 1280x720. |
 | Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |
+| Chromium | Its mDNS responder ignores queries with more than one question and QU questions, and answers QM questions by multicast only. | The resolver sends A and AAAA in separate messages, retransmits as QM after 250 ms and listens on the group (SO_REUSEPORT) as well as on its query port. |
+| Chromium | When Chromium is controlling, ICE may complete through the peer-reflexive candidate its checks create before the names resolve. | Expected (draft section 6.3); the resolved candidates are still added. |

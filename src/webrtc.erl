@@ -101,6 +101,12 @@ new_peer_connection() ->
 %%     negotiate, as maps keyed by `audio' and `video' (default
 %%     `webrtc_jsep_caps:default_codecs/1' and
 %%     `webrtc_jsep_caps:default_extensions/1').</li>
+%% <li>`mdns_host_candidates': signal host candidates with a random
+%%     `<uuid>.local' name answered by multicast DNS instead of the
+%%     address (draft-ietf-mmusic-mdns-ice-candidates), default
+%%     `false'. Remote `.local' and DNS names are always resolved.</li>
+%% <li>`mdns': resolver options, see `webrtc_mdns' (`max_pending',
+%%     `schedule', `group', `listen', ...).</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
 new_peer_connection(Opts) ->

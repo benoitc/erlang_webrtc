@@ -1,6 +1,11 @@
 // Browser peer adapter for the erlang_webrtc interop suite.
 //
-// Usage: node peer.js chromium|firefox|webkit
+// Usage: node peer.js chromium|firefox|webkit [--mdns]
+//
+// --mdns (Chromium only) keeps Chromium's default of hiding host
+// addresses behind <uuid>.local mDNS names
+// (draft-ietf-mmusic-mdns-ice-candidates) and does not grant media
+// permissions, which would make Chromium expose the addresses.
 //
 // Speaks the line-delimited JSON protocol of ../PROTOCOL.md on stdio and
 // drives a real RTCPeerConnection inside a headless browser page.
@@ -13,6 +18,7 @@ const readline = require('readline');
 const pw = require('playwright');
 
 const kind = process.argv[2] || 'chromium';
+const mdns = process.argv.includes('--mdns');
 
 function emit(ev) {
   process.stdout.write(JSON.stringify(ev) + '\n');
@@ -24,7 +30,7 @@ const launchOpts = {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--allow-loopback-in-peer-connection',
-      '--disable-features=WebRtcHideLocalIpsWithMdns',
+      ...(mdns ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns']),
     ],
   },
   firefox: {
@@ -130,7 +136,7 @@ const pageScript = () => {
 async function main() {
   const browser = await pw[kind].launch({ headless: true, ...launchOpts[kind] });
   const context = await browser.newContext();
-  if (kind === 'chromium') await context.grantPermissions(['camera', 'microphone']);
+  if (kind === 'chromium' && !mdns) await context.grantPermissions(['camera', 'microphone']);
   const page = await context.newPage();
   page.on('console', (m) => process.stderr.write(`[page] ${m.text()}\n`));
   await page.exposeFunction('emit', (ev) => emit(ev));
@@ -139,7 +145,7 @@ async function main() {
     route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>peer</title>' }));
   await page.goto('http://localhost/');
   await page.evaluate(pageScript);
-  emit({ event: 'ready', implementation: kind, version: browser.version() });
+  emit({ event: 'ready', implementation: mdns ? kind + '-mdns' : kind, version: browser.version() });
 
   const handlers = {
     init: (c) => page.evaluate((c) => window.init(c), c),

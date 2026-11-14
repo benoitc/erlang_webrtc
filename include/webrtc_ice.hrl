@@ -2,6 +2,12 @@
 -ifndef(WEBRTC_ICE_HRL).
 -define(WEBRTC_ICE_HRL, true).
 
+%% Extension marking a remote candidate whose address was resolved from
+%% an mDNS name; it is never paired with a relayed local candidate
+%% (draft-ietf-mmusic-mdns-ice-candidates-03 §3.3.2). Set by the
+%% transport, stripped from what peers send.
+-define(ICE_EXT_MDNS, <<"x-mdns-name">>).
+
 %% Type preferences (RFC 8445 §5.1.2.2).
 -define(ICE_TYPE_PREF_HOST, 126).
 -define(ICE_TYPE_PREF_PRFLX, 110).

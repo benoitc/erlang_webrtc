@@ -95,6 +95,7 @@ can_pair_test_() ->
     V4 = cand(host, {10, 0, 0, 1}, 1, undefined, 1),
     V6 = cand(host, {16#2001, 16#db8, 0, 0, 0, 0, 0, 1}, 1, undefined, 1),
     LL = cand(host, {16#fe80, 0, 0, 0, 0, 0, 0, 1}, 1, undefined, 1),
+    Mdns = V4#ice_cand{extensions = [{?ICE_EXT_MDNS, <<"x.local">>}]},
     [
         ?_assert(?C:can_pair(V4, V4)),
         ?_assertNot(?C:can_pair(V4, V6)),
@@ -104,7 +105,12 @@ can_pair_test_() ->
         ?_assert(?C:can_pair(LL, LL)),
         ?_assertNot(?C:can_pair(V4, V4#ice_cand{component = 2})),
         ?_assertNot(?C:can_pair(V4, V4#ice_cand{transport = tcp})),
-        ?_assert(?C:is_link_local({169, 254, 1, 1}))
+        ?_assert(?C:is_link_local({169, 254, 1, 1})),
+        %% draft-ietf-mmusic-mdns-ice-candidates-03 §3.3.2: no relayed
+        %% local candidate with a remote one resolved from an mDNS name.
+        ?_assertNot(?C:can_pair(V4#ice_cand{type = relay}, Mdns)),
+        ?_assert(?C:can_pair(V4, Mdns)),
+        ?_assert(?C:can_pair(V4#ice_cand{type = relay}, V4))
     ].
 
 sdp_roundtrip_test_() ->

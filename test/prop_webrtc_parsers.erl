@@ -20,13 +20,27 @@
     {dcep, fun webrtc_dcep:decode/1},
     {sdp, fun webrtc_sdp:parse/1},
     {candidate, fun webrtc_sdp_candidate:parse/1},
-    {demux, fun webrtc_demux:classify/1}
+    {demux, fun webrtc_demux:classify/1},
+    {mdns, fun webrtc_mdns_msg:decode/1},
+    {mdns_resolver, fun(B) -> webrtc_mdns_resolver:handle_packet(multicast, B, 0, mdns_resolver()) end},
+    {mdns_responder, fun(B) -> webrtc_mdns_responder:handle_query({{127, 0, 0, 1}, 5353}, 5353, B, 0, mdns_responder()) end}
 ]).
+
+mdns_resolver() ->
+    element(1, webrtc_mdns_resolver:resolve(<<"a.local">>, 0, webrtc_mdns_resolver:new(#{}))).
+
+mdns_responder() ->
+    {ok, _, R} = webrtc_mdns_responder:register({127, 0, 0, 1}, webrtc_mdns_responder:new(#{})),
+    R.
 
 prop_decoders_never_raise() ->
     ?FORALL(
         {Bin, Prefix},
-        {binary(), oneof([<<>>, <<0, 1>>, <<128>>, <<22, 254, 253>>, <<"v=0\r\n">>, <<"candidate:">>])},
+        {binary(), oneof([
+            <<>>, <<0, 1>>, <<128>>, <<22, 254, 253>>, <<"v=0\r\n">>, <<"candidate:">>,
+            %% DNS headers: a response with one answer, a query with one question
+            <<0, 0, 16#84, 0, 0, 0, 0, 1, 0, 0, 0, 0>>, <<0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0>>
+        ])},
         begin
             Input = <<Prefix/binary, Bin/binary>>,
             lists:all(
@@ -42,3 +56,33 @@ prop_decoders_never_raise() ->
             )
         end
     ).
+
+%% Encoded mDNS responses decode to the same records, names lower-cased.
+prop_mdns_roundtrip() ->
+    ?FORALL(
+        {Id, Labels, IPs, TTL},
+        {range(0, 65535), non_empty(list(dns_label())), non_empty(list(ip())), range(0, 16#7FFFFFFF)},
+        ?IMPLIES(
+            lists:sum([byte_size(L) + 1 || L <- Labels]) + 1 =< 255,
+            begin
+                Name = iolist_to_binary(lists:join($., Labels)),
+                Bin = webrtc_mdns_msg:encode_response(Id, [{Name, a}], [{Name, IP, TTL, true} || IP <- IPs], []),
+                {ok, #{id := Id, questions := [#{name := N}], answers := As}} = webrtc_mdns_msg:decode(Bin),
+                {ok, Lower} = webrtc_mdns_msg:normalize_name(Name),
+                N =:= Lower andalso [D || #{data := D} <- As] =:= IPs andalso
+                    lists:all(fun(#{ttl := T, name := AN}) -> T =:= TTL andalso AN =:= Lower end, As)
+            end
+        )
+    ).
+
+dns_label() ->
+    ?LET(
+        Cs,
+        ?SUCHTHAT(L, list(oneof([range($a, $z), range($A, $Z), range($0, $9), $-])), L =/= [] andalso length(L) =< 63),
+        list_to_binary(Cs)
+    ).
+
+ip() ->
+    oneof([{byte(), byte(), byte(), byte()}, {word(), word(), word(), word(), word(), word(), word(), word()}]).
+
+word() -> range(0, 65535).

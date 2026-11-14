@@ -41,6 +41,8 @@
     set_app/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+%% Internal, for webrtc_transport_net.
+-export([to_pc/2, now_ms/0, secure_datagram/4, secure_relayed/3, start_dtls_if_ready/1, flush_dtls/1]).
 
 -include("webrtc_transport.hrl").
 
@@ -86,8 +88,8 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
     IceOpts = maps:with(
         [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, consent, nomination], Opts
     ),
-    Addrs = maps:get(addresses, Opts, local_addresses(Opts)),
-    Sockets = [S || A <- Addrs, {ok, S} <- [open_socket(A)]],
+    Addrs = maps:get(addresses, Opts, webrtc_transport_net:local_addresses(Opts)),
+    Sockets = [S || A <- Addrs, {ok, S} <- [webrtc_transport_net:open_socket(A)]],
     case Sockets of
         [] ->
             {stop, no_usable_address};
@@ -106,50 +108,10 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 filter = maps:get(outbound_filter, Opts, undefined),
                 mdns = webrtc_mdns_client:new(
                     (maps:get(mdns, Opts, #{}))#{hide_host => maps:get(mdns_host_candidates, Opts, false)},
-                    lists:usort([family(IP) || {_, {IP, _}} <- Sockets])
+                    lists:usort([webrtc_transport_net:family(IP) || {_, {IP, _}} <- Sockets])
                 )
             }}
     end.
-
-open_socket({IP, Port}) ->
-    Family =
-        case tuple_size(IP) of
-            4 -> inet;
-            8 -> inet6
-        end,
-    case gen_udp:open(Port, [binary, Family, {ip, IP}, {active, ?ACTIVE_N}, {recbuf, 1 bsl 20}, {sndbuf, 1 bsl 20}]) of
-        {ok, S} ->
-            {ok, {_, P}} = inet:sockname(S),
-            {ok, {S, {IP, P}}};
-        {error, _} = E ->
-            E
-    end.
-
-%% Host candidates: every up, non-loopback interface address, unless
-%% `loopback' is set (tests, local interop), and IPv6 link-local
-%% addresses are skipped (RFC 8445 §5.1.1.1).
-local_addresses(Opts) ->
-    case maps:get(loopback, Opts, false) of
-        true ->
-            [{{127, 0, 0, 1}, 0}];
-        false ->
-            {ok, Ifs} = inet:getifaddrs(),
-            lists:usort([
-                {A, 0}
-             || {_Name, Props} <- Ifs,
-                lists:member(up, proplists:get_value(flags, Props, [])),
-                not lists:member(loopback, proplists:get_value(flags, Props, [])),
-                {addr, A} <- Props,
-                usable(A)
-            ])
-    end.
-
-family(IP) when tuple_size(IP) =:= 4 -> inet;
-family(_) -> inet6.
-
-usable({169, 254, _, _}) -> false;
-usable({A, _, _, _, _, _, _, _}) when A band 16#FFC0 =:= 16#FE80 -> false;
-usable(_) -> true.
 
 handle_call(gather, _From, St) ->
     run(St, fun(Now, I) -> webrtc_ice_agent:gather(St#st.sockets, Now, I) end, ok);
@@ -172,10 +134,10 @@ handle_call(end_of_candidates, _From, St) ->
     end;
 handle_call({restart_ice, U, P}, _From, St) ->
     {I1, Acts} = webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, now_ms(), St#st.ice),
-    St0 = ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns)}),
+    St0 = webrtc_transport_net:ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns)}),
     %% The candidates are kept across the restart but belong to the new
     %% ICE generation: signal them again (RFC 8445 §9, RFC 8838 §4.4).
-    St1 = lists:foldl(fun local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),
+    St1 = lists:foldl(fun webrtc_transport_net:local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),
     to_pc({gathering_state, complete}, St1),
     {reply, ok, arm(St1)};
 handle_call({configure, Neg}, _From, St) ->
@@ -197,7 +159,7 @@ handle_call({send_rtp_packet, Mid, Pkt}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send_packet(Mid, Pkt, Now, M) end, St);
 handle_call({request_keyframe, Mid}, _From, St) ->
     {Acts, M} = webrtc_media:request_keyframe(Mid, now_ms(), St#st.media),
-    St1 = transmit(Acts, St#st{media = M}),
+    St1 = webrtc_transport_net:transmit(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
 handle_call({resume_stream, Mid}, _From, St) ->
     case webrtc_media:resume(Mid, now_ms(), St#st.media) of
@@ -243,12 +205,12 @@ handle_cast(_Msg, St) ->
     {noreply, St}.
 
 handle_info({udp, Sock, IP, Port, Bin}, St) ->
-    St1 = datagram(Sock, {IP, Port}, Bin, now_ms(), St),
+    St1 = webrtc_transport_net:datagram(Sock, {IP, Port}, Bin, now_ms(), St),
     {noreply, arm(St1)};
 handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
     {stop, normal, St};
 handle_info({delayed_send, Sock, Dest, Bin}, St) ->
-    udp_send(Sock, Dest, Bin),
+    webrtc_transport_net:udp_send(Sock, Dest, Bin),
     {noreply, St};
 handle_info({udp_passive, Sock}, St) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
@@ -285,7 +247,7 @@ terminate(_Reason, St0) ->
             D -> transmit_dtls(element(2, webrtc_dtls:close(D)), St0)
         end,
     {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
-    _ = ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    _ = webrtc_transport_net:ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
     _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
     ok.
 
@@ -299,7 +261,7 @@ run(St, F, Reply) ->
         {error, _} = E ->
             {reply, E, St};
         {I1, Acts} ->
-            St1 = ice_actions(Acts, St#st{ice = I1}),
+            St1 = webrtc_transport_net:ice_actions(Acts, St#st{ice = I1}),
             {reply, Reply, arm(St1)}
     end.
 
@@ -397,18 +359,6 @@ start_dtls_if_ready(#st{dtls = D} = St) ->
             )
     end.
 
-datagram(Sock, Src, Bin, Now, St) ->
-    case webrtc_demux:classify(Bin) of
-        C when C =:= stun; C =:= turn_channel ->
-            {I1, Acts} = webrtc_ice_agent:handle_packet(Sock, Src, Bin, Now, St#st.ice),
-            ice_actions(Acts, St#st{ice = I1});
-        Class ->
-            case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
-                true -> secure_datagram(Class, Bin, Now, St);
-                false -> St
-            end
-    end.
-
 secure_datagram(dtls, Bin, Now, St) ->
     dtls_in(Bin, Now, St);
 secure_datagram(rtp, Bin, Now, St) ->
@@ -427,7 +377,7 @@ dtls_in(Bin, Now, #st{dtls = D} = St) ->
 
 tick(Now, St0) ->
     {I1, A1} = webrtc_ice_agent:handle_timeout(Now, St0#st.ice),
-    St1 = ice_actions(A1, St0#st{ice = I1}),
+    St1 = webrtc_transport_net:ice_actions(A1, St0#st{ice = I1}),
     St2 =
         case St1#st.dtls of
             undefined -> St1;
@@ -448,64 +398,6 @@ tick(Now, St0) ->
 %% Actions
 %%====================================================================
 
-ice_actions(Acts, St) ->
-    lists:foldl(fun ice_action/2, St, Acts).
-
-ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
-    _ = gen_udp:send(Sock, IP, Port, Bin),
-    St;
-ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
-    %% Test hook (impairment): it runs in this process and must not
-    %% block; a crashing filter lets the datagram through.
-    {Out, FS1} =
-        try F(Dest, Bin, FS) of
-            {O, S1} when is_list(O) -> {O, S1}
-        catch
-            _:_ -> {[{0, Bin}], FS}
-        end,
-    lists:foreach(
-        fun
-            ({0, B}) -> udp_send(Sock, Dest, B);
-            ({Delay, B}) -> erlang:send_after(Delay, self(), {delayed_send, Sock, Dest, B})
-        end,
-        Out
-    ),
-    St#st{filter = {F, FS1}};
-ice_action({event, {data, Via, Peer, Bin}}, St) ->
-    %% Relayed non-STUN data: demultiplex as if received from Peer, under
-    %% the same rule as direct traffic. TURN permissions are per IP
-    %% (RFC 8656 §9), so any port of a permitted host gets through the
-    %% relay; only a validated candidate pair may reach DTLS and SRTP
-    %% (RFC 8445 §12.2, RFC 8826 §4.2).
-    case webrtc_ice_agent:is_valid_remote(Via, Peer, St#st.ice) of
-        true -> secure_relayed(Peer, Bin, St);
-        false -> St
-    end;
-ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
-    to_pc(E, St),
-    start_dtls_if_ready(flush_dtls(St#st{ice_usable = true}));
-ice_action({event, {connection_state, _} = E}, St) ->
-    to_pc(E, St),
-    St#st{ice_usable = false};
-ice_action({event, {selected_pair, L, R}}, St) ->
-    to_pc({selected_pair, L, R}, St),
-    start_dtls_if_ready(flush_dtls(St));
-ice_action({event, {local_candidate, C}}, St) ->
-    local_candidate(C, St);
-ice_action({event, {consent_lost, _, _} = E}, St) ->
-    to_pc(E, St),
-    St;
-ice_action({event, E}, St) ->
-    to_pc(E, St),
-    St.
-
-%% Signaled as a candidate-attribute value, with an mDNS name in place
-%% of the host address when `mdns_host_candidates' is set.
-local_candidate(C, St) ->
-    {Value, M} = webrtc_mdns_client:local_candidate(C, St#st.mdns),
-    to_pc({local_candidate, Value}, St),
-    St#st{mdns = M}.
-
 secure_relayed(_Peer, Bin, St) ->
     case webrtc_demux:classify(Bin) of
         dtls -> dtls_in(Bin, now_ms(), St);
@@ -514,20 +406,6 @@ secure_relayed(_Peer, Bin, St) ->
             media_actions(Acts, St#st{media = M1});
         _ -> St
     end.
-
-udp_send(Sock, {IP, Port}, Bin) ->
-    _ = gen_udp:send(Sock, IP, Port, Bin),
-    ok.
-
-%% Send a datagram on the selected pair.
-send_out(Bin, St) ->
-    case webrtc_ice_agent:send(Bin, now_ms(), St#st.ice) of
-        {ok, I1, Acts} -> ice_actions(Acts, St#st{ice = I1});
-        {error, _} -> St
-    end.
-
-transmit(Acts, St) ->
-    lists:foldl(fun({send, B}, S) -> send_out(B, S) end, St, [A || {send, _} = A <- Acts]).
 
 transmit_dtls(Acts, St) ->
     lists:foldl(fun({send, B}, S) -> dtls_send(B, S) end, St, [A || {send, _} = A <- Acts]).
@@ -538,7 +416,7 @@ transmit_dtls(Acts, St) ->
 dtls_send(Bin, St) ->
     case webrtc_ice_agent:send(Bin, now_ms(), St#st.ice) of
         {ok, I1, Acts} ->
-            ice_actions(Acts, St#st{ice = I1});
+            webrtc_transport_net:ice_actions(Acts, St#st{ice = I1});
         {error, no_valid_pair} when length(St#st.dtls_out) < ?MAX_EARLY_DTLS ->
             St#st{dtls_out = St#st.dtls_out ++ [Bin]};
         {error, _} ->
@@ -581,7 +459,7 @@ dtls_action({event, {failed, R}}, St) ->
 finish(Reason, St0) ->
     St1 = end_association(Reason, St0),
     {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
-    St2 = ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    St2 = webrtc_transport_net:ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
     St2#st{finished = true}.
 
 setup_srtp(#{srtp_profile := undefined}, St) ->
@@ -594,14 +472,14 @@ setup_srtp(#{srtp_profile := Id}, #st{dtls = D} = St) ->
 
 media_send(F, St) ->
     case F(now_ms(), St#st.media) of
-        {ok, Acts, M1} -> {reply, ok, arm(transmit(Acts, St#st{media = M1}))};
+        {ok, Acts, M1} -> {reply, ok, arm(webrtc_transport_net:transmit(Acts, St#st{media = M1}))};
         {error, _} = E -> {reply, E, St}
     end.
 
 media_actions(Acts, St) ->
     lists:foldl(
         fun
-            ({send, B}, S) -> send_out(B, S);
+            ({send, B}, S) -> webrtc_transport_net:send_out(B, S);
             ({event, E}, S) -> to_app(E, S), S
         end,
         St,
@@ -653,7 +531,7 @@ dcep_actions(Acts, St) ->
 
 dcep_action({send, Bin}, #st{dtls = D} = St) ->
     case webrtc_dtls:send(Bin, D) of
-        {ok, D1, Out} -> transmit(Out, St#st{dtls = D1});
+        {ok, D1, Out} -> webrtc_transport_net:transmit(Out, St#st{dtls = D1});
         {error, _} -> St
     end;
 dcep_action({event, {channel_message, _, _, _} = E}, St) ->

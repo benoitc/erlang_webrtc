@@ -56,9 +56,12 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | ICE restart started by Erlang, DTLS and SCTP survive | Pass | Pass | Pass | Not run (1) |
 | ICE restart started by the peer | Pass | Pass | Pass | Not run (1) |
 | Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Not run (1) |
+| Peer offers with mDNS host candidates only, Erlang resolves them, data channel both ways | | | Pass (3) | |
+| Erlang offers, peer answers with mDNS host candidates only, Erlang's checks to the resolved addresses answered | | | Pass (3) | |
 
 1. Firefox cannot launch inside the sandbox of the development machine; the suite reports it as skipped. It runs in the CI interop job.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
+3. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings
 
@@ -69,3 +72,5 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | aiortc 1.16.0 | Answering a re-offer raises `ValueError` in `and_direction` when a local transceiver created before the first negotiation is still unassociated (`_offerDirection` is `None`). | aiortc bug; our re-offer is valid (Pion and Chromium accept it). The renegotiation case gives aiortc no local track. |
 | Chromium | Discards remote candidates of the previous ICE generation on restart. | Our transport now signals its candidates again after `restart_ice` (RFC 8445 §9); this was a bug on our side, hidden by Pion keeping old candidates. |
 | Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |
+| Chromium | Its mDNS responder ignores queries with more than one question and QU questions, and answers QM questions by multicast only. | The resolver sends A and AAAA in separate messages, retransmits as QM after 250 ms and listens on the group (SO_REUSEPORT) as well as on its query port. |
+| Chromium | When Chromium is controlling, ICE may complete through the peer-reflexive candidate its checks create before the names resolve. | Expected (draft section 6.3); the resolved candidates are still added. |

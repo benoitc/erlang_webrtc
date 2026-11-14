@@ -102,7 +102,7 @@ Outbound follows the reverse path. Only the selected candidate pair is used for 
 | `src/rtp`          | RTP, RTCP, header extensions, payload helpers|
 | `src/sctp`         | SCTP chunks, association, DCEP               |
 | `src/sdp`          | SDP codec and JSEP                           |
-| `src/transport`    | demux, UDP transport process                 |
+| `src/transport`    | demux, UDP transport process, mDNS and DNS resolution of candidate names |
 | `src/pc`           | peer connection process and supervision      |
 | `test/`            | eunit and PropEr conformance tests           |
 | `test/e2e`         | Common Test suites over real UDP sockets     |

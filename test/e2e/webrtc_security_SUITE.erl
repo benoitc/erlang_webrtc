@@ -185,7 +185,8 @@ resources_released_on_close(_Config) ->
     Pairs = [connected_pair(#{}) || _ <- lists:seq(1, 5)],
     [begin webrtc:close(A), webrtc:close(B) end || {A, B, _} <- Pairs],
     timer:sleep(500),
-    ?assertEqual(Ports0, length(erlang:ports())),
+    %% Ports of earlier cases may still be closing: a leak only adds.
+    ?assert(length(erlang:ports()) =< Ports0),
     ?assert(length(processes()) =< Procs0 + 2),
     ?assertEqual([], supervisor:which_children(webrtc_pc_sup)).
 

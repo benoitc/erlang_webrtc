@@ -60,7 +60,7 @@
     ext = <<>> :: binary()
 }).
 
-%% Items: cname, name, email, phone, loc, tool, note, mid (RFC 8843),
+%% Items: cname, name, email, phone, loc, tool, note, mid (RFC 9143 §15.1),
 %% rid and repaired_rid (RFC 8852) as atoms; priv as {priv, Prefix};
 %% other item types as their integer code.
 -record(rtcp_sdes, {

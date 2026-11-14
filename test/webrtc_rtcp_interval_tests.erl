@@ -87,3 +87,26 @@ avpf_helpers_test_() ->
             ?assert(U >= 0.0 andalso U < 1.0)
         end)
     ].
+
+%% RFC 3550 §6.3.6: send when tp + T =< tc, otherwise wait until tp + T.
+reconsider_test_() ->
+    P = params(#{}),
+    T = 5.0 / 1.21828,
+    [
+        ?_assertEqual(send, ?I:reconsider(0, T, P, 0.5)),
+        ?_assertEqual(send, ?I:reconsider(0, 10, P, 0.5)),
+        ?_assertEqual({wait, T}, ?I:reconsider(0, 1, P, 0.5)),
+        %% more members since the timer was armed: later
+        ?_assertEqual(
+            {wait, 330.0 / 1.21828},
+            ?I:reconsider(0, T, params(#{members => 1000, senders => 10, we_sent => false}), 0.5)
+        ),
+        ?_assertEqual({wait, infinity}, ?I:reconsider(0, 100, params(#{rtcp_bw => 0}), 0.5))
+    ].
+
+%% RFC 3550 §6.3.4: tn = tc + (m/pm)(tn - tc), tp = tc - (m/pm)(tc - tp).
+reverse_reconsider_test_() ->
+    [
+        ?_assertEqual({15.0, 5.0}, ?I:reverse_reconsider(10, 20, 0, 50, 100)),
+        ?_assertEqual({20.0, 0.0}, ?I:reverse_reconsider(10, 20, 0, 100, 100))
+    ].

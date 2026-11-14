@@ -1,12 +1,13 @@
 %% @doc RTP retransmission payload format (RFC 4588 §4).
 %%
 %% A retransmission packet carries the original sequence number (OSN)
-%% in the first two payload octets, followed by the original payload. It
-%% is sent on its own SSRC (session multiplexing, the WebRTC case) with
-%% the RTX payload type negotiated through `a=fmtp:<rtx> apt=<pt>' and
-%% the RTX stream's own sequence numbers. The timestamp, marker bit,
-%% CSRC list and header extensions are those of the original packet
-%% (RFC 4588 §4). Padding of the original packet is not copied.
+%% in the first two payload octets, followed by the original payload.
+%% WebRTC uses SSRC multiplexing (RFC 8834 §6.1): the retransmission
+%% stream has its own SSRC in the same RTP session, the RTX payload type
+%% negotiated through `a=fmtp:<rtx> apt=<pt>' and its own sequence
+%% numbers, which the caller supplies. The timestamp (RFC 4588 §4 MUST),
+%% marker bit, CSRC list and header extensions are those of the original
+%% packet. Padding of the original packet is not copied.
 -module(webrtc_rtx).
 
 -include("webrtc_rtp.hrl").

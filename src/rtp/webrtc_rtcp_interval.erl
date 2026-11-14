@@ -2,6 +2,11 @@
 %% A.7) with the RTP/AVPF rules of RFC 4585 §3.4 and §3.5 and the reduced
 %% minimum interval required by RFC 8834 §5.1.
 %%
+%% `reconsider/4' and `reverse_reconsider/5' give the timer
+%% reconsideration (§6.3.6) and reverse reconsideration (§6.3.4) steps
+%% that the RTCP scheduler of the transport runs; this module keeps no
+%% state.
+%%
 %% Everything here is a pure function. The randomisation factor is
 %% passed in as `U', a float in [0, 1); `interval/1' draws it from
 %% `crypto:strong_rand_bytes/1'.
@@ -27,6 +32,8 @@
     trr_current/2,
     dither_max/2,
     avg_rtcp_size/2,
+    reconsider/4,
+    reverse_reconsider/5,
     uniform/0
 ]).
 
@@ -161,6 +168,31 @@ dither_max(multiparty, Trr) -> 0.5 * Trr.
 -spec avg_rtcp_size(number(), non_neg_integer()) -> float().
 avg_rtcp_size(Avg, Size) ->
     Size / 16 + Avg * 15 / 16.
+
+%% @doc Timer reconsideration when the transmission timer expires at
+%% `Tc' (§6.3.6, Appendix A.7 OnExpire). `Tp' is the time of the last
+%% report and `Params' the current membership. Returns `send' when
+%% `Tp + T =< Tc': the caller sends the report, then arms the timer at
+%% `Tc' plus a fresh `interval/2'. Otherwise returns `{wait, Tn}' with
+%% `Tn = Tp + T' and nothing is sent. Times are in seconds.
+-spec reconsider(number(), number(), params(), float()) -> send | {wait, float() | infinity}.
+reconsider(Tp, Tc, Params, U) ->
+    case interval(Params, U) of
+        infinity -> {wait, infinity};
+        T when Tp + T =< Tc -> send;
+        T -> {wait, Tp + T}
+    end.
+
+%% @doc Reverse reconsideration after a BYE lowers `Members' below
+%% `PMembers' (§6.3.4): returns the new `{Tn, Tp}', both moved towards
+%% `Tc' by the ratio members / pmembers.
+-spec reverse_reconsider(number(), number(), number(), pos_integer(), pos_integer()) ->
+    {float(), float()}.
+reverse_reconsider(Tc, Tn, Tp, Members, PMembers) when Members < PMembers ->
+    R = Members / PMembers,
+    {Tc + R * (Tn - Tc), Tc - R * (Tc - Tp)};
+reverse_reconsider(_Tc, Tn, Tp, _Members, _PMembers) ->
+    {float(Tn), float(Tp)}.
 
 %% @doc Uniform float in [0, 1) from a strong random source.
 -spec uniform() -> float().

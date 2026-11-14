@@ -17,7 +17,7 @@
 %%
 %% Typed helpers encode and decode element data for:
 %% abs-send-time, transport-wide-cc, ssrc-audio-level (RFC 6464), the
-%% SDES items mid / rid / repaired-rid (RFC 8843, RFC 8852), toffset
+%% SDES items mid / rid / repaired-rid (RFC 9143, RFC 8852), toffset
 %% (RFC 5450), video-orientation (3GPP TS 26.114) and playout-delay.
 -module(webrtc_rtp_ext).
 
@@ -207,7 +207,7 @@ audio_level(Voice, Level) when is_boolean(Voice), is_integer(Level), Level >= 0,
 decode_audio_level(<<V:1, Level:7, _/binary>>) -> {ok, {V =:= 1, Level}};
 decode_audio_level(_) -> {error, bad_length}.
 
-%% SDES items carried as header extensions (RFC 7941): mid (RFC 8843
+%% SDES items carried as header extensions (RFC 7941): mid (RFC 9143
 %% §15.2), rtp-stream-id and repaired-rtp-stream-id (RFC 8852 §3).
 %% The value is the UTF-8 text, not zero terminated.
 

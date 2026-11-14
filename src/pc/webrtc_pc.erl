@@ -253,7 +253,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     {ok, #{ufrag := U, pwd := P}} = webrtc_sdp_media:ice_credentials(M, Local),
     TOpts = maps:merge(
         maps:with(
-            [stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter, mdns,
+            [stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
                 mdns_host_candidates],
             St#st.opts
         ),

@@ -33,6 +33,7 @@
     send_rtp_packet/3,
     request_keyframe/2,
     set_congestion_control/2,
+    resume_stream/2,
     open_channel/3,
     send_data/4,
     close_channel/2,
@@ -93,6 +94,7 @@ send_rtp(T, Mid, Payload, Opts) -> gen_server:call(T, {send_rtp, Mid, Payload, O
 send_rtp_packet(T, Mid, Pkt) -> gen_server:call(T, {send_rtp_packet, Mid, Pkt}).
 request_keyframe(T, Mid) -> gen_server:call(T, {request_keyframe, Mid}).
 set_congestion_control(T, Opts) -> gen_server:call(T, {set_congestion_control, Opts}).
+resume_stream(T, Mid) -> gen_server:call(T, {resume_stream, Mid}).
 
 open_channel(T, Label, Opts) -> gen_server:call(T, {open_channel, Label, Opts}).
 send_data(T, Id, Type, Data) -> gen_server:call(T, {send_data, Id, Type, Data}).
@@ -120,7 +122,10 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 sockets = Sockets,
                 ice = webrtc_ice_agent:new(IceOpts),
                 cert = Cert,
-                media = webrtc_media:new(#{cname => maps:get(cname, Opts, <<"webrtc">>)}),
+                media = webrtc_media:new(#{
+                    cname => maps:get(cname, Opts, <<"webrtc">>),
+                    cc => maps:get(congestion_control, Opts, #{})
+                }),
                 srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),
                 filter = maps:get(outbound_filter, Opts, undefined),
                 mdns = webrtc_mdns_client:new(
@@ -208,6 +213,11 @@ handle_call({request_keyframe, Mid}, _From, St) ->
     {Acts, M} = webrtc_media:request_keyframe(Mid, now_ms(), St#st.media),
     St1 = transmit(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
+handle_call({resume_stream, Mid}, _From, St) ->
+    case webrtc_media:resume(Mid, now_ms(), St#st.media) of
+        {ok, M} -> {reply, ok, St#st{media = M}};
+        {error, _} = E -> {reply, E, St}
+    end;
 handle_call({set_congestion_control, Opts}, _From, St) ->
     {Acts, M} = webrtc_media:set_congestion_control(Opts, now_ms(), St#st.media),
     St1 = media_actions(Acts, St#st{media = M}),

@@ -10,7 +10,12 @@
 %%     loss-based controller.</li>
 %% <li>`loss_report/3': the fraction lost of an RTCP receiver report,
 %%     used by the loss-based controller while no transport-wide
-%%     feedback has been received.</li>
+%%     feedback has been received. With such a peer (RTP/AVPF without
+%%     transport-cc, RFC 8834 §7.1) the first report seeds the estimate
+%%     with the rate actually being sent, so a forwarded stream is not
+%%     limited by the start guess; from then on the estimate is backed
+%%     by input (pacing applies), drops on loss above 10% and, below 2%
+%%     loss, never falls under the rate getting through.</li>
 %% <li>`remb/3': a receiver estimated maximum bitrate
 %%     (draft-alvestrand-rmcat-remb), an upper bound of the
 %%     estimate.</li>
@@ -41,7 +46,8 @@
 %% Output: `target/1', and `{bandwidth_estimate, Bps}' events returned
 %% by every call that may change it, when the target moved by more than
 %% `change_threshold' (default 0.05) of the last reported value. No
-%% estimate is reported before the first feedback or REMB.
+%% estimate is reported before the first feedback, receiver report or
+%% REMB.
 -module(webrtc_gcc).
 
 -export([
@@ -55,6 +61,7 @@
     next_timeout/1,
     target/1,
     has_input/1,
+    sending_rate/2,
     set_limits/2,
     info/1
 ]).
@@ -73,6 +80,9 @@
     aimd :: webrtc_gcc_aimd:state(),
     acked :: webrtc_cc_rate:rate(),
     delay_active = false :: boolean(),
+    %% Receiver reports drive the loss-based estimate (no transport-cc).
+    rr_active = false :: boolean(),
+    sent_rate :: webrtc_cc_rate:rate(),
     loss_based :: pos_integer(),
     loss_rx = 0 :: non_neg_integer(),
     loss_lost = 0 :: non_neg_integer(),
@@ -112,6 +122,7 @@ new(Opts) ->
             start => Start, min => Min, max => Max, startup_gain => maps:get(startup_gain, Opts, 1.5)
         }),
         acked = webrtc_cc_rate:new(500),
+        sent_rate = webrtc_cc_rate:new(1000),
         loss_based = Max,
         target = Start,
         change_threshold = maps:get(change_threshold, Opts, 0.05),
@@ -122,9 +133,9 @@ new(Opts) ->
 target(#gcc{target = T}) -> T.
 
 %% @doc True once an estimate is backed by feedback (transport-wide
-%% feedback or REMB).
+%% feedback, receiver reports or REMB).
 -spec has_input(state()) -> boolean().
-has_input(#gcc{delay_active = D, remb = R}) -> D orelse R =/= undefined.
+has_input(#gcc{delay_active = D, rr_active = RR, remb = R}) -> D orelse RR orelse R =/= undefined.
 
 -spec feedback([webrtc_twcc_sender:result()], integer(), state()) -> {[event()], state()}.
 feedback([], _Now, G) ->
@@ -205,8 +216,30 @@ loss_based(P, Now, #gcc{loss_based = As, target = T, last_loss_decrease = Last, 
 -spec loss_report(0..255, integer(), state()) -> {[event()], state()}.
 loss_report(_Fraction, _Now, #gcc{delay_active = true} = G) ->
     {[], G};
+loss_report(Fraction, Now, #gcc{rr_active = false} = G) ->
+    Seed =
+        case webrtc_cc_rate:rate(Now, G#gcc.sent_rate) of
+            undefined -> G#gcc.start;
+            0 -> G#gcc.start;
+            R -> R
+        end,
+    S = min(max(Seed, G#gcc.min), G#gcc.max),
+    loss_report(Fraction, Now, G#gcc{rr_active = true, loss_based = S, target = S});
 loss_report(Fraction, Now, G) ->
-    update_target(loss_based(Fraction / 256, Now, G)).
+    P = Fraction / 256,
+    G1 = loss_based(P, Now, G),
+    G2 =
+        case P < 0.02 of
+            %% The rate getting through without loss is a floor.
+            true ->
+                case webrtc_cc_rate:rate(Now, G1#gcc.sent_rate) of
+                    undefined -> G1;
+                    Sent -> G1#gcc{loss_based = min(max(G1#gcc.loss_based, Sent), G1#gcc.max)}
+                end;
+            false ->
+                G1
+        end,
+    update_target(G2).
 
 -spec remb(non_neg_integer(), integer(), state()) -> {[event()], state()}.
 remb(Bps, _Now, G) ->
@@ -216,9 +249,17 @@ remb(Bps, _Now, G) ->
 set_rtt(Ms, G) ->
     G#gcc{rtt = max(1, Ms), rtt_from_rr = true}.
 
+%% @doc Bits per second sent over the last second (0 before a full second).
+-spec sending_rate(integer(), state()) -> non_neg_integer().
+sending_rate(Now, #gcc{sent_rate = R}) ->
+    case webrtc_cc_rate:rate(Now, R) of
+        undefined -> 0;
+        Bps -> Bps
+    end.
+
 -spec sent(non_neg_integer(), integer(), state()) -> state().
-sent(_Size, Now, G) ->
-    G#gcc{last_sent = Now}.
+sent(Size, Now, G) ->
+    G#gcc{last_sent = Now, sent_rate = webrtc_cc_rate:add(Now, Size, G#gcc.sent_rate)}.
 
 %% @doc Change the bitrate limits (`min_bitrate', `max_bitrate').
 -spec set_limits(map(), state()) -> {[event()], state()}.

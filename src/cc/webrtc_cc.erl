@@ -22,9 +22,22 @@
 %% Events: `{bandwidth_estimate, Bps}' and
 %% `{circuit_breaker, Key, Reason}'.
 %%
+%% Circuit breakers (RFC 8083, mandatory in WebRTC per RFC 8834 §7.1):
+%% the RTCP and media timeout breakers halt their stream (§4.5, the
+%% sender ceases transmission): `halted/2' tells the media session to
+%% stop sending RTP on it. The congestion breaker first cuts the target
+%% to a tenth of the rate being sent, as §4.3 allows, and re-arms; if it
+%% triggers again over the next CB_INTERVAL the stream is halted. The
+%% cut is lifted once `circuit_breaker_hold' ms pass without a new
+%% trigger. It is not restarted automatically; `resume/3' restarts it,
+%% no sooner than `circuit_breaker_hold' ms (default 15000, the RTCP
+%% timeout interval) after it tripped, so a retry loop cannot keep
+%% overloading the path (RFC 8083 §4.5, RFC 8084).
+%%
 %% Options (all optional): `pacing' (default true), `pacing_factor'
 %% (2.5), `burst_ms' (10), `max_queue_packets' (1000), `max_queue_ms'
-%% (1000), `twcc_interval' (100), `rtcp_timeout' (15000), and the
+%% (1000), `twcc_interval' (100), `rtcp_timeout' (15000),
+%% `circuit_breaker_hold' (15000), and the
 %% `webrtc_gcc' options `start_bitrate', `min_bitrate', `max_bitrate',
 %% `startup_gain', `change_threshold', `feedback_timeout'.
 -module(webrtc_cc).
@@ -41,6 +54,8 @@
     arrival/4,
     rtcp/3,
     report/5,
+    halted/2,
+    resume/3,
     handle_timeout/2,
     next_timeout/1,
     target/1,
@@ -64,7 +79,13 @@
     twcc_interval :: pos_integer(),
     rtx_sent :: webrtc_cc_rate:rate(),
     rtx_limited = 0 :: non_neg_integer(),
-    unpaced = 0 :: non_neg_integer()
+    unpaced = 0 :: non_neg_integer(),
+    %% Streams halted by a circuit breaker: Key => {Reason, TrippedAt}.
+    halted = #{} :: #{term() => {atom(), integer()}},
+    %% Streams whose congestion breaker cut the rate: Key => Since.
+    reduced = #{} :: #{term() => integer()},
+    max_bitrate :: pos_integer(),
+    hold :: pos_integer()
 }).
 
 -opaque state() :: #cc{}.
@@ -74,6 +95,8 @@ new(Opts) ->
     Gcc = webrtc_gcc:new(maps:with(?GCC_OPTS, Opts)),
     Factor = float(maps:get(pacing_factor, Opts, 2.5)),
     #cc{
+        hold = maps:get(circuit_breaker_hold, Opts, 15000),
+        max_bitrate = maps:get(max_bitrate, Opts, 50000000),
         pacing = maps:get(pacing, Opts, true),
         factor = Factor,
         pacer = webrtc_pacer:new(#{
@@ -114,6 +137,7 @@ configure(#{twcc_send := Send, twcc_recv := Recv, sender_ssrc := Ssrc}, Cc) ->
 set_options(Opts, Now, Cc0) ->
     {Events, Gcc} = webrtc_gcc:set_limits(maps:with([min_bitrate, max_bitrate], Opts), Cc0#cc.gcc),
     Cc1 = retarget(Now, Cc0#cc{
+        max_bitrate = maps:get(max_bitrate, Opts, Cc0#cc.max_bitrate),
         gcc = Gcc,
         pacing = maps:get(pacing, Opts, Cc0#cc.pacing),
         factor = float(maps:get(pacing_factor, Opts, Cc0#cc.factor))
@@ -202,7 +226,60 @@ report(Key, #rtcp_rb{fraction_lost = F} = Rb, Rtt, Now, Cc) ->
             _ -> webrtc_gcc:set_rtt(Rtt, Cc#cc.gcc)
         end,
     {E2, G1} = webrtc_gcc:loss_report(F, Now, G0),
-    {E1 ++ E2, retarget(Now, Cc#cc{cb = Cb, gcc = G1})}.
+    {E3, Cc1} = breakers(E1, Now, Cc#cc{cb = Cb, gcc = G1}),
+    {E1 ++ E2 ++ E3, retarget(Now, Cc1)}.
+
+%% Act on breaker events; returns new bandwidth events.
+breakers(Events, Now, Cc0) ->
+    lists:foldl(
+        fun
+            ({circuit_breaker, Key, congestion}, {Ev, Cc}) when not is_map_key(Key, Cc#cc.reduced) ->
+                %% §4.3: first cut the rate by ten and look again.
+                Sending = webrtc_gcc:sending_rate(Now, Cc#cc.gcc),
+                Cap = max(1, Sending div 10),
+                {E, G} = webrtc_gcc:set_limits(#{max_bitrate => Cap}, Cc#cc.gcc),
+                Cb = webrtc_circuit_breaker:rearm_congestion(Key, Cc#cc.cb),
+                {Ev ++ E, Cc#cc{gcc = G, cb = Cb, reduced = (Cc#cc.reduced)#{Key => Now}}};
+            ({circuit_breaker, Key, Reason}, {Ev, #cc{halted = H} = Cc}) when not is_map_key(Key, H) ->
+                {Ev, Cc#cc{halted = H#{Key => {Reason, Now}}}};
+            (_, Acc) ->
+                Acc
+        end,
+        {[], Cc0},
+        Events
+    ).
+
+%% Lift the rate cut of streams whose congestion breaker stayed quiet
+%% for the hold time.
+lift(Now, #cc{reduced = R, hold = Hold} = Cc) ->
+    Expired = [K || K := Since <- R, Now - Since >= Hold],
+    case {Expired, maps:size(R) - length(Expired)} of
+        {[], _} ->
+            {[], Cc};
+        {_, 0} ->
+            {E, G} = webrtc_gcc:set_limits(#{max_bitrate => Cc#cc.max_bitrate}, Cc#cc.gcc),
+            {E, Cc#cc{gcc = G, reduced = maps:without(Expired, R)}};
+        {_, _} ->
+            {[], Cc#cc{reduced = maps:without(Expired, R)}}
+    end.
+
+%% @doc `{true, Reason}' when a circuit breaker halted stream `Key'.
+-spec halted(term(), state()) -> false | {true, atom()}.
+halted(Key, #cc{halted = H}) ->
+    case H of
+        #{Key := {Reason, _}} -> {true, Reason};
+        _ -> false
+    end.
+
+%% @doc Restart a stream halted by a circuit breaker, once the hold time
+%% has passed.
+-spec resume(term(), integer(), state()) -> {ok, state()} | {error, not_halted | {retry_after, pos_integer()}}.
+resume(Key, Now, #cc{halted = H, hold = Hold} = Cc) ->
+    case H of
+        #{Key := {_, At}} when Now - At >= Hold -> {ok, Cc#cc{halted = maps:remove(Key, H)}};
+        #{Key := {_, At}} -> {error, {retry_after, Hold - (Now - At)}};
+        _ -> {error, not_halted}
+    end.
 
 %% @doc Returns the packets the pacer releases, the transport-wide
 %% feedback to send and events.
@@ -216,8 +293,10 @@ handle_timeout(Now, Cc0) ->
         end,
     {E1, G} = webrtc_gcc:handle_timeout(Now, Cc0#cc.gcc),
     {E2, Cb} = webrtc_circuit_breaker:handle_timeout(Now, Cc0#cc.cb),
-    Cc = retarget(Now, Cc0#cc{pacer = P, twcc_rx = Rx, gcc = G, cb = Cb}),
-    {[D || {_, _, D} <- Pkts], Fb, E1 ++ E2, Cc}.
+    {E3, Cc1} = breakers(E2, Now, Cc0#cc{pacer = P, twcc_rx = Rx, gcc = G, cb = Cb}),
+    {E4, Cc2} = lift(Now, Cc1),
+    Cc = retarget(Now, Cc2),
+    {[D || {_, _, D} <- Pkts], Fb, E1 ++ E2 ++ E3 ++ E4, Cc}.
 
 -spec next_timeout(state()) -> integer() | infinity.
 next_timeout(#cc{} = Cc) ->
@@ -229,7 +308,7 @@ next_timeout(#cc{} = Cc) ->
         end,
         webrtc_gcc:next_timeout(Cc#cc.gcc),
         webrtc_circuit_breaker:next_timeout(Cc#cc.cb)
-    ]).
+    ] ++ [Since + Cc#cc.hold || _ := Since <- Cc#cc.reduced]).
 
 -spec target(state()) -> pos_integer().
 target(#cc{gcc = G}) -> webrtc_gcc:target(G).
@@ -244,6 +323,8 @@ stats(#cc{} = Cc) ->
         pacer => webrtc_pacer:stats(Cc#cc.pacer),
         estimator => webrtc_gcc:info(Cc#cc.gcc),
         circuit_breakers => webrtc_circuit_breaker:stats(Cc#cc.cb),
+        halted => maps:map(fun(_, {Reason, _}) -> Reason end, Cc#cc.halted),
+        rate_cut => maps:keys(Cc#cc.reduced),
         twcc => #{
             send => Cc#cc.twcc_tx =/= undefined,
             receive_stats => case Cc#cc.twcc_rx of undefined -> undefined; R -> webrtc_twcc_receiver:stats(R) end

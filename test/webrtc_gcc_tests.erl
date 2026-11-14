@@ -153,8 +153,10 @@ remb_test() ->
 %% feedback arrived, and is ignored after.
 loss_report_test() ->
     G0 = webrtc_gcc:new(#{start_bitrate => 1000000}),
-    {[], G1} = webrtc_gcc:loss_report(128, 0, G0),
+    ?assertNot(webrtc_gcc:has_input(G0)),
+    {[{bandwidth_estimate, 750000}], G1} = webrtc_gcc:loss_report(128, 0, G0),
     ?assertEqual(750000, webrtc_gcc:target(G1)),
+    ?assert(webrtc_gcc:has_input(G1)),
     {_, G2} = webrtc_gcc:feedback(results(0, 10, []), 200, G1),
     T = webrtc_gcc:target(G2),
     {[], G3} = webrtc_gcc:loss_report(255, 300, G2),
@@ -243,3 +245,24 @@ deterministic_test_() ->
         Opts = #{link => (bottleneck(1000000))#{loss => 0.02, seed => 5}, duration_ms => 10000},
         ?assertEqual(maps:get(samples, sim(Opts)), maps:get(samples, sim(Opts)))
     end}.
+
+%% RFC 8834 §7.1: with receiver reports only, the first report seeds the
+%% estimate with the measured sending rate (a forwarded 2 Mbps stream is
+%% not cut to the 300 kbps start guess), heavy loss cuts it, and low
+%% loss never takes it under the rate getting through.
+rr_only_peer_test() ->
+    G0 = webrtc_gcc:new(#{}),
+    %% 2 Mbps: 250 bytes every millisecond for 1.5 s.
+    G1 = lists:foldl(fun(T, G) -> webrtc_gcc:sent(250, T, G) end, G0, lists:seq(0, 1500)),
+    ?assertNot(webrtc_gcc:has_input(G1)),
+    {[{bandwidth_estimate, T1}], G2} = webrtc_gcc:loss_report(0, 1500, G1),
+    ?assert(T1 >= 1900000),
+    ?assert(webrtc_gcc:has_input(G2)),
+    %% 30% loss: cut by 15%.
+    {[{bandwidth_estimate, T2}], G3} = webrtc_gcc:loss_report(77, 2500, G2),
+    ?assert(T2 < T1 * 0.9),
+    ?assert(T2 > T1 * 0.8),
+    %% Loss gone while still sending 2 Mbps: back to at least that rate.
+    G4 = lists:foldl(fun(T, G) -> webrtc_gcc:sent(250, T, G) end, G3, lists:seq(2501, 4000)),
+    {_, G5} = webrtc_gcc:loss_report(0, 4000, G4),
+    ?assert(webrtc_gcc:target(G5) >= 1900000).

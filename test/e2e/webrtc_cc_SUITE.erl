@@ -10,6 +10,7 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
+    circuit_breaker_halts_stream/1,
     estimate_tracks_bottleneck/1,
     estimate_follows_capacity_drop/1,
     estimate_grows_without_bottleneck/1,
@@ -21,6 +22,7 @@
 
 all() ->
     [
+        circuit_breaker_halts_stream,
         estimate_tracks_bottleneck,
         estimate_follows_capacity_drop,
         estimate_grows_without_bottleneck,
@@ -187,3 +189,41 @@ drain_n(B, N, I) ->
         {webrtc, B, {rtp, _, _}} -> drain_n(B, N, I + 1)
     after 3000 -> I
     end.
+
+%% RFC 8083 §4.1 and §4.5: B's RTCP never reaches A, so A's RTCP timeout
+%% breaker trips and halts the stream; it resumes only on request, after
+%% the hold time.
+circuit_breaker_halts_stream(_Config) ->
+    DropRtcp = {fun(_Dest, Bin, S) ->
+                    case Bin of
+                        %% RFC 5761 §4: RTCP packet types 192..223.
+                        <<2:2, _:6, PT, _/binary>> when PT >= 192, PT =< 223 -> {[], S};
+                        _ -> {[{0, Bin}], S}
+                    end
+                end, undefined},
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        congestion_control => #{rtcp_timeout => 3000, circuit_breaker_hold => 2000}
+    }),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => DropRtcp}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    webrtc_test_signal:connect(A, B),
+    Sender = spawn_link(fun() -> send_loop(A, 0) end),
+    {ok, {circuit_breaker, <<"0">>, rtcp_timeout}} =
+        webrtc_test_signal:wait(A, fun({circuit_breaker, _, _}) -> true; (_) -> false end, 10000),
+    unlink(Sender),
+    exit(Sender, kill),
+    ?assertEqual({error, {circuit_breaker, rtcp_timeout}}, webrtc:send_rtp(A, <<"0">>, <<"x">>, #{timestamp => 1})),
+    {error, {retry_after, _}} = webrtc:resume_stream(A, <<"0">>),
+    timer:sleep(2100),
+    ok = webrtc:resume_stream(A, <<"0">>),
+    ok = webrtc:send_rtp(A, <<"0">>, <<"after">>, #{timestamp => 2}),
+    {ok, _} = webrtc_test_signal:wait(B, fun({rtp, _, P}) -> element(11, P) =:= <<"after">>; (_) -> false end, 5000),
+    webrtc:close(A),
+    webrtc:close(B).
+
+send_loop(Pc, N) ->
+    _ = webrtc:send_rtp(Pc, <<"0">>, <<16#F8, 16#FF, 16#FE>>, #{timestamp => N * 960}),
+    timer:sleep(20),
+    send_loop(Pc, N + 1).

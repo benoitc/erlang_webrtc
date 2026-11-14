@@ -27,7 +27,7 @@ What works today, end to end and against independent implementations (see [INTER
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
 - JSEP offer/answer, renegotiation, rollback, pranswer.
 - Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, per-layer NACK, RTX and keyframe requests.
-- Congestion control: transport-wide CC feedback in both directions, a GCC delay and loss based estimator, a pacer with audio and retransmission priority, RFC 8083 circuit breakers (reported, not enforced). Chromium's estimate grows on our feedback and encodes its top simulcast layer.
+- Congestion control: transport-wide CC feedback in both directions, a GCC delay and loss based estimator, a pacer with audio and retransmission priority, RFC 8083 circuit breakers that halt a stream (timeouts) or cut its rate by ten then halt it (congestion), and receiver report based control for peers without transport-cc. Chromium's estimate grows on our feedback and encodes its top simulcast layer.
 - Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay and floods.
 
 Known gaps that matter for a full WebRTC deployment:
@@ -36,7 +36,7 @@ Known gaps that matter for a full WebRTC deployment:
 |---|---|---|
 | DTLS 1.3 extras: connection ID, PSK and resumption, 3x amplification limit without cookies, RTT based timers | Not needed by WebRTC peers seen so far; see DTLS-57 to DTLS-59 | [dtls](compliance/dtls.md) |
 | Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
-| Bandwidth probing, RFC 8888 feedback as estimator input, enforcing circuit breakers | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link); breakers only emit events | [rtp](compliance/rtp.md) |
+| Bandwidth probing, RFC 8888 feedback as estimator input, ECN circuit breaker | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link) | [rtp](compliance/rtp.md) |
 | mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
 | ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |
 | Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |

@@ -24,13 +24,14 @@
 %%     packet was sent in every reporting interval.</li>
 %% </ul>
 %%
-%% RFC 8083 says the sender SHOULD then cease transmission; this module
-%% only reports, the application decides.
+%% RFC 8083 says the sender SHOULD then cease transmission: this module
+%% detects, `webrtc_cc' acts (rate cut by ten then halt for congestion,
+%% halt for the timeouts).
 -module(webrtc_circuit_breaker).
 
 -include("webrtc_rtp_rtcp.hrl").
 
--export([new/1, sent/4, report/5, handle_timeout/2, next_timeout/1, stats/1]).
+-export([new/1, sent/4, report/5, rearm_congestion/2, handle_timeout/2, next_timeout/1, stats/1]).
 
 -export_type([state/0, event/0]).
 
@@ -88,6 +89,16 @@ sent(Key, Size, Now, #cb{streams = Ss} = Cb) ->
         total_bytes = S0#s.total_bytes + Size
     },
     Cb#cb{streams = Ss#{Key => S1}}.
+
+%% @doc RFC 8083 §4.3: after the sender cut its rate by ten, the
+%% congestion breaker is evaluated afresh over the next CB_INTERVAL
+%% reports; a new trigger then means the sender must cease.
+-spec rearm_congestion(term(), state()) -> state().
+rearm_congestion(Key, #cb{streams = Ss} = Cb) ->
+    case maps:find(Key, Ss) of
+        {ok, S} -> Cb#cb{streams = Ss#{Key => (untrip(congestion, S))#s{reports = []}}};
+        error -> Cb
+    end.
 
 -spec report(term(), #rtcp_rb{}, non_neg_integer() | undefined, integer(), state()) -> {[event()], state()}.
 report(Key, #rtcp_rb{} = Rb, Rtt, Now, #cb{streams = Ss} = Cb) ->

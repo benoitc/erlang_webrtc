@@ -73,3 +73,41 @@ twcc_seq_test() ->
     Cc = cc(),
     S = webrtc_cc:twcc_seq(Cc),
     ?assertEqual((S + 1) band 16#FFFF, webrtc_cc:twcc_seq(webrtc_cc:sent(m, 100, 0, Cc))).
+
+%% RFC 8083 §4.5: a tripped breaker halts the stream; it is resumed only
+%% on request and not before the hold time.
+circuit_breaker_halts_test() ->
+    Cc0 = webrtc_cc:new(#{circuit_breaker_hold => 5000}),
+    ?assertEqual(false, webrtc_cc:halted(<<"0">>, Cc0)),
+    %% Sending for 16 s with no report: the RTCP timeout (15 s) trips.
+    Cc2 = lists:foldl(fun(T, C) -> webrtc_cc:sent(<<"0">>, 1000, T, C) end, Cc0, lists:seq(0, 16000, 100)),
+    {_, _, Events, Cc3} = webrtc_cc:handle_timeout(15000, Cc2),
+    ?assertEqual([{circuit_breaker, <<"0">>, rtcp_timeout}], [E || {circuit_breaker, _, _} = E <- Events]),
+    ?assertEqual({true, rtcp_timeout}, webrtc_cc:halted(<<"0">>, Cc3)),
+    ?assertEqual(false, webrtc_cc:halted(<<"1">>, Cc3)),
+    ?assertEqual({error, {retry_after, 4000}}, webrtc_cc:resume(<<"0">>, 16000, Cc3)),
+    {ok, Cc4} = webrtc_cc:resume(<<"0">>, 20000, Cc3),
+    ?assertEqual(false, webrtc_cc:halted(<<"0">>, Cc4)),
+    ?assertEqual({error, not_halted}, webrtc_cc:resume(<<"0">>, 20000, Cc4)).
+
+%% RFC 8083 §4.3: the congestion breaker first cuts the rate by ten; a
+%% second trigger after re-arming halts the stream.
+congestion_breaker_two_steps_test() ->
+    Cc0 = webrtc_cc:new(#{circuit_breaker_hold => 30000}),
+    %% Send 2 Mbps (250 B/ms) with 50% loss reported every second, RTT 300 ms.
+    Step = fun(T0, C0) ->
+        C1 = lists:foldl(fun(T, C) -> webrtc_cc:sent(<<"0">>, 250, T, C) end, C0, lists:seq(T0, T0 + 999)),
+        Rb = #rtcp_rb{ssrc = 1, fraction_lost = 128, lost = 0, ext_seq = T0, jitter = 0, lsr = 0, dlsr = 0},
+        {Ev, C2} = webrtc_cc:report(<<"0">>, Rb, 300, T0 + 1000, C1),
+        {Ev, C2}
+    end,
+    {Events, Cc} = lists:foldl(
+        fun(I, {Acc, C}) -> {E, C1} = Step(I * 1000, C), {Acc ++ E, C1} end,
+        {[], Cc0},
+        lists:seq(0, 30)
+    ),
+    Trips = [R || {circuit_breaker, _, R} <- Events],
+    ?assertMatch([congestion, congestion | _], Trips),
+    ?assertEqual({true, congestion}, webrtc_cc:halted(<<"0">>, Cc)),
+    %% The first trip cut the target to about a tenth of 2 Mbps.
+    ?assert(lists:any(fun({bandwidth_estimate, B}) -> B =< 250000; (_) -> false end, Events)).

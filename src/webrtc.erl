@@ -28,8 +28,10 @@
 %%     the encoders to it.</li>
 %% <li>`{circuit_breaker, Mid, Reason}': an RTP circuit breaker of
 %%     RFC 8083 triggered for the stream (`rtcp_timeout',
-%%     `media_timeout' or `congestion'); the application should stop
-%%     sending on it or reduce its rate a lot.</li>
+%%     `media_timeout' or `congestion'). The transceiver's RTP streams
+%%     are halted (RFC 8083 §4.5): `send_rtp' returns
+%%     `{error, {circuit_breaker, Reason}}' until `resume_stream/2'.
+%%     RTCP keeps flowing.</li>
 %% <li>`{datachannel_open, Id, Label, Protocol, Opts}'</li>
 %% <li>`{channel_message, Id, text | binary, Data}'</li>
 %% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
@@ -69,6 +71,7 @@
     request_keyframe/2,
     request_keyframe/3,
     set_congestion_control/2,
+    resume_stream/2,
     send_data/4,
     close_data_channel/2,
     local_description/1,
@@ -105,6 +108,10 @@ new_peer_connection() ->
 %% <li>`certificate': `webrtc_dtls_cert:generate/1' result, default a
 %%     fresh ECDSA P-256 certificate.</li>
 %% <li>`max_message_size': data channel limit announced in SDP.</li>
+%% <li>`congestion_control': initial options of the estimator, pacer and
+%%     circuit breakers (`start_bitrate', `min_bitrate', `max_bitrate',
+%%     `pacing', `pacing_factor', `rtcp_timeout',
+%%     `circuit_breaker_hold', ...), see `webrtc_cc'.</li>
 %% <li>`codecs', `extensions': the codecs and RTP header extensions to
 %%     negotiate, as maps keyed by `audio' and `video' (default
 %%     `webrtc_jsep_caps:default_codecs/1' and
@@ -224,6 +231,15 @@ layer(Mid, _) -> Mid.
 -spec set_congestion_control(pc(), map()) -> ok | {error, term()}.
 set_congestion_control(Pc, Opts) when is_map(Opts) ->
     transport(Pc, fun(T) -> webrtc_transport:set_congestion_control(T, Opts) end).
+
+%% @doc Restart the streams of a transceiver that a circuit breaker
+%% halted (`{circuit_breaker, Mid, Reason}' event). RFC 8083 §4.5 asks
+%% for a human or a sign that the congestion is gone before restarting;
+%% the call is refused with `{error, {retry_after, Ms}}' during the hold
+%% time (`circuit_breaker_hold', default 15 s).
+-spec resume_stream(pc(), binary()) -> ok | {error, term()}.
+resume_stream(Pc, Mid) when is_binary(Mid) ->
+    transport(Pc, fun(T) -> webrtc_transport:resume_stream(T, Mid) end).
 
 -spec send_data(pc(), non_neg_integer(), text | binary, iodata()) -> ok | {error, term()}.
 send_data(Pc, Id, Type, Data) ->

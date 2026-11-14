@@ -44,6 +44,7 @@
     ready/1,
     send/5,
     send_packet/4,
+    resume/3,
     request_keyframe/3,
     set_congestion_control/3,
     handle_packet/3,
@@ -182,17 +183,32 @@ send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
     case maps:find(Mid, M#media.senders) of
         error ->
             {error, not_sending};
-        {ok, S} ->
-            Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs, ext = webrtc_media_out:mid_ext(S)},
-            S1 = S#snd{
-                seq = (S#snd.seq + 1) band 16#FFFF,
-                last_ts = Pkt#rtp.ts,
-                last_ts_at = Now,
-                buffer = webrtc_nack_buffer:store(Pkt#rtp.seq, Pkt, Now, S#snd.buffer)
-            },
-            M1 = M#media{senders = (M#media.senders)#{Mid := S1}},
-            {Sends, M2} = webrtc_media_out:pace(S#snd.kind, [{Mid, Pkt, false}], Now, M1),
-            {ok, Sends, M2}
+        {ok, #snd{mid = TMid} = S} ->
+            case webrtc_cc:halted(TMid, M#media.cc) of
+                {true, Reason} -> {error, {circuit_breaker, Reason}};
+                false -> send_packet(Mid, S, Pkt0, Now, M)
+            end
+    end.
+
+send_packet(Mid, S, Pkt0, Now, M) ->
+    Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs, ext = webrtc_media_out:mid_ext(S)},
+    S1 = S#snd{
+        seq = (S#snd.seq + 1) band 16#FFFF,
+        last_ts = Pkt#rtp.ts,
+        last_ts_at = Now,
+        buffer = webrtc_nack_buffer:store(Pkt#rtp.seq, Pkt, Now, S#snd.buffer)
+    },
+    M1 = M#media{senders = (M#media.senders)#{Mid := S1}},
+    {Sends, M2} = webrtc_media_out:pace(S#snd.kind, [{Mid, Pkt, false}], Now, M1),
+    {ok, Sends, M2}.
+
+%% @doc Restart the streams of a transceiver halted by a circuit breaker
+%% (RFC 8083 §4.5), once its hold time has passed.
+-spec resume(binary(), integer(), state()) -> {ok, state()} | {error, term()}.
+resume(Mid, Now, M) ->
+    case webrtc_cc:resume(Mid, Now, M#media.cc) of
+        {ok, Cc} -> {ok, M#media{cc = Cc}};
+        {error, _} = E -> E
     end.
 
 %% @doc Ask the remote sender of a transceiver for a keyframe (PLI), on

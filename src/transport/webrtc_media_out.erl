@@ -102,19 +102,27 @@ wire_size(#rtp{payload = P, csrcs = Cs}) -> 12 + 4 * length(Cs) + byte_size(P) +
 %% Add the transport-wide sequence number, protect and count.
 egress(Items, Now, M0) ->
     {Sends, M} = lists:foldl(
-        fun({Mid, Pkt0, Rtx}, {Acc, M1}) ->
-            Twcc =
-                case maps:find(Mid, M1#media.senders) of
-                    {ok, #snd{twcc_ext = Id}} -> Id;
-                    error -> undefined
+        fun({Key, Pkt0, Rtx}, {Acc, M1}) ->
+            {Twcc, Mid} =
+                case maps:find(Key, M1#media.senders) of
+                    {ok, #snd{twcc_ext = Id, mid = Mi}} -> {Id, Mi};
+                    error -> {undefined, Key}
                 end,
-            Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
-            case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), M1#media.out) of
-                {ok, Srtp, Out} ->
-                    Cc = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
-                    {[{send, Srtp} | Acc], sent_stats(Mid, Pkt, Rtx, M1#media{out = Out, cc = Cc})};
-                {error, _} ->
-                    {Acc, count(srtp_failed, M1)}
+            case webrtc_cc:halted(Mid, M1#media.cc) of
+                {true, _} ->
+                    %% Halted while queued in the pacer (RFC 8083 §4.5).
+                    {Acc, count(circuit_breaker_dropped, M1)};
+                false ->
+                    Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
+                    case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), M1#media.out) of
+                        {ok, Srtp, Out} ->
+                            %% Circuit breakers work per transceiver: all
+                            %% simulcast layers of a mid share the flow.
+                            Cc = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
+                            {[{send, Srtp} | Acc], sent_stats(Key, Pkt, Rtx, M1#media{out = Out, cc = Cc})};
+                        {error, _} ->
+                            {Acc, count(srtp_failed, M1)}
+                    end
             end
         end,
         {[], M0},

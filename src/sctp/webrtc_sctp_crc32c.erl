@@ -64,6 +64,7 @@ bytes(<<>>, C, _T) ->
 %% Slicing-by-8 tables, generated from the reflected polynomial
 %% 16#82F63B78. Table 0 is the classic byte table of RFC 9260 Appendix A;
 %% table K entry N is (Tk-1[N] bsr 8) bxor T0[Tk-1[N] band 255].
+%% erlfmt-ignore
 tab() ->
     {
         16#00000000, 16#F26B8303, 16#E13B70F7, 16#1350F3F4,

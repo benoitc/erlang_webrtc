@@ -12,8 +12,7 @@
 
 chunk_vectors() ->
     [
-        {data,
-            #sctp_data{tsn = 1, sid = 2, mid = 3, ppid = 51, data = <<"abc">>},
+        {data, #sctp_data{tsn = 1, sid = 2, mid = 3, ppid = 51, data = <<"abc">>},
             "00 03 00 13 00 00 00 01 00 02 00 03 00 00 00 33 61 62 63 00"},
         {data_all_flags,
             #sctp_data{
@@ -28,11 +27,16 @@ chunk_vectors() ->
             "00 0f 00 14 ff ff ff ff ff ff ff ff ff ff ff ff 01 02 03 04"},
         {data_middle_fragment,
             #sctp_data{
-                tsn = 9, sid = 0, mid = 1, ppid = 50, beginning = false, ending = false, data = <<"x">>
+                tsn = 9,
+                sid = 0,
+                mid = 1,
+                ppid = 50,
+                beginning = false,
+                ending = false,
+                data = <<"x">>
             },
             "00 00 00 11 00 00 00 09 00 00 00 01 00 00 00 32 78 00 00 00"},
-        {data_empty,
-            #sctp_data{tsn = 5, sid = 1, mid = 0, ppid = 56, data = <<>>},
+        {data_empty, #sctp_data{tsn = 5, sid = 1, mid = 0, ppid = 56, data = <<>>},
             "00 03 00 10 00 00 00 05 00 01 00 00 00 00 00 38"},
         {idata_first,
             #sctp_data{
@@ -61,8 +65,8 @@ chunk_vectors() ->
                 tsn = 16#0A0B0C0D,
                 params = [forward_tsn_supported, {supported_extensions, [130, 192, 194]}]
             },
-            "01 00 00 1f 01 02 03 04 00 02 00 00 04 00 04 00 0a 0b 0c 0d
-             c0 00 00 04 80 08 00 07 82 c0 c2 00"},
+            "01 00 00 1f 01 02 03 04 00 02 00 00 04 00 04 00 0a 0b 0c 0d\n"
+            "             c0 00 00 04 80 08 00 07 82 c0 c2 00"},
         {init_ack,
             #sctp_init{
                 ack = true,
@@ -73,23 +77,19 @@ chunk_vectors() ->
                 tsn = 3,
                 params = [{state_cookie, <<"ck">>}, {zero_checksum_acceptable, 1}]
             },
-            "02 00 00 24 00 00 00 07 00 00 05 dc 00 01 00 02 00 00 00 03
-             00 07 00 06 63 6b 00 00 80 01 00 08 00 00 00 01"},
-        {init_no_params,
-            #sctp_init{tag = 1, a_rwnd = 2, os = 3, mis = 4, tsn = 5},
+            "02 00 00 24 00 00 00 07 00 00 05 dc 00 01 00 02 00 00 00 03\n"
+            "             00 07 00 06 63 6b 00 00 80 01 00 08 00 00 00 01"},
+        {init_no_params, #sctp_init{tag = 1, a_rwnd = 2, os = 3, mis = 4, tsn = 5},
             "01 00 00 14 00 00 00 01 00 00 00 02 00 03 00 04 00 00 00 05"},
-        {sack,
-            #sctp_sack{cum_tsn = 100, a_rwnd = 4096, gaps = [{2, 3}, {5, 5}], dups = [99]},
-            "03 00 00 1c 00 00 00 64 00 00 10 00 00 02 00 01
-             00 02 00 03 00 05 00 05 00 00 00 63"},
+        {sack, #sctp_sack{cum_tsn = 100, a_rwnd = 4096, gaps = [{2, 3}, {5, 5}], dups = [99]},
+            "03 00 00 1c 00 00 00 64 00 00 10 00 00 02 00 01\n"
+            "             00 02 00 03 00 05 00 05 00 00 00 63"},
         {sack_empty, #sctp_sack{cum_tsn = 1, a_rwnd = 2},
             "03 00 00 10 00 00 00 01 00 00 00 02 00 00 00 00"},
         {heartbeat, {heartbeat, <<1, 2, 3, 4, 5>>},
             "04 00 00 0d 00 01 00 09 01 02 03 04 05 00 00 00"},
-        {heartbeat_ack, {heartbeat_ack, <<1, 2, 3, 4>>},
-            "05 00 00 0c 00 01 00 08 01 02 03 04"},
-        {abort_t, {abort, true, [{user_abort, <<"bye">>}]},
-            "06 01 00 0b 00 0c 00 07 62 79 65 00"},
+        {heartbeat_ack, {heartbeat_ack, <<1, 2, 3, 4>>}, "05 00 00 0c 00 01 00 08 01 02 03 04"},
+        {abort_t, {abort, true, [{user_abort, <<"bye">>}]}, "06 01 00 0b 00 0c 00 07 62 79 65 00"},
         {abort_empty, {abort, false, []}, "06 00 00 04"},
         {abort_two_causes, {abort, false, [{protocol_violation, <<"x">>}, out_of_resource]},
             "06 00 00 10 00 0d 00 05 78 00 00 00 00 04 00 04"},
@@ -107,17 +107,15 @@ chunk_vectors() ->
         {i_forward_tsn, {i_forward_tsn, 300, [{1, true, 9}, {2, false, 10}]},
             "c2 00 00 18 00 00 01 2c 00 01 00 01 00 00 00 09 00 02 00 00 00 00 00 0a"},
         {reconfig_out_reset, {reconfig, [{out_reset, 1, 0, 16, [1, 2, 3]}]},
-            "82 00 00 1a 00 0d 00 16 00 00 00 01 00 00 00 00 00 00 00 10
-             00 01 00 02 00 03 00 00"},
-        {reconfig_response,
-            {reconfig, [{reconf_response, 1, success_performed, undefined}]},
+            "82 00 00 1a 00 0d 00 16 00 00 00 01 00 00 00 00 00 00 00 10\n"
+            "             00 01 00 02 00 03 00 00"},
+        {reconfig_response, {reconfig, [{reconf_response, 1, success_performed, undefined}]},
             "82 00 00 10 00 10 00 0c 00 00 00 01 00 00 00 01"},
         {reconfig_response_tsns, {reconfig, [{reconf_response, 2, denied, {5, 6}}]},
             "82 00 00 18 00 10 00 14 00 00 00 02 00 00 00 02 00 00 00 05 00 00 00 06"},
-        {reconfig_out_in,
-            {reconfig, [{out_reset, 1, 0, 16, [1]}, {in_reset, 2, [4]}]},
-            "82 00 00 22 00 0d 00 12 00 00 00 01 00 00 00 00 00 00 00 10
-             00 01 00 00 00 0e 00 0a 00 00 00 02 00 04 00 00"},
+        {reconfig_out_in, {reconfig, [{out_reset, 1, 0, 16, [1]}, {in_reset, 2, [4]}]},
+            "82 00 00 22 00 0d 00 12 00 00 00 01 00 00 00 00 00 00 00 10\n"
+            "             00 01 00 00 00 0e 00 0a 00 00 00 02 00 04 00 00"},
         {pad, {pad, 3}, "84 00 00 07 00 00 00 00"},
         {pad_empty, {pad, 0}, "84 00 00 04"},
         {unknown, {unknown_chunk, 16#80, 5, <<1, 2, 3>>}, "80 05 00 07 01 02 03 00"},
@@ -161,7 +159,9 @@ check_truncations(Bin) ->
         fun(N) ->
             Part = binary:part(Bin, 0, N),
             ?assertMatch({N, {error, _}}, {N, webrtc_sctp_chunk:decode_chunks(Part)}),
-            ?assertMatch({N, {error, _}}, {N, webrtc_sctp_chunk:decode(<<Hdr/binary, Part/binary>>)})
+            ?assertMatch(
+                {N, {error, _}}, {N, webrtc_sctp_chunk:decode(<<Hdr/binary, Part/binary>>)}
+            )
         end,
         lists:seq(1, Len - 1)
     ).
@@ -190,12 +190,15 @@ bad_lengths_test_() ->
                 {error, {bad_chunk, 3}},
                 dc("03 00 00 14 00 00 00 01 00 00 00 02 00 01 00 01 00 02 00 03")
             )},
-        {"sack too short", ?_assertEqual({error, {bad_chunk, 3}}, dc("03 00 00 0c 00 00 00 01 00 00 00 02"))},
+        {"sack too short",
+            ?_assertEqual({error, {bad_chunk, 3}}, dc("03 00 00 0c 00 00 00 01 00 00 00 02"))},
         {"shutdown len 12",
             ?_assertEqual({error, {bad_chunk, 7}}, dc("07 00 00 0c 00 00 00 01 00 00 00 00"))},
         {"shutdown len 4", ?_assertEqual({error, {bad_chunk, 7}}, dc("07 00 00 04"))},
-        {"shutdown ack len 8", ?_assertEqual({error, {bad_chunk, 8}}, dc("08 00 00 08 00 00 00 00"))},
-        {"cookie ack len 8", ?_assertEqual({error, {bad_chunk, 11}}, dc("0b 00 00 08 00 00 00 00"))},
+        {"shutdown ack len 8",
+            ?_assertEqual({error, {bad_chunk, 8}}, dc("08 00 00 08 00 00 00 00"))},
+        {"cookie ack len 8",
+            ?_assertEqual({error, {bad_chunk, 11}}, dc("0b 00 00 08 00 00 00 00"))},
         {"shutdown complete len 8",
             ?_assertEqual({error, {bad_chunk, 14}}, dc("0e 00 00 08 00 00 00 00"))},
         {"forward tsn len 10",
@@ -204,16 +207,22 @@ bad_lengths_test_() ->
         {"i-forward tsn len 12",
             ?_assertEqual({error, {bad_chunk, 194}}, dc("c2 00 00 0c 00 00 00 01 00 01 00 00"))},
         {"data len 15",
-            ?_assertEqual({error, {bad_chunk, 0}}, dc("00 03 00 0f 00 00 00 01 00 02 00 03 00 00 00 00"))},
+            ?_assertEqual(
+                {error, {bad_chunk, 0}}, dc("00 03 00 0f 00 00 00 01 00 02 00 03 00 00 00 00")
+            )},
         {"idata len 19",
             ?_assertEqual(
                 {error, {bad_chunk, 64}},
                 dc("40 03 00 13 00 00 00 01 00 02 00 00 00 00 00 03 00 00 00 00")
             )},
         {"init len 16",
-            ?_assertEqual({error, {bad_chunk, 1}}, dc("01 00 00 10 00 00 00 01 00 00 00 02 00 03 00 04"))},
+            ?_assertEqual(
+                {error, {bad_chunk, 1}}, dc("01 00 00 10 00 00 00 01 00 00 00 02 00 03 00 04")
+            )},
         {"init ack len 16",
-            ?_assertEqual({error, {bad_chunk, 2}}, dc("02 00 00 10 00 00 00 01 00 00 00 02 00 03 00 04"))},
+            ?_assertEqual(
+                {error, {bad_chunk, 2}}, dc("02 00 00 10 00 00 00 01 00 00 00 02 00 03 00 04")
+            )},
         {"chunk length 2", ?_assertEqual({error, {bad_chunk, 0}}, dc("00 00 00 02"))},
         {"chunk length 0", ?_assertEqual({error, {bad_chunk, 11}}, dc("0b 00 00 00"))},
         {"chunk length beyond area",
@@ -234,8 +243,10 @@ bad_lengths_test_() ->
         {"ipv4 param len 12",
             ?_assertEqual(
                 {error, {bad_param, 5}},
-                dc("01 00 00 20 00 00 00 01 00 00 00 02 00 03 00 04 00 00 00 05
-                    00 05 00 0c c0 00 02 01 00 00 00 00")
+                dc(
+                    "01 00 00 20 00 00 00 01 00 00 00 02 00 03 00 04 00 00 00 05\n"
+                    "                    00 05 00 0c c0 00 02 01 00 00 00 00"
+                )
             )},
         {"abort bad cause",
             ?_assertEqual({error, {bad_cause, 4}}, dc("06 00 00 0c 00 04 00 08 00 00 00 00"))},
@@ -256,7 +267,9 @@ trailing_bytes_test_() ->
     ].
 
 padding_content_ignored_test() ->
-    ?assertEqual({ok, [{cookie_echo, <<1>>}, cookie_ack]}, dc("0a 00 00 05 01 ff ff ff 0b 00 00 04")).
+    ?assertEqual(
+        {ok, [{cookie_echo, <<1>>}, cookie_ack]}, dc("0a 00 00 05 01 ff ff ff 0b 00 00 04")
+    ).
 
 %% Padding of the last parameter may be counted in the chunk length.
 last_param_padding_counted_test_() ->
@@ -272,8 +285,8 @@ last_param_padding_counted_test_() ->
         ?_assertEqual(
             {ok, [Init]},
             dc(
-                "01 00 00 20 01 02 03 04 00 02 00 00 04 00 04 00 0a 0b 0c 0d
-                 c0 00 00 04 80 08 00 07 82 c0 c2 00"
+                "01 00 00 20 01 02 03 04 00 02 00 00 04 00 04 00 0a 0b 0c 0d\n"
+                "                 c0 00 00 04 80 08 00 07 82 c0 c2 00"
             )
         ),
         ?_assertEqual(
@@ -339,8 +352,8 @@ unrecognized_chunk_action_test_() ->
 
 rfc9653_packet() ->
     b(
-        "13 89 13 89 00 00 00 00 00 00 00 00
-         01 00 00 14 fc b7 5c ca 00 00 05 dc 00 01 00 01 00 00 00 00"
+        "13 89 13 89 00 00 00 00 00 00 00 00\n"
+        "         01 00 00 14 fc b7 5c ca 00 00 05 dc 00 01 00 01 00 00 00 00"
     ).
 
 rfc9653_packet_test() ->
@@ -418,12 +431,16 @@ packet_decode_errors_test_() ->
 param_vectors() ->
     [
         {{ipv4_address, {192, 0, 2, 1}}, "00 05 00 08 c0 00 02 01"},
-        {{ipv6_address, {16#2001, 16#db8, 0, 0, 0, 0, 0, 1}},
-            "00 06 00 14 20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01"},
+        {
+            {ipv6_address, {16#2001, 16#db8, 0, 0, 0, 0, 0, 1}},
+            "00 06 00 14 20 01 0d b8 00 00 00 00 00 00 00 00 00 00 00 01"
+        },
         {{state_cookie, <<"abcde">>}, "00 07 00 09 61 62 63 64 65 00 00 00"},
         {{state_cookie, <<>>}, "00 07 00 04"},
-        {{unrecognized_param, <<16#43, 16#21, 0, 5, 9, 0, 0, 0>>},
-            "00 08 00 0c 43 21 00 05 09 00 00 00"},
+        {
+            {unrecognized_param, <<16#43, 16#21, 0, 5, 9, 0, 0, 0>>},
+            "00 08 00 0c 43 21 00 05 09 00 00 00"
+        },
         {{cookie_preservative, 60000}, "00 09 00 08 00 00 ea 60"},
         {{host_name, <<"h", 0>>}, "00 0b 00 06 68 00 00 00"},
         {{supported_address_types, [5, 6]}, "00 0c 00 08 00 05 00 06"},
@@ -506,25 +523,36 @@ unrecognized_param_action_test_() ->
 
 reconf_vectors() ->
     [
-        {{out_reset, 1, 2, 3, [4, 5]},
-            "00 0d 00 14 00 00 00 01 00 00 00 02 00 00 00 03 00 04 00 05"},
+        {
+            {out_reset, 1, 2, 3, [4, 5]},
+            "00 0d 00 14 00 00 00 01 00 00 00 02 00 00 00 03 00 04 00 05"
+        },
         {{out_reset, 1, 2, 3, []}, "00 0d 00 10 00 00 00 01 00 00 00 02 00 00 00 03"},
         {{out_reset, 1, 2, 3, [7]}, "00 0d 00 12 00 00 00 01 00 00 00 02 00 00 00 03 00 07 00 00"},
         {{in_reset, 9, [1, 2, 3]}, "00 0e 00 0e 00 00 00 09 00 01 00 02 00 03 00 00"},
         {{in_reset, 9, []}, "00 0e 00 08 00 00 00 09"},
         {{tsn_reset, 4}, "00 0f 00 08 00 00 00 04"},
-        {{reconf_response, 1, success_nothing_to_do, undefined}, "00 10 00 0c 00 00 00 01 00 00 00 00"},
+        {
+            {reconf_response, 1, success_nothing_to_do, undefined},
+            "00 10 00 0c 00 00 00 01 00 00 00 00"
+        },
         {{reconf_response, 1, success_performed, undefined}, "00 10 00 0c 00 00 00 01 00 00 00 01"},
         {{reconf_response, 1, denied, undefined}, "00 10 00 0c 00 00 00 01 00 00 00 02"},
         {{reconf_response, 1, error_wrong_ssn, undefined}, "00 10 00 0c 00 00 00 01 00 00 00 03"},
-        {{reconf_response, 1, error_request_in_progress, undefined},
-            "00 10 00 0c 00 00 00 01 00 00 00 04"},
-        {{reconf_response, 1, error_bad_sequence_number, undefined},
-            "00 10 00 0c 00 00 00 01 00 00 00 05"},
+        {
+            {reconf_response, 1, error_request_in_progress, undefined},
+            "00 10 00 0c 00 00 00 01 00 00 00 04"
+        },
+        {
+            {reconf_response, 1, error_bad_sequence_number, undefined},
+            "00 10 00 0c 00 00 00 01 00 00 00 05"
+        },
         {{reconf_response, 1, in_progress, undefined}, "00 10 00 0c 00 00 00 01 00 00 00 06"},
         {{reconf_response, 1, 99, undefined}, "00 10 00 0c 00 00 00 01 00 00 00 63"},
-        {{reconf_response, 2, success_performed, {16#10, 16#20}},
-            "00 10 00 14 00 00 00 02 00 00 00 01 00 00 00 10 00 00 00 20"},
+        {
+            {reconf_response, 2, success_performed, {16#10, 16#20}},
+            "00 10 00 14 00 00 00 02 00 00 00 01 00 00 00 10 00 00 00 20"
+        },
         {{add_out_streams, 5, 16}, "00 11 00 0c 00 00 00 05 00 10 00 00"},
         {{add_in_streams, 6, 17}, "00 12 00 0c 00 00 00 06 00 11 00 00"},
         {{unknown_param, 16#C000, <<>>}, "c0 00 00 04"},
@@ -552,16 +580,21 @@ reconf_list_test() ->
 bad_reconf_test_() ->
     D = fun(Hex) -> webrtc_sctp_param:decode_reconf_params(b(Hex)) end,
     [
-        ?_assertEqual({error, {bad_param, 16}}, D("00 10 00 10 00 00 00 01 00 00 00 01 00 00 00 05")),
+        ?_assertEqual(
+            {error, {bad_param, 16}}, D("00 10 00 10 00 00 00 01 00 00 00 01 00 00 00 05")
+        ),
         ?_assertEqual({error, {bad_param, 16}}, D("00 10 00 08 00 00 00 01")),
         ?_assertEqual({error, {bad_param, 13}}, D("00 0d 00 0c 00 00 00 01 00 00 00 02")),
         ?_assertEqual(
-            {error, {bad_param, 13}}, D("00 0d 00 11 00 00 00 01 00 00 00 02 00 00 00 03 00 00 00 00")
+            {error, {bad_param, 13}},
+            D("00 0d 00 11 00 00 00 01 00 00 00 02 00 00 00 03 00 00 00 00")
         ),
         ?_assertEqual({error, {bad_param, 14}}, D("00 0e 00 09 00 00 00 01 00 00 00 00")),
         ?_assertEqual({error, {bad_param, 15}}, D("00 0f 00 0c 00 00 00 01 00 00 00 00")),
         ?_assertEqual({error, {bad_param, 17}}, D("00 11 00 08 00 00 00 01")),
-        ?_assertEqual({error, {bad_param, 18}}, D("00 12 00 10 00 00 00 01 00 01 00 00 00 00 00 00"))
+        ?_assertEqual(
+            {error, {bad_param, 18}}, D("00 12 00 10 00 00 00 01 00 01 00 00 00 00 00 00")
+        )
     ].
 
 %%--------------------------------------------------------------------
@@ -582,7 +615,10 @@ cause_vectors() ->
         {{unrecognized_params, <<16#43, 16#21, 0, 4>>}, "00 08 00 08 43 21 00 04"},
         {{no_user_data, 16#01020304}, "00 09 00 08 01 02 03 04"},
         {cookie_while_shutting_down, "00 0a 00 04"},
-        {{restart_new_addresses, <<0, 5, 0, 8, 10, 0, 0, 1>>}, "00 0b 00 0c 00 05 00 08 0a 00 00 01"},
+        {
+            {restart_new_addresses, <<0, 5, 0, 8, 10, 0, 0, 1>>},
+            "00 0b 00 0c 00 05 00 08 0a 00 00 01"
+        },
         {{user_abort, <<"bye">>}, "00 0c 00 07 62 79 65 00"},
         {{user_abort, <<>>}, "00 0c 00 04"},
         {{protocol_violation, <<"oops!">>}, "00 0d 00 09 6f 6f 70 73 21 00 00 00"},

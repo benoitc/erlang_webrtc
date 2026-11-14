@@ -49,8 +49,8 @@ iscsi_vectors_test_() ->
 %% RFC 9653 Figure 1: an INIT packet whose correct CRC32c is zero.
 rfc9653_figure1_test() ->
     Pkt = b(
-        "13 89 13 89 00 00 00 00 00 00 00 00
-         01 00 00 14 fc b7 5c ca 00 00 05 dc 00 01 00 01 00 00 00 00"
+        "13 89 13 89 00 00 00 00 00 00 00 00\n"
+        "         01 00 00 14 fc b7 5c ca 00 00 05 dc 00 01 00 01 00 00 00 00"
     ),
     ?assertEqual(0, crc(Pkt)),
     ?assertEqual(0, naive(Pkt)).

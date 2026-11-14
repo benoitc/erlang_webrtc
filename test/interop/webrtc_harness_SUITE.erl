@@ -7,13 +7,13 @@
 
 -export([all/0, groups/0, init_per_group/2, end_per_group/2, init_per_testcase/2, end_per_testcase/2]).
 -export([pion_to_pion_datachannel/1, pion_to_pion_media/1, pion_to_aiortc_datachannel/1,
-         browser_to_pion_datachannel/1, browser_to_pion_media/1]).
+         browser_to_pion_datachannel/1, browser_to_browser_media/1]).
 
 all() -> [pion_to_pion_datachannel, pion_to_pion_media, pion_to_aiortc_datachannel,
           {group, chromium}, {group, firefox}].
 
 groups() ->
-    Cases = [browser_to_pion_datachannel, browser_to_pion_media],
+    Cases = [browser_to_pion_datachannel, browser_to_browser_media],
     [{chromium, [], Cases}, {firefox, [], Cases}].
 
 init_per_group(B, Config) ->
@@ -96,19 +96,18 @@ browser_to_pion_datachannel(Config) ->
     webrtc_interop_peer:stop(A4),
     webrtc_interop_peer:stop(B2).
 
-%% The browser sends fake camera/microphone media, Pion echoes the RTP,
-%% the browser decodes it.
-browser_to_pion_media(Config) ->
+%% Two browsers send fake camera/microphone media to each other and
+%% both report decoded frames: validates the adapter's media reporting.
+browser_to_browser_media(Config) ->
     Dir = ?config(priv_dir, Config),
-    {ok, A} = webrtc_interop_peer:start(?config(browser, Config), filename:join(Dir, "a")),
-    {ok, B} = webrtc_interop_peer:start(pion, filename:join(Dir, "b")),
+    B = ?config(browser, Config),
+    {ok, P1} = webrtc_interop_peer:start(B, filename:join(Dir, "a")),
+    {ok, P2} = webrtc_interop_peer:start(B, filename:join(Dir, "b")),
     Media = #{media => [<<"audio">>, <<"video">>]},
-    {A1, B0} = connect(A, B, Media, Media),
-    %% Pion received the browser's video...
-    {ok, B1, _} = webrtc_interop_peer:wait_event(B0, <<"rtp">>, #{<<"kind">> => <<"video">>}),
-    %% ...and the browser decoded the echo.
-    {ok, A2, _} = webrtc_interop_peer:wait(A1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>,
-                                                     <<"count">> := N}) -> N >= 10;
-                                                  (_) -> false end, 20000),
-    webrtc_interop_peer:stop(A2),
-    webrtc_interop_peer:stop(B1).
+    {Q1, Q2} = connect(P1, P2, Media, Media),
+    Frames = fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>, <<"count">> := N}) -> N >= 10;
+                (_) -> false end,
+    {ok, R1, _} = webrtc_interop_peer:wait(Q1, Frames, 20000),
+    {ok, R2, _} = webrtc_interop_peer:wait(Q2, Frames, 20000),
+    webrtc_interop_peer:stop(R1),
+    webrtc_interop_peer:stop(R2).

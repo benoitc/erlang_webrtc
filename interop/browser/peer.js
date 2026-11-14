@@ -85,22 +85,24 @@ const pageScript = () => {
     pc.ondatachannel = (e) => window.watch(e.channel);
     pc.ontrack = (e) => {
       window.emit({ event: 'track', kind: e.track.kind, mid: e.transceiver.mid, ssrc: 0, codec: '' });
-      const recv = e.receiver;
-      let last = -1;
-      const poll = setInterval(async () => {
-        const stats = await recv.getStats();
+    };
+    // Report decoded video frames and received audio packets.
+    const last = {};
+    window.poll = setInterval(async () => {
+      try {
+        const stats = await pc.getStats();
         stats.forEach((s) => {
-          if (s.type === 'inbound-rtp') {
-            const n = s.kind === 'video' ? (s.framesDecoded || 0) : (s.packetsReceived || 0);
-            if (n !== last && n > 0) {
-              last = n;
-              window.emit({ event: 'rtp', kind: s.kind, count: n, bytes: s.bytesReceived || 0 });
-            }
+          if (s.type !== 'inbound-rtp') return;
+          const n = s.kind === 'video' ? (s.framesDecoded || 0) : (s.packetsReceived || 0);
+          if (n > 0 && n !== last[s.kind]) {
+            last[s.kind] = n;
+            window.emit({ event: 'rtp', kind: s.kind, count: n, bytes: s.bytesReceived || 0 });
           }
         });
-      }, 250);
-      e.track.onended = () => clearInterval(poll);
-    };
+      } catch (err) {
+        console.log('stats: ' + err);
+      }
+    }, 250);
     const media = c.media || [];
     if (media.length) {
       const stream = await navigator.mediaDevices.getUserMedia({

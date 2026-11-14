@@ -660,7 +660,10 @@ start_sctp(#st{data = Data, dtls_role = Role} = St) ->
             %% 1200 byte datagrams minus the DTLS record overhead (13 byte
             %% header, 8 byte explicit nonce, 16 byte tag), so SCTP
             %% packets never need IP fragmentation (RFC 8261 §5).
-            mtu => 1200 - 37
+            mtu => 1200 - 37,
+            %% DTLS protects every packet: CRC32c may be skipped with
+            %% peers that accept it (RFC 9653 §5.1).
+            zero_checksum => true
         }
     }),
     {D1, Acts} = webrtc_dcep:connect(now_ms(), D0),

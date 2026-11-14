@@ -118,6 +118,6 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | ID | Section | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
 | ZC-1 | 4 | Zero Checksum Acceptable parameter (EDMID 1, SCTP over DTLS) | webrtc_sctp_param | webrtc_sctp_chunk_tests | Unit tested |
-| ZC-2 | 5.1 | Announced only when the upper layer allows it (`zero_checksum` option) | webrtc_sctp_handshake | assoc:zero_checksum_one_side_test | Unit tested |
+| ZC-2 | 5.1 | Announced only when the upper layer allows it (`zero_checksum` option); the WebRTC transport, always over DTLS, enables it | webrtc_sctp_handshake, webrtc_transport | assoc:zero_checksum_one_side_test, the E2E and interop data channel suites | Interoperability tested |
 | ZC-3 | 5.2 | Zero checksum sent only after the peer announced DTLS; INIT, INIT ACK, COOKIE ECHO and OOTB responses keep a correct CRC32c | webrtc_sctp_out, webrtc_sctp_handshake | assoc:zero_checksum_test | Unit tested |
 | ZC-4 | 5.3 | Zero checksum accepted only after announcing it, correct CRC32c always accepted | webrtc_sctp_assoc | assoc:bad_checksum_test, assoc:zero_checksum_test | Unit tested |

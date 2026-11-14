@@ -119,7 +119,8 @@ groups_test_() ->
 rsa_certificate_test() ->
     C = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
     S = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
-    Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(S)]}),
+    %% DTLS 1.2 suites carry the authentication algorithm.
+    Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(S)], versions => ['dtlsv1.2']}),
     Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(C)]}),
     #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
     ?assertMatch([#{suite := tls_ecdhe_rsa_with_aes_128_gcm_sha256}], connected(CE)),
@@ -311,3 +312,116 @@ fingerprint_format_test() ->
     ?assertEqual({error, bad_fingerprint}, webrtc_dtls_cert:parse_fingerprint(<<"sha-256 01:02">>)),
     ?assertEqual({error, bad_fingerprint}, webrtc_dtls_cert:parse_fingerprint(<<"md7 01">>)),
     ?assertEqual({error, bad_fingerprint}, webrtc_dtls_cert:parse_fingerprint(<<"sha-256 zz">>)).
+
+record_replay_window_jump_test() ->
+    %% A sequence number far ahead must not overflow the bitmap.
+    W = webrtc_dtls_record:replay_update(1 bsl 45, webrtc_dtls_record:replay_update(3, webrtc_dtls_record:replay_new())),
+    ?assertEqual(replay, webrtc_dtls_record:replay_check(1 bsl 45, W)),
+    ?assertEqual(replay, webrtc_dtls_record:replay_check(3, W)),
+    ?assertEqual(ok, webrtc_dtls_record:replay_check((1 bsl 45) - 1, W)).
+
+%% The tests above negotiate DTLS 1.3, the default. The same scenarios
+%% with DTLS 1.2 on the client.
+
+v12() -> #{versions => ['dtlsv1.2']}.
+
+dtls12_handshake_test() ->
+    {Cl, Sv} = pair(v12(), #{}),
+    #{c := C, s := S, ev := #{c := CE, s := SE}} = run(Cl, Sv),
+    ?assertMatch([#{version := 'dtlsv1.2', extended_master_secret := true, srtp_profile := 7}], connected(CE)),
+    ?assertMatch([#{version := 'dtlsv1.2'}], connected(SE)),
+    {ok, K} = webrtc_dtls:export_keying_material(?EXPORT_LABEL, no_context, 60, C),
+    ?assertEqual({ok, K}, webrtc_dtls:export_keying_material(?EXPORT_LABEL, no_context, 60, S)),
+    {ok, _, [{send, D}]} = webrtc_dtls:send(<<"hi">>, C),
+    ?assertMatch({_, [{event, {data, <<"hi">>}}]}, webrtc_dtls:handle_packet(D, 0, S)).
+
+dtls12_suites_test_() ->
+    [?_test(begin
+         {Cl, Sv} = pair((v12())#{suites => [Suite]}, #{}),
+         #{ev := #{c := CE}} = run(Cl, Sv),
+         ?assertMatch([#{suite := Name}], connected(CE))
+     end)
+     || {Suite, Name} <- [{16#C02B, tls_ecdhe_ecdsa_with_aes_128_gcm_sha256},
+                          {16#C02C, tls_ecdhe_ecdsa_with_aes_256_gcm_sha384},
+                          {16#CCA9, tls_ecdhe_ecdsa_with_chacha20_poly1305_sha256}]].
+
+dtls12_groups_test_() ->
+    [?_test(begin
+         {Cl, Sv} = pair((v12())#{groups => [G]}, #{}),
+         #{ev := #{c := CE}} = run(Cl, Sv),
+         ?assertMatch([#{version := 'dtlsv1.2', group := G}], connected(CE))
+     end)
+     || G <- [x25519, secp256r1, secp384r1]].
+
+dtls12_srtp_profile_selection_test() ->
+    {Cl, Sv} = pair((v12())#{srtp_profiles => [1, 7]}, #{srtp_profiles => [8, 1]}),
+    #{ev := #{c := CE}} = run(Cl, Sv),
+    ?assertMatch([#{version := 'dtlsv1.2', srtp_profile := 1}], connected(CE)).
+
+dtls12_single_loss_test_() ->
+    [?_test(begin
+         {Cl, Sv} = pair(v12(), #{}),
+         Drop = fun(F, K) -> F =:= From andalso K =:= N end,
+         #{ev := #{c := CE, s := SE}} = run(Cl, Sv, Drop),
+         ?assertMatch([#{version := 'dtlsv1.2'}], connected(CE)),
+         ?assertMatch([_], connected(SE))
+     end)
+     || From <- [c, s], N <- [1, 2, 3, 4]].
+
+dtls12_heavy_loss_test() ->
+    rand:seed(exsss, {1, 2, 3}),
+    {Cl, Sv} = pair((v12())#{rtx_limit => 12}, #{rtx_limit => 12}),
+    #{ev := #{c := CE, s := SE}} = run(Cl, Sv, fun(_, _) -> rand:uniform() < 0.4 end),
+    ?assertMatch([#{version := 'dtlsv1.2'}], connected(CE)),
+    ?assertMatch([_], connected(SE)).
+
+dtls12_small_mtu_fragmentation_test() ->
+    C = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
+    S = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
+    Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(S)], mtu => 200,
+                           versions => ['dtlsv1.2']}),
+    Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(C)], mtu => 200}),
+    #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
+    ?assertMatch([#{version := 'dtlsv1.2'}], connected(CE)),
+    ?assertMatch([_], connected(SE)).
+
+dtls12_deferred_fingerprint_test() ->
+    {C, S} = certs(),
+    Cl = webrtc_dtls:new(#{role => client, cert => C, versions => ['dtlsv1.2']}),
+    Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(C)]}),
+    #{c := CSt, s := SSt, ev := #{c := CE, s := SE}} = run(Cl, Sv),
+    ?assertEqual([], connected(CE)),
+    ?assertMatch([_], connected(SE)),
+    {ok, _, [{send, D}]} = webrtc_dtls:send(<<"early">>, SSt),
+    {CSt1, []} = webrtc_dtls:handle_packet(D, 0, CSt),
+    {_, A} = webrtc_dtls:set_remote_fingerprints([fp(S)], CSt1),
+    ?assertMatch([{event, {connected, #{version := 'dtlsv1.2'}}}, {event, {data, <<"early">>}}], A).
+
+dtls12_fingerprint_mismatch_test() ->
+    {C, S} = certs(),
+    Other = webrtc_dtls_cert:generate(),
+    Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(Other)],
+                           versions => ['dtlsv1.2']}),
+    Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(C)]}),
+    #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
+    ?assertEqual([{failed, fingerprint_mismatch}], CE),
+    ?assertEqual([{failed, {alert, 42}}], SE).
+
+dtls12_close_notify_test() ->
+    {Cl, Sv} = pair(v12(), #{}),
+    #{c := C, s := S} = run(Cl, Sv),
+    {_, [{send, D}]} = webrtc_dtls:close(C),
+    {_, A} = webrtc_dtls:handle_packet(D, 0, S),
+    ?assertMatch([{send, _}, {event, {closed, peer_closed}}], A).
+
+dtls12_mutated_handshake_test() ->
+    {Cl, Sv} = pair(v12(), #{}),
+    {Cl1, [{send, CH}]} = webrtc_dtls:start(0, Cl),
+    {_, [{send, HVR}]} = webrtc_dtls:handle_packet(CH, 0, Sv),
+    Mutations = fun(Bin) ->
+        [binary:part(Bin, 0, N) || N <- lists:seq(0, byte_size(Bin) - 1)] ++
+            [flip(Bin, I) || I <- lists:seq(0, byte_size(Bin) * 8 - 1, 7)]
+    end,
+    [_ = webrtc_dtls:handle_packet(M, 0, Sv) || M <- Mutations(CH)],
+    [_ = webrtc_dtls:handle_packet(M, 0, Cl1) || M <- Mutations(HVR)],
+    ok.

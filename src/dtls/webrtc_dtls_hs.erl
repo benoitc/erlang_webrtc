@@ -2,6 +2,13 @@
 %% RFC 5246 §7.4), full handshake only: WebRTC endpoints do not resume
 %% sessions, and renegotiation is refused.
 %%
+%% This module also owns the hello exchange that chooses the version
+%% (RFC 8446 §4.2.1, RFC 9147 §5.3): the ClientHello offers DTLS 1.3
+%% and DTLS 1.2, the server picks DTLS 1.3 when offered, and a client
+%% that offered DTLS 1.3 checks the downgrade sentinel (RFC 8446
+%% §4.1.3) when DTLS 1.2 is selected. DTLS 1.3 continues in
+%% `webrtc_dtls13_hs' and `webrtc_dtls13_server'.
+%%
 %% Flights (RFC 6347 §4.2.4):
 %% ```
 %% client                                   server
@@ -25,7 +32,7 @@
 
 -include("webrtc_dtls.hrl").
 
--export([start_client/1, handle/5, maybe_verify/1]).
+-export([start_client/1, handle/5, maybe_verify/1, check_fingerprint/1, client_hello_body/1]).
 
 -define(SCSV_RENEGOTIATION, 16#00FF).
 -define(MAX_HVR, 3).
@@ -40,30 +47,49 @@
 
 start_client(St) ->
     St1 = St#dtls{client_random = crypto:strong_rand_bytes(32)},
-    send_client_hello(St1#dtls{state = wait_server_hello}).
+    %% One key share, for our preferred group (RFC 8446 §4.2.8).
+    St2 =
+        case webrtc_dtls13_hs:offers13(St1) of
+            true ->
+                [G | _] = St1#dtls.groups,
+                {Pub, Priv} = webrtc_dtls_crypto:generate_ecdhe(G),
+                St1#dtls{kx = {G, Pub, Priv}};
+            false ->
+                St1#dtls{versions = St1#dtls.versions -- [dtls13]}
+        end,
+    send_client_hello(St2#dtls{state = wait_server_hello}).
 
 send_client_hello(St) ->
+    {_, St1} = queue_handshake(client_hello, client_hello_body(St), true, St),
+    St1.
+
+%% @doc The ClientHello for the versions we offer. A second ClientHello
+%% (after HelloVerifyRequest or HelloRetryRequest) only differs by the
+%% cookie and, after HelloRetryRequest, the key share.
+-spec client_hello_body(#dtls{}) -> binary().
+client_hello_body(St) ->
+    Offer12 = lists:member(dtls12, St#dtls.versions),
+    {Suites13, Exts13} = webrtc_dtls13_hs:client_hello_parts(St),
     Exts =
         [
             {supported_groups, [webrtc_dtls_crypto:group_id(G) || G <- St#dtls.groups]},
-            {ec_point_formats, [0]},
             {signature_algorithms, [
                 webrtc_dtls_crypto:sig_scheme_id(S)
              || S <- webrtc_dtls_crypto:signature_schemes()
-            ]},
-            {extended_master_secret, true},
-            {renegotiation_info, <<>>}
-        ] ++ srtp_ext(St#dtls.srtp_profiles),
-    Body = webrtc_dtls_msg:encode_body(client_hello, #{
+            ]}
+        ] ++
+            [{ec_point_formats, [0]} || Offer12] ++
+            [{extended_master_secret, true} || Offer12] ++
+            [{renegotiation_info, <<>>} || Offer12] ++
+            srtp_ext(St#dtls.srtp_profiles) ++ Exts13,
+    webrtc_dtls_msg:encode_body(client_hello, #{
         version => ?DTLS12,
         random => St#dtls.client_random,
         session_id => <<>>,
         cookie => St#dtls.cookie,
-        suites => St#dtls.suites,
+        suites => Suites13 ++ [S || Offer12, S <- St#dtls.suites],
         extensions => Exts
-    }),
-    {_, St1} = queue_handshake(client_hello, Body, true, St),
-    St1.
+    }).
 
 srtp_ext([]) -> [];
 srtp_ext(Profiles) -> [{use_srtp, {Profiles, <<>>}}].
@@ -80,13 +106,24 @@ handle(Type, Body, Full, Now, St) ->
 
 %% Client side.
 msg(client, wait_server_hello, hello_verify_request, #{cookie := C}, _Full, _Now, St) when
-    St#dtls.hvr_count < ?MAX_HVR
+    St#dtls.hvr_count < ?MAX_HVR, St#dtls.hrr =:= false
 ->
     %% RFC 6347 §4.2.1: the first ClientHello and the HelloVerifyRequest
     %% are not part of the transcript.
     send_client_hello(St#dtls{cookie = C, transcript = [], hvr_count = St#dtls.hvr_count + 1});
-msg(client, wait_server_hello, server_hello, M, Full, _Now, St) ->
-    client_server_hello(M, add(Full, St));
+msg(client, wait_server_hello, server_hello, #{extensions := Exts} = M, Full, _Now, St) ->
+    case lists:keymember(43, 1, Exts) of
+        true ->
+            %% supported_versions: DTLS 1.3 (RFC 8446 §4.2.1).
+            lists:member(dtls13, St#dtls.versions) orelse
+                fail(?ALERT_UNSUPPORTED_EXTENSION, {unsolicited_extension, 43}, St),
+            <<_:12/binary, Body/binary>> = Full,
+            webrtc_dtls13_hs:client_server_hello(M, Body, St);
+        false ->
+            lists:member(dtls12, St#dtls.versions) orelse
+                fail(?ALERT_PROTOCOL_VERSION, dtls12_not_enabled, St),
+            client_server_hello(M, add(Full, St#dtls{version = dtls12}))
+    end;
 msg(client, wait_server_hello_done, certificate, Certs, Full, _Now, #dtls{peer_cert = undefined} = St) ->
     peer_certificate(Certs, add(Full, St));
 msg(client, wait_server_hello_done, server_key_exchange, M, Full, _Now, St) when
@@ -107,8 +144,8 @@ msg(client, wait_server_finished, finished, VD, Full, _Now, St) ->
     St1 = add(Full, St),
     maybe_verify(St1#dtls{handshake_done = true, state = connected, rtx_at = infinity});
 %% Server side.
-msg(server, wait_client_hello, client_hello, M, Full, _Now, St) ->
-    server_client_hello(M, Full, St);
+msg(server, wait_client_hello, client_hello, M, Full, Now, St) ->
+    server_client_hello(M, Full, Now, St);
 msg(server, wait_client_finished, certificate, Certs, Full, _Now, St) when
     St#dtls.peer_cert =:= undefined, St#dtls.master =:= undefined
 ->
@@ -153,6 +190,13 @@ client_server_hello(M, St) ->
     #{version := V, random := SR, suite := SuiteId, compression := Comp, extensions := Exts} = M,
     V =:= ?DTLS12 orelse fail(?ALERT_PROTOCOL_VERSION, {bad_version, V}, St),
     Comp =:= 0 orelse fail(?ALERT_ILLEGAL_PARAMETER, bad_compression, St),
+    %% RFC 8446 §4.1.3: a DTLS 1.3 server selecting DTLS 1.2 marks its
+    %% random; when we offered DTLS 1.3 this means a downgrade.
+    Sentinel = binary:part(SR, 24, 8),
+    lists:member(dtls13, St#dtls.versions) andalso
+        (crypto:hash_equals(Sentinel, webrtc_dtls13_keys:downgrade12()) orelse
+            crypto:hash_equals(Sentinel, webrtc_dtls13_keys:downgrade10())) andalso
+        fail(?ALERT_ILLEGAL_PARAMETER, downgrade_detected, St),
     lists:member(SuiteId, St#dtls.suites) orelse fail(?ALERT_ILLEGAL_PARAMETER, bad_suite, St),
     {ok, Suite} = webrtc_dtls_crypto:suite(SuiteId),
     Ems = proplists:get_value(extended_master_secret, Exts, false),
@@ -230,7 +274,32 @@ client_flight(St0) ->
 %% Server steps
 %%====================================================================
 
-server_client_hello(M, Full, St) ->
+server_client_hello(#{extensions := Exts} = M, Full, Now, St) ->
+    Offered =
+        case webrtc_dtls13_msg:ext(client_hello, supported_versions, Exts) of
+            undefined -> legacy;
+            {ok, Vs} -> Vs;
+            {error, _} -> fail(?ALERT_DECODE_ERROR, bad_supported_versions, St)
+        end,
+    Mine = St#dtls.versions,
+    if
+        Offered =/= legacy ->
+            %% RFC 8446 §4.2.1: the version comes from supported_versions.
+            case lists:member(?DTLS13, Offered) andalso lists:member(dtls13, Mine) of
+                true ->
+                    <<_:12/binary, Body/binary>> = Full,
+                    webrtc_dtls13_server:client_hello(M, Body, Now, St);
+                false ->
+                    (lists:member(?DTLS12, Offered) andalso lists:member(dtls12, Mine)) orelse
+                        fail(?ALERT_PROTOCOL_VERSION, no_common_version, St),
+                    server_client_hello12(M, Full, St)
+            end;
+        true ->
+            lists:member(dtls12, Mine) orelse fail(?ALERT_PROTOCOL_VERSION, no_common_version, St),
+            server_client_hello12(M, Full, St)
+    end.
+
+server_client_hello12(M, Full, St) ->
     #{version := V, random := CR, session_id := Sid, cookie := Cookie, suites := Suites} = M,
     %% DTLS versions count down: 0xFEFD (1.2) < 0xFEFF (1.0).
     V =< ?DTLS12 orelse fail(?ALERT_PROTOCOL_VERSION, {unsupported_version, V}, St),
@@ -301,7 +370,12 @@ negotiate(#{suites := Suites, compression := Comp, extensions := Exts}, St) ->
             undefined ->
                 {undefined, []}
         end,
-    SR = crypto:strong_rand_bytes(32),
+    SR =
+        case lists:member(dtls13, St#dtls.versions) of
+            %% RFC 8446 §4.1.3 downgrade sentinel.
+            true -> <<(crypto:strong_rand_bytes(24))/binary, (webrtc_dtls13_keys:downgrade12())/binary>>;
+            false -> crypto:strong_rand_bytes(32)
+        end,
     Exts1 =
         [{renegotiation_info, <<>>} || Secure] ++
             [{extended_master_secret, true} || Ems] ++
@@ -311,7 +385,7 @@ negotiate(#{suites := Suites, compression := Comp, extensions := Exts}, St) ->
         version => ?DTLS12, random => SR, session_id => <<>>, suite => SuiteId, extensions => Exts1
     }),
     St1 = St#dtls{
-        server_random = SR, suite = Suite, group = Group, ems = Ems, srtp_profile = Profile
+        version = dtls12, server_random = SR, suite = Suite, group = Group, ems = Ems, srtp_profile = Profile
     },
     {_, St2} = queue_handshake(server_hello, SH, true, St1),
     Cert = webrtc_dtls_msg:encode_body(certificate, [St#dtls.cert_der]),
@@ -362,6 +436,9 @@ peer_certificate([Der | _], St) ->
             fail(?ALERT_BAD_CERTIFICATE, Reason, St)
     end.
 
+%% @doc Check the peer certificate against the remote fingerprints, if
+%% known (RFC 8122 §5).
+-spec check_fingerprint(#dtls{}) -> #dtls{}.
 check_fingerprint(#dtls{remote_fps = undefined} = St) ->
     St;
 check_fingerprint(#dtls{remote_fps = FPs, peer_cert = Der} = St) ->

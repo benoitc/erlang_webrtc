@@ -1,5 +1,7 @@
-%% @doc DTLS 1.2 endpoint for WebRTC (RFC 6347, RFC 5764, RFC 8842), as a
-%% sans-IO engine (see docs/ARCHITECTURE.md).
+%% @doc DTLS endpoint for WebRTC (RFC 9147 DTLS 1.3 and RFC 6347 DTLS
+%% 1.2, RFC 5764, RFC 8842), as a sans-IO engine (see
+%% docs/ARCHITECTURE.md). Both versions are offered by default; the
+%% server picks DTLS 1.3 when the client offers it.
 %%
 %% ```
 %% Cert = webrtc_dtls_cert:generate(),
@@ -21,8 +23,10 @@
 %% `set_remote_fingerprints/2'; application data received meanwhile is
 %% held, not delivered.
 %%
-%% This module owns the record layer, reassembly, flights and timers;
-%% `webrtc_dtls_hs' owns the handshake messages.
+%% This module owns the API; `webrtc_dtls12' the DTLS 1.2 record layer,
+%% flights and timers; `webrtc_dtls_hs' the DTLS 1.2 handshake messages
+%% and the hello exchange. DTLS 1.3 is in `webrtc_dtls13' (records, ACKs,
+%% KeyUpdate), `webrtc_dtls13_hs' and `webrtc_dtls13_server'.
 -module(webrtc_dtls).
 
 -include("webrtc_dtls.hrl").
@@ -41,11 +45,19 @@
     peer_certificate/1,
     status/1,
     role/1,
-    info/1
+    info/1,
+    key_update/2
 ]).
 
-%% Used by webrtc_dtls_hs.
--export([queue_handshake/4, queue_ccs/1, install_write/2, emit/2, fail/3]).
+%% Used by webrtc_dtls_hs, webrtc_dtls_reasm and the DTLS 1.3 modules.
+-export([
+    queue_handshake/4,
+    queue_ccs/1,
+    install_write/2,
+    emit/2,
+    fail/3,
+    alert_datagram/3
+]).
 
 -export_type([state/0, action/0, event/0]).
 
@@ -58,11 +70,6 @@
     | {failed, term()}.
 
 -define(DEFAULT_SRTP, [16#0007, 16#0008, 16#0001, 16#0002]).
--define(MAX_HELD, 64).
--define(MAX_EARLY, 32).
--define(MAX_MSG_LEN, 131072).
--define(REASM_AHEAD, 8).
--define(MAX_SEQ, 16#FFFFFFFFFFFF).
 
 %%====================================================================
 %% API
@@ -76,15 +83,34 @@
 %% <li>`remote_fingerprints': list of `webrtc_dtls_cert:fingerprint()'.</li>
 %% <li>`srtp_profiles': DTLS-SRTP profile ids in preference order;
 %%     `[]' disables use_srtp.</li>
-%% <li>`mtu' (default 1200), `use_cookie' (server, default true),
-%%     `require_ems' (default true), `rtx_initial' (ms, default 400),
-%%     `rtx_max' (ms, default 60000), `rtx_limit' (default 7).</li>
+%% <li>`versions': `['dtlsv1.3', 'dtlsv1.2']' (default) or a subset;
+%%     the client offers them, the server picks the highest version the
+%%     client offers.</li>
+%% <li>`suites': DTLS 1.3 and DTLS 1.2 cipher suite ids in preference
+%%     order (default: all supported). DTLS 1.3 is only offered when
+%%     the list has a DTLS 1.3 suite.</li>
+%% <li>`mtu' (default 1200), `use_cookie' (server, default true; a
+%%     HelloVerifyRequest in DTLS 1.2, a HelloRetryRequest with a
+%%     stateless cookie in DTLS 1.3), `require_ems' (DTLS 1.2, default
+%%     true), `rtx_initial' (ms, default 400), `rtx_max' (ms, default
+%%     60000), `rtx_limit' (default 7), `rekey_records' (DTLS 1.3:
+%%     records sent before a KeyUpdate, default 2^23),
+%%     `cookie_lifetime' (ms, default 60000).</li>
 %% </ul>
 -spec new(map()) -> state().
 new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
     Role =:= client; Role =:= server
 ->
     Initial = maps:get(rtx_initial, Opts, 400),
+    Suites = maps:get(suites, Opts, webrtc_dtls13_keys:supported_suites() ++ webrtc_dtls_crypto:supported_suites()),
+    Suites13 = [S || S <- Suites, webrtc_dtls13_keys:suite(S) =/= error],
+    %% Without a DTLS 1.3 suite the endpoint does not support DTLS 1.3
+    %% (and a server then sets no downgrade sentinel).
+    Versions = [
+        V
+     || V <- [version_atom(N) || N <- maps:get(versions, Opts, ['dtlsv1.3', 'dtlsv1.2'])],
+        V =/= dtls13 orelse Suites13 =/= []
+    ],
     #dtls{
         role = Role,
         state =
@@ -96,7 +122,11 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         key = Key,
         remote_fps = maps:get(remote_fingerprints, Opts, undefined),
         srtp_profiles = maps:get(srtp_profiles, Opts, ?DEFAULT_SRTP),
-        suites = suites_for_key(Key, maps:get(suites, Opts, webrtc_dtls_crypto:supported_suites())),
+        versions = Versions,
+        suites = suites_for_key(Key, Suites),
+        suites13 = Suites13,
+        rekey_records = maps:get(rekey_records, Opts, 1 bsl 23),
+        cookie_lifetime = maps:get(cookie_lifetime, Opts, 60000),
         groups = maps:get(groups, Opts, [x25519, secp256r1, secp384r1]),
         require_ems = maps:get(require_ems, Opts, true),
         use_cookie = maps:get(use_cookie, Opts, true),
@@ -108,7 +138,11 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         rtx_limit = maps:get(rtx_limit, Opts, 7)
     }.
 
-%% Only offer suites whose authentication matches our certificate key.
+version_atom('dtlsv1.3') -> dtls13;
+version_atom('dtlsv1.2') -> dtls12.
+
+%% Only offer DTLS 1.2 suites whose authentication matches our
+%% certificate key.
 suites_for_key(Key, Suites) ->
     Auth =
         case element(1, Key) of
@@ -128,36 +162,33 @@ start(_Now, St) ->
 -spec handle_packet(binary(), integer(), state()) -> {state(), [action()]}.
 handle_packet(_Bin, _Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
     {St, []};
+handle_packet(Bin, Now, #dtls{version = dtls12} = St0) ->
+    run(Now, St0, fun(S) -> webrtc_dtls12:handle_records(webrtc_dtls_record:decode(Bin), Now, S) end);
 handle_packet(Bin, Now, St0) ->
-    run(Now, St0, fun(S) ->
-        lists:foldl(fun(R, Acc) -> handle_record(R, Now, Acc) end, S, webrtc_dtls_record:decode(Bin))
-    end).
+    %% Hello exchange or DTLS 1.3: plaintext and unified header records
+    %% may share a datagram (RFC 9147 §4.1).
+    run(Now, St0, fun(S) -> webrtc_dtls13:handle_records(webrtc_dtls13_record:split(Bin), Now, S) end).
 
 -spec handle_timeout(integer(), state()) -> {state(), [action()]}.
-handle_timeout(Now, #dtls{rtx_at = At} = St) when At =/= infinity, Now >= At ->
-    case St#dtls.rtx_count >= St#dtls.rtx_limit of
-        true ->
-            St1 = St#dtls{state = failed, rtx_at = infinity},
-            {St1, [{event, {failed, handshake_timeout}}]};
-        false ->
-            Interval = min(St#dtls.rtx_interval * 2, St#dtls.rtx_max_interval),
-            {St1, Dgrams} = transmit(St#dtls.last_flight, St),
-            St2 = St1#dtls{
-                rtx_count = St#dtls.rtx_count + 1,
-                rtx_interval = Interval,
-                rtx_at = Now + Interval
-            },
-            {St2, [{send, D} || D <- Dgrams]}
-    end;
-handle_timeout(_Now, St) ->
-    {St, []}.
+handle_timeout(_Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
+    {St, []};
+handle_timeout(Now, #dtls{version = dtls13} = St) ->
+    run(Now, St, fun(S) -> webrtc_dtls13:timeout(Now, S) end);
+handle_timeout(Now, St) ->
+    webrtc_dtls12:timeout(Now, St).
 
 -spec next_timeout(state()) -> integer() | infinity.
-next_timeout(#dtls{rtx_at = At}) ->
-    At.
+next_timeout(#dtls{rtx_at = At, ack_at = Ack}) ->
+    min(At, Ack).
 
 %% @doc Send application data (one record). Only valid once connected.
 -spec send(iodata(), state()) -> {ok, state(), [action()]} | {error, term()}.
+send(Data, #dtls{state = connected, verified = true, version = dtls13} = St) ->
+    Bin = iolist_to_binary(Data),
+    case byte_size(Bin) =< 16384 of
+        true -> webrtc_dtls13:send(Bin, St);
+        false -> {error, too_large}
+    end;
 send(Data, #dtls{state = connected, verified = true, write_epoch = E} = St) when E > 0 ->
     Bin = iolist_to_binary(Data),
     case byte_size(Bin) =< 16384 of
@@ -189,10 +220,14 @@ set_remote_fingerprints(FPs, St) ->
         webrtc_dtls_hs:maybe_verify(S)
     end).
 
-%% @doc RFC 5705 exporter. DTLS-SRTP uses `<<"EXTRACTOR-dtls_srtp">>'
-%% with `no_context'.
+%% @doc Keying material exporter: RFC 5705 for DTLS 1.2, RFC 8446 §7.5
+%% for DTLS 1.3. DTLS-SRTP uses `<<"EXTRACTOR-dtls_srtp">>' with
+%% `no_context' (RFC 5764 §4.2).
 -spec export_keying_material(binary(), binary() | no_context, non_neg_integer(), state()) ->
     {ok, binary()} | {error, not_connected}.
+export_keying_material(Label, Context, Len, #dtls{handshake_done = true, verified = true, version = dtls13} = St) ->
+    #{hash := H} = St#dtls.suite13,
+    {ok, webrtc_dtls13_keys:exporter(webrtc_dtls13_keys:prefix(), H, St#dtls.exporter, Label, Context, Len)};
 export_keying_material(Label, Context, Len, #dtls{handshake_done = true, verified = true} = St) ->
     #{prf := Hash} = St#dtls.suite,
     F = webrtc_dtls_crypto:export(
@@ -214,11 +249,20 @@ status(#dtls{state = S}) -> S.
 -spec role(state()) -> client | server.
 role(#dtls{role = R}) -> R.
 
+%% @doc Connection parameters. `extended_master_secret' is always true
+%% for DTLS 1.3, whose key schedule binds every secret to the handshake
+%% transcript, the property RFC 7627 adds to DTLS 1.2.
 -spec info(state()) -> map().
+info(#dtls{version = dtls13} = St) ->
+    (info12(St))#{suite => suite_name(St#dtls.suite13), extended_master_secret => true};
 info(#dtls{} = St) ->
+    info12(St).
+
+info12(St) ->
     #{
         role => St#dtls.role,
         state => St#dtls.state,
+        version => version_name(St#dtls.version),
         suite => suite_name(St#dtls.suite),
         group => St#dtls.group,
         srtp_profile => St#dtls.srtp_profile,
@@ -226,8 +270,26 @@ info(#dtls{} = St) ->
         verified => St#dtls.verified
     }.
 
+version_name(dtls13) -> 'dtlsv1.3';
+version_name(dtls12) -> 'dtlsv1.2';
+version_name(undefined) -> undefined.
+
 suite_name(undefined) -> undefined;
 suite_name(#{name := N}) -> N.
+
+%% @doc Update our sending keys and ask the peer to update its own
+%% (DTLS 1.3 KeyUpdate, RFC 9147 §8). The new keys are used once the
+%% peer acknowledged the KeyUpdate.
+-spec key_update(integer(), state()) -> {ok, state(), [action()]} | {error, not_connected | not_supported | pending}.
+key_update(Now, #dtls{version = dtls13, state = connected, ku_pending = false} = St) ->
+    {St1, A} = run(Now, St, fun(S) -> webrtc_dtls13_epoch:start_key_update(update_requested, S) end),
+    {ok, St1, A};
+key_update(_Now, #dtls{version = dtls13, state = connected}) ->
+    {error, pending};
+key_update(_Now, #dtls{state = connected}) ->
+    {error, not_supported};
+key_update(_Now, _St) ->
+    {error, not_connected}.
 
 %%====================================================================
 %% Running the engine
@@ -242,7 +304,11 @@ run(Now, St0, F) ->
         catch
             throw:{dtls_alert, Desc, Reason, StA} -> fatal(Desc, Reason, StA)
         end,
-    St2 = flush(Now, St1),
+    St2 =
+        case St1#dtls.version of
+            dtls13 -> webrtc_dtls13:flush(Now, St1);
+            _ -> webrtc_dtls12:flush(Now, St1)
+        end,
     {St2#dtls{out = []}, lists:reverse(St2#dtls.out)}.
 
 %% @private Abort the handshake from webrtc_dtls_hs.
@@ -252,7 +318,7 @@ fail(Desc, Reason, St) ->
 
 fatal(Desc, Reason, St) ->
     {Dgrams, St1} = alert_datagram(2, Desc, St),
-    St2 = St1#dtls{state = failed, rtx_at = infinity, building = []},
+    St2 = St1#dtls{state = failed, rtx_at = infinity, ack_at = infinity, ack_now = false, building = []},
     St3 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St2, Dgrams),
     emit({failed, Reason}, St3).
 
@@ -263,170 +329,6 @@ emit(Event, St) ->
 
 push(Action, #dtls{out = Out} = St) ->
     St#dtls{out = [Action | Out]}.
-
-%%====================================================================
-%% Inbound records
-%%====================================================================
-
-handle_record(_R, _Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
-    St;
-handle_record(#{epoch := E} = R, Now, #dtls{read_epoch = RE} = St) when E =:= RE ->
-    case open_record(R, St) of
-        {ok, Plain} ->
-            #{seq := Seq} = R,
-            W = maps:get(E, St#dtls.replay, webrtc_dtls_record:replay_new()),
-            case webrtc_dtls_record:replay_check(Seq, W) of
-                ok ->
-                    St1 = St#dtls{
-                        replay = maps:put(E, webrtc_dtls_record:replay_update(Seq, W), St#dtls.replay)
-                    },
-                    content(maps:get(type, R), Plain, E, Now, St1);
-                replay ->
-                    St
-            end;
-        error ->
-            %% RFC 6347 §4.1.2.7: invalid records are silently discarded.
-            St
-    end;
-handle_record(#{epoch := 0, type := handshake, fragment := Frag}, Now, #dtls{read_epoch = RE} = St) when
-    RE > 0
-->
-    %% Plaintext retransmission of an earlier flight of the peer.
-    case webrtc_dtls_msg:decode_fragment(Frag) of
-        {ok, [_ | _]} -> peer_retransmitted(Now, St);
-        _ -> St
-    end;
-handle_record(#{epoch := E} = R, _Now, #dtls{read_epoch = RE, pending_read = P, early = Early} = St) when
-    E =:= RE + 1, P =/= undefined, length(Early) < ?MAX_EARLY
-->
-    St#dtls{early = [R | Early]};
-handle_record(_R, _Now, St) ->
-    St.
-
-open_record(#{epoch := 0, fragment := F}, _St) ->
-    {ok, F};
-open_record(R, #dtls{read_cipher = C}) when C =/= undefined ->
-    case webrtc_dtls_record:unprotect(R, C) of
-        {ok, P} -> {ok, P};
-        {error, _} -> error
-    end;
-open_record(_, _) ->
-    error.
-
-content(change_cipher_spec, <<1>>, _E, Now, #dtls{pending_read = P} = St) when P =/= undefined ->
-    St1 = St#dtls{read_cipher = P, read_epoch = St#dtls.read_epoch + 1, pending_read = undefined},
-    Early = lists:reverse(St1#dtls.early),
-    lists:foldl(fun(R, S) -> handle_record(R, Now, S) end, St1#dtls{early = []}, Early);
-content(change_cipher_spec, _, _E, _Now, St) ->
-    St;
-content(alert, <<Level, Desc>>, E, _Now, St) ->
-    handle_alert(Level, Desc, E, St);
-content(alert, _, _E, _Now, St) ->
-    St;
-content(handshake, Frag, _E, Now, St) ->
-    case webrtc_dtls_msg:decode_fragment(Frag) of
-        {ok, Frags} -> lists:foldl(fun(F, S) -> fragment(F, Now, S) end, St, Frags);
-        {error, _} -> webrtc_dtls:fail(?ALERT_DECODE_ERROR, decode_error, St)
-    end;
-content(application_data, Data, E, _Now, #dtls{handshake_done = true} = St) when E > 0 ->
-    case St#dtls.verified of
-        true ->
-            emit({data, Data}, St);
-        false when length(St#dtls.held) < ?MAX_HELD ->
-            St#dtls{held = [Data | St#dtls.held]};
-        false ->
-            St
-    end;
-content(_Type, _Data, _E, _Now, St) ->
-    St.
-
-handle_alert(_Level, ?ALERT_CLOSE_NOTIFY, _E, St) ->
-    {Dgrams, St1} = alert_datagram(1, ?ALERT_CLOSE_NOTIFY, St),
-    St2 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St1, Dgrams),
-    emit({closed, peer_closed}, St2#dtls{state = closed, rtx_at = infinity, building = []});
-handle_alert(2, Desc, _E, St) ->
-    emit({failed, {alert, Desc}}, St#dtls{state = failed, rtx_at = infinity, building = []});
-handle_alert(_Level, _Desc, _E, St) ->
-    St.
-
-%%====================================================================
-%% Handshake reassembly (RFC 6347 §4.2.3)
-%%====================================================================
-
-fragment(#{length := Len}, _Now, St) when Len > ?MAX_MSG_LEN ->
-    webrtc_dtls:fail(?ALERT_HANDSHAKE_FAILURE, message_too_large, St);
-fragment(#{seq := Seq, type := client_hello} = F, Now, #dtls{state = wait_client_hello} = St) when
-    Seq > St#dtls.recv_msg_seq
-->
-    %% A stateless server takes the message sequence from the client's
-    %% ClientHello (§4.2.2).
-    fragment(F, Now, St#dtls{recv_msg_seq = Seq, reasm = #{}});
-fragment(#{seq := Seq}, Now, #dtls{recv_msg_seq = Next} = St) when Seq < Next ->
-    peer_retransmitted(Now, St);
-fragment(#{seq := Seq} = F, Now, #dtls{recv_msg_seq = Next} = St) when Seq < Next + ?REASM_AHEAD ->
-    St1 = add_fragment(F, St),
-    deliver(Now, St1);
-fragment(_F, _Now, St) ->
-    St.
-
-add_fragment(#{type := T, length := L, seq := Seq, offset := Off, data := D}, #dtls{reasm = R} = St) ->
-    case maps:get(Seq, R, {T, L, #{}}) of
-        {T, L, Pieces} ->
-            St#dtls{reasm = R#{Seq => {T, L, Pieces#{Off => D}}}};
-        _ ->
-            %% Inconsistent type or length for the same message sequence.
-            webrtc_dtls:fail(?ALERT_ILLEGAL_PARAMETER, inconsistent_fragment, St)
-    end.
-
-deliver(Now, #dtls{recv_msg_seq = Next, reasm = R} = St) ->
-    case maps:find(Next, R) of
-        {ok, {T, L, Pieces}} ->
-            case assemble(L, lists:sort(maps:to_list(Pieces)), 0, []) of
-                {ok, Body} ->
-                    St1 = St#dtls{recv_msg_seq = Next + 1, reasm = maps:remove(Next, R)},
-                    Full = webrtc_dtls_msg:full(T, Next, Body),
-                    St2 = webrtc_dtls_hs:handle(T, Body, Full, Now, St1),
-                    case St2#dtls.state of
-                        S when S =:= failed; S =:= closed -> St2;
-                        _ -> deliver(Now, St2)
-                    end;
-                incomplete ->
-                    St
-            end;
-        error ->
-            St
-    end.
-
-%% Pieces may overlap (retransmissions with a different fragmentation).
-assemble(L, _Pieces, Pos, Acc) when Pos >= L ->
-    {ok, iolist_to_binary(lists:reverse(Acc))};
-assemble(_L, [], _Pos, _Acc) ->
-    incomplete;
-assemble(L, [{Off, _} | _], Pos, _Acc) when Off > Pos, Off < L ->
-    incomplete;
-assemble(L, [{Off, D} | Rest], Pos, Acc) ->
-    End = Off + byte_size(D),
-    case End =< Pos of
-        true ->
-            assemble(L, Rest, Pos, Acc);
-        false ->
-            Skip = Pos - Off,
-            <<_:Skip/binary, New/binary>> = D,
-            assemble(L, Rest, End, [New | Acc])
-    end.
-
-%% The peer resent a flight we already processed: our reply was lost,
-%% send our last flight again (§4.2.4). Rate limited to one resend per
-%% half initial timeout so a flood of copies does not amplify.
-peer_retransmitted(_Now, #dtls{last_flight = []} = St) ->
-    St;
-peer_retransmitted(Now, #dtls{last_peer_rtx = Last, rtx_initial = I} = St) when
-    Last =:= undefined; Now - Last >= I div 2
-->
-    {St1, Dgrams} = transmit(St#dtls.last_flight, St),
-    lists:foldl(fun(D, S) -> push({send, D}, S) end, St1#dtls{last_peer_rtx = Now}, Dgrams);
-peer_retransmitted(_Now, St) ->
-    St.
 
 %%====================================================================
 %% Outbound flights
@@ -468,90 +370,13 @@ install_write(Suite, #dtls{role = Role, keys = {CK, SK, CIV, SIV}} = St) ->
         end,
     St#dtls{write_ciphers = maps:put(1, W, St#dtls.write_ciphers), pending_read = R}.
 
-%% Send the flight being built, if any, and arm the retransmission timer
-%% when we expect an answer.
-flush(_Now, #dtls{building = []} = St) ->
-    St;
-flush(Now, #dtls{building = Items} = St) ->
-    {St1, Dgrams} = transmit(Items, St),
-    St2 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St1, Dgrams),
-    Waiting = lists:member(St2#dtls.state, [
-        wait_server_hello, wait_server_hello_done, wait_server_finished, wait_client_finished
-    ]),
-    St2#dtls{
-        building = [],
-        last_flight = Items,
-        rtx_count = 0,
-        rtx_interval = St#dtls.rtx_initial,
-        rtx_at =
-            case Waiting of
-                true -> Now + St#dtls.rtx_initial;
-                false -> infinity
-            end
-    }.
+encode_record(Type, E, Data, #dtls{version = dtls13} = St) ->
+    webrtc_dtls13:encode_record(Type, E, Data, St);
+encode_record(Type, E, Data, St) ->
+    webrtc_dtls12:encode_record(Type, E, Data, St).
 
-%% Encode flight items into datagrams no larger than the MTU (records are
-%% packed together, handshake messages are fragmented).
-transmit(Items, St0) ->
-    {Records, St} = lists:foldl(
-        fun(Item, {Acc, S}) ->
-            {Rs, S1} = item_records(Item, S),
-            {Acc ++ Rs, S1}
-        end,
-        {[], St0},
-        Items
-    ),
-    {St, pack(Records, St#dtls.mtu, <<>>, [])}.
-
-item_records({change_cipher_spec, E}, St) ->
-    {ok, R, St1} = encode_record(change_cipher_spec, E, <<1>>, St),
-    {[R], St1};
-item_records({handshake, E, Type, Seq, Body}, St) ->
-    Max = St#dtls.mtu - 13 - overhead(E, St),
-    lists:foldl(
-        fun(Frag, {Acc, S}) ->
-            {ok, R, S1} = encode_record(handshake, E, Frag, S),
-            {Acc ++ [R], S1}
-        end,
-        {[], St},
-        webrtc_dtls_msg:fragments(Type, Seq, Body, Max)
-    ).
-
-overhead(0, _St) ->
-    0;
-overhead(E, #dtls{write_ciphers = Cs}) ->
-    #{explicit_nonce := X} = maps:get(E, Cs),
-    X + 16.
-
-encode_record(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
-    Seq = maps:get(E, Seqs, 0),
-    case Seq > ?MAX_SEQ of
-        true ->
-            {error, sequence_exhausted};
-        false ->
-            Rec =
-                case E of
-                    0 ->
-                        webrtc_dtls_record:encode(Type, ?DTLS12, 0, Seq, Data);
-                    _ ->
-                        webrtc_dtls_record:protect(
-                            Type, ?DTLS12, E, Seq, Data, maps:get(E, St#dtls.write_ciphers)
-                        )
-                end,
-            {ok, Rec, St#dtls{write_seq = Seqs#{E => Seq + 1}}}
-    end.
-
-pack([], _Mtu, <<>>, Acc) ->
-    lists:reverse(Acc);
-pack([], _Mtu, Cur, Acc) ->
-    lists:reverse([Cur | Acc]);
-pack([R | Rest], Mtu, <<>>, Acc) ->
-    pack(Rest, Mtu, R, Acc);
-pack([R | Rest], Mtu, Cur, Acc) when byte_size(Cur) + byte_size(R) =< Mtu ->
-    pack(Rest, Mtu, <<Cur/binary, R/binary>>, Acc);
-pack([R | Rest], Mtu, Cur, Acc) ->
-    pack(Rest, Mtu, R, [Cur | Acc]).
-
+%% @private
+-spec alert_datagram(1 | 2, 0..255, state()) -> {[binary()], state()}.
 alert_datagram(Level, Desc, #dtls{write_epoch = E} = St) ->
     case encode_record(alert, E, <<Level, Desc>>, St) of
         {ok, R, St1} -> {[R], St1};

@@ -16,7 +16,8 @@
     fragments/4,
     type_code/1,
     type_name/1,
-    encode_extensions/1
+    encode_extensions/1,
+    decode_extensions/1
 ]).
 
 -export_type([msg_type/0, fragment/0]).
@@ -33,6 +34,10 @@
     | certificate_verify
     | client_key_exchange
     | finished
+    | new_session_ticket
+    | encrypted_extensions
+    | key_update
+    | message_hash
     | 0..255.
 -type fragment() :: #{
     type := msg_type(),
@@ -61,6 +66,10 @@ type_code(server_hello_done) -> 14;
 type_code(certificate_verify) -> 15;
 type_code(client_key_exchange) -> 16;
 type_code(finished) -> 20;
+type_code(new_session_ticket) -> 4;
+type_code(encrypted_extensions) -> 8;
+type_code(key_update) -> 24;
+type_code(message_hash) -> 254;
 type_code(N) when is_integer(N) -> N.
 
 -spec type_name(0..255) -> msg_type().
@@ -75,6 +84,9 @@ type_name(14) -> server_hello_done;
 type_name(15) -> certificate_verify;
 type_name(16) -> client_key_exchange;
 type_name(20) -> finished;
+type_name(4) -> new_session_ticket;
+type_name(8) -> encrypted_extensions;
+type_name(24) -> key_update;
 type_name(N) -> N.
 
 %%====================================================================
@@ -264,6 +276,12 @@ encode_ext({Type, Data}) when is_integer(Type), is_binary(Data) ->
 
 ext(Type, Data) ->
     [<<Type:16>>, vec16(Data)].
+
+%% @doc Decode an extension block (with its length). Raises on
+%% malformed input; callers run it under `decode_body/2' style guards.
+-spec decode_extensions(binary()) -> [{atom() | non_neg_integer(), term()}].
+decode_extensions(Bin) ->
+    extensions(Bin).
 
 %% Absent extension block is allowed (RFC 5246 §7.4.1.2).
 extensions(<<>>) ->

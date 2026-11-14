@@ -1,7 +1,9 @@
-%% Private state of the DTLS engine (webrtc_dtls, webrtc_dtls_hs).
+%% Private state of the DTLS engine (webrtc_dtls, webrtc_dtls_hs,
+%% webrtc_dtls13, webrtc_dtls13_hs).
 
 -define(DTLS12, 16#FEFD).
 -define(DTLS10, 16#FEFF).
+-define(DTLS13, 16#FEFC).
 
 %% Alert descriptions (RFC 5246 §7.2).
 -define(ALERT_CLOSE_NOTIFY, 0).
@@ -16,6 +18,10 @@
 -define(ALERT_INSUFFICIENT_SECURITY, 71).
 -define(ALERT_INTERNAL_ERROR, 80).
 -define(ALERT_NO_RENEGOTIATION, 100).
+%% RFC 8446 §6.
+-define(ALERT_MISSING_EXTENSION, 109).
+-define(ALERT_UNSUPPORTED_EXTENSION, 110).
+-define(ALERT_CERTIFICATE_REQUIRED, 116).
 
 -record(dtls, {
     role :: client | server,
@@ -24,6 +30,10 @@
     %% server: wait_client_hello | wait_client_finished | connected
     %% both:   closed | failed
     state :: atom(),
+    %% Negotiated version (undefined until the hello exchange decides it)
+    %% and the versions this endpoint accepts.
+    version :: undefined | dtls12 | dtls13,
+    versions = [dtls13, dtls12] :: [dtls12 | dtls13],
     cert_der :: binary(),
     key :: public_key:private_key(),
     remote_fps :: undefined | [webrtc_dtls_cert:fingerprint()],
@@ -34,6 +44,7 @@
     srtp_profiles = [] :: [0..16#FFFF],
     srtp_profile :: undefined | 0..16#FFFF,
     suites :: [0..16#FFFF],
+    suites13 = [] :: [0..16#FFFF],
     groups :: [webrtc_dtls_crypto:group()],
     require_ems = true :: boolean(),
     use_cookie = true :: boolean(),
@@ -65,7 +76,7 @@
     %% Record layer.
     write_epoch = 0 :: non_neg_integer(),
     write_seq = #{0 => 0} :: #{non_neg_integer() => non_neg_integer()},
-    write_ciphers = #{} :: #{non_neg_integer() => webrtc_dtls_record:cipher()},
+    write_ciphers = #{} :: #{non_neg_integer() => webrtc_dtls_record:cipher() | webrtc_dtls13_keys:keys()},
     read_epoch = 0 :: non_neg_integer(),
     read_cipher :: undefined | webrtc_dtls_record:cipher(),
     pending_read :: undefined | webrtc_dtls_record:cipher(),
@@ -84,6 +95,31 @@
     last_peer_rtx = undefined :: undefined | integer(),
     %% Application data received before the fingerprint is verified.
     held = [] :: [binary()],
+    %% DTLS 1.3 (RFC 9147). Client key share {Group, Public, Private}, HRR
+    %% state, the negotiated suite and the key schedule secrets.
+    kx :: undefined | {webrtc_dtls_crypto:group(), binary(), binary()},
+    hrr = false :: boolean(),
+    cookie13 :: undefined | binary(),
+    suite13 :: undefined | webrtc_dtls13_keys:suite(),
+    cr_context :: undefined | binary(),
+    secrets = #{} :: #{atom() => binary()},
+    exporter :: undefined | binary(),
+    peer_finished = false :: boolean(),
+    %% Read keys per epoch; record numbers of the current outgoing
+    %% flight (RecordNumber => {MsgSeq, Offset, Length}) and the ranges
+    %% the peer acknowledged (MsgSeq => [{Start, End}]).
+    read_keys = #{} :: #{non_neg_integer() => map()},
+    sent_recs = #{} :: #{{non_neg_integer(), non_neg_integer()} => {non_neg_integer(), non_neg_integer(), non_neg_integer()}},
+    acked = #{} :: #{non_neg_integer() => [{non_neg_integer(), non_neg_integer()}]},
+    %% Handshake records of the current incoming flight to acknowledge,
+    %% the ACK timer and whether an ACK must be sent now.
+    rcv_recs = [] :: [{non_neg_integer(), non_neg_integer()}],
+    ack_at = infinity :: integer() | infinity,
+    ack_now = false :: boolean(),
+    %% KeyUpdate (RFC 9147 §8): our KeyUpdate waiting for its ACK.
+    ku_pending = false :: boolean(),
+    rekey_records :: pos_integer(),
+    cookie_lifetime :: pos_integer(),
     out = [] :: [term()]
 }).
 

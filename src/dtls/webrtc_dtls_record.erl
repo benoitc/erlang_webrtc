@@ -23,7 +23,7 @@
 -define(WINDOW, 64).
 
 -type content_type() ::
-    change_cipher_spec | alert | handshake | application_data | heartbeat | 0..255.
+    change_cipher_spec | alert | handshake | application_data | heartbeat | ack | 0..255.
 -type dtls_record() :: #{
     type := content_type(),
     version := 0..16#FFFF,
@@ -45,6 +45,7 @@ type_code(alert) -> 21;
 type_code(handshake) -> 22;
 type_code(application_data) -> 23;
 type_code(heartbeat) -> 24;
+type_code(ack) -> 26;
 type_code(N) when is_integer(N) -> N.
 
 -spec type_name(0..255) -> content_type().
@@ -53,6 +54,7 @@ type_name(21) -> alert;
 type_name(22) -> handshake;
 type_name(23) -> application_data;
 type_name(24) -> heartbeat;
+type_name(26) -> ack;
 type_name(N) -> N.
 
 %% @doc Split a datagram into records. A datagram may carry several
@@ -147,6 +149,9 @@ replay_check(Seq, {Max, Bits}) ->
 
 %% @doc Mark `Seq' as received. Only call after the record authenticated.
 -spec replay_update(non_neg_integer(), replay()) -> replay().
+replay_update(Seq, {Max, _Bits}) when Seq - Max >= ?WINDOW ->
+    %% A jump beyond the window leaves only the new record in it.
+    {Seq, 1};
 replay_update(Seq, {Max, Bits}) when Seq > Max ->
     Shift = Seq - Max,
     Mask = (1 bsl ?WINDOW) - 1,

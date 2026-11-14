@@ -25,7 +25,7 @@
 %% Rates are bits per second, times milliseconds.
 -module(webrtc_gcc_aimd).
 
--export([new/1, update/5, rate/1, set_rate/2, set_limits/3, info/1]).
+-export([new/1, update/5, rate/1, set_rate/2, set_limits/3, last_decrease/1, info/1]).
 
 -export_type([state/0]).
 
@@ -65,6 +65,10 @@ rate(#aimd{rate = R}) -> R.
 %% @doc Set the estimate (a feedback timeout or new limits).
 -spec set_rate(pos_integer(), state()) -> state().
 set_rate(R, #aimd{min = Min, max = Max} = A) -> A#aimd{rate = clamp(R, Min, Max)}.
+
+%% @doc When the estimate was last decreased on over-use.
+-spec last_decrease(state()) -> integer() | undefined.
+last_decrease(#aimd{last_decrease = T}) -> T.
 
 %% @doc Change the bounds, keeping the controller state.
 -spec set_limits(pos_integer(), pos_integer(), state()) -> state().

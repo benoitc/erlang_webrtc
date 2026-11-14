@@ -22,8 +22,13 @@
 %%
 %% Loss-based controller (§6), run once at least 20 packets have been
 %% reported since the previous run (as libwebrtc does, so that a single
-%% loss in a small report does not count as 20%): below 2% loss the
-%% estimate As_hat grows by 5%, between 2% and 10% it is held at the
+%% loss in a small report does not count as 20%), or one second has
+%% passed. Only packets sent after the last decrease (of either
+%% controller) count: losses of packets sent at the old rate say nothing
+%% about the new one, and would cut the rate twice. Below 2% loss the
+%% estimate As_hat grows by 5%, and keeps growing by 5% per feedback
+%% report without loss until the next run (§6 runs the controller on
+%% every report); between 2% and 10% it is held at the
 %% current target, above 10% it becomes target x (1 - 0.5 p), at most
 %% once per 300 ms + RTT. The target is min(A_hat, As_hat, REMB),
 %% clamped to [min, max] bitrate.
@@ -72,6 +77,10 @@
     loss_rx = 0 :: non_neg_integer(),
     loss_lost = 0 :: non_neg_integer(),
     last_loss_decrease :: undefined | integer(),
+    last_loss_eval :: undefined | integer(),
+    last_loss_ratio = 0.0 :: float(),
+    %% Send time (us) from which packets count for the loss ratio.
+    loss_from = 0 :: integer(),
     remb :: undefined | pos_integer(),
     rtt = 100 :: pos_integer(),
     rtt_from_rr = false :: boolean(),
@@ -122,13 +131,16 @@ feedback([], _Now, G) ->
     {[], G};
 feedback(Results, Now, G0) ->
     Received = [{S, A, Sz} || {S, A, Sz} <- Results, A =/= lost],
-    Lost = length(Results) - length(Received),
     G1 = G0#gcc{delay_active = true, last_feedback = Now},
-    G2 = case Received of
-        [] -> G1;
-        _ -> delay_based(Received, Now, G1)
-    end,
-    G3 = loss_counts(length(Received), Lost, Now, G2),
+    G2 =
+        case Received of
+            [] -> G1;
+            _ -> delay_based(Received, Now, G1)
+        end,
+    From = G2#gcc.loss_from,
+    Counted = [A || {S, A, _} <- Results, S >= From],
+    Lost = length([lost || lost <- Counted]),
+    G3 = loss_counts(length(Counted) - Lost, Lost, Now, G2),
     update_target(G3).
 
 delay_based(Received, Now, G) ->
@@ -138,7 +150,15 @@ delay_based(Received, Now, G) ->
     {Signal, D} = webrtc_gcc_delay:batch([{S, A} || {S, A, _} <- Received], G1#gcc.delay),
     RHat = webrtc_cc_rate:rate(LastArr, Acked),
     Aimd = webrtc_gcc_aimd:update(Signal, RHat, G1#gcc.rtt, Now, G1#gcc.aimd),
-    G1#gcc{delay = D, aimd = Aimd}.
+    G2 = G1#gcc{delay = D, aimd = Aimd},
+    case webrtc_gcc_aimd:last_decrease(Aimd) =:= webrtc_gcc_aimd:last_decrease(G1#gcc.aimd) of
+        true -> G2;
+        false -> loss_restart(Now, G2)
+    end.
+
+%% Count losses again from packets sent now.
+loss_restart(Now, G) ->
+    G#gcc{loss_from = Now * 1000, loss_rx = 0, loss_lost = 0, last_loss_eval = Now}.
 
 feedback_rtt(_NewestSendUs, _Now, #gcc{rtt_from_rr = true} = G) ->
     G;
@@ -149,9 +169,21 @@ feedback_rtt(NewestSendUs, Now, #gcc{rtt = Rtt} = G) ->
 loss_counts(Rx, Lost, Now, G) ->
     Rx1 = G#gcc.loss_rx + Rx,
     Lost1 = G#gcc.loss_lost + Lost,
-    case Rx1 + Lost1 >= ?LOSS_MIN_PACKETS of
-        true -> loss_based(Lost1 / (Rx1 + Lost1), Now, G#gcc{loss_rx = 0, loss_lost = 0});
-        false -> G#gcc{loss_rx = Rx1, loss_lost = Lost1}
+    N = Rx1 + Lost1,
+    Last =
+        case G#gcc.last_loss_eval of
+            undefined -> Now;
+            L -> L
+        end,
+    case N >= ?LOSS_MIN_PACKETS orelse (N > 0 andalso Now - Last >= 1000) of
+        true ->
+            P = Lost1 / N,
+            loss_based(P, Now, G#gcc{loss_rx = 0, loss_lost = 0, last_loss_eval = Now, last_loss_ratio = P});
+        false when Lost1 =:= 0, Rx > 0, G#gcc.last_loss_ratio < 0.02 ->
+            G1 = G#gcc{loss_rx = Rx1, loss_lost = Lost1, last_loss_eval = Last},
+            G1#gcc{loss_based = min(round(G1#gcc.loss_based * 1.05), G1#gcc.max)};
+        false ->
+            G#gcc{loss_rx = Rx1, loss_lost = Lost1, last_loss_eval = Last}
     end.
 
 %% draft-ietf-rmcat-gcc-02 §6.
@@ -163,7 +195,7 @@ loss_based(P, Now, #gcc{loss_based = As, target = T, last_loss_decrease = Last, 
     case Last =:= undefined orelse Now - Last >= 300 + Rtt of
         true ->
             New = max(round(min(As, T) * (1 - 0.5 * P)), G#gcc.min),
-            G#gcc{loss_based = New, last_loss_decrease = Now};
+            loss_restart(Now, G#gcc{loss_based = New, last_loss_decrease = Now});
         false ->
             G#gcc{loss_based = min(As, T)}
     end.

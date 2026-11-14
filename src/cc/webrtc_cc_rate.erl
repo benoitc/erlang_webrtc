@@ -9,7 +9,7 @@
 %% the window length: at most one bucket per millisecond.
 -module(webrtc_cc_rate).
 
--export([new/1, add/3, rate/2]).
+-export([new/1, add/3, rate/2, bytes/2]).
 
 -export_type([rate/0]).
 
@@ -48,6 +48,11 @@ rate(T, #rate{first = F, window = W}) when T - F < W ->
 rate(T, R0) ->
     #rate{sum = Sum, window = W} = prune(T, R0),
     Sum * 8000 div W.
+
+%% @doc Bytes recorded in `(T - window, T]'.
+-spec bytes(integer(), rate()) -> non_neg_integer().
+bytes(T, R) ->
+    (prune(T, R))#rate.sum.
 
 prune(T, #rate{buckets = Q, sum = Sum, window = W} = R) ->
     case queue:peek(Q) of

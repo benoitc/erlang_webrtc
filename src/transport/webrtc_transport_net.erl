@@ -67,7 +67,7 @@ datagram(Sock, Src, Bin, Now, St) ->
             ice_actions(Acts, St#st{ice = I1});
         Class ->
             case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
-                true -> webrtc_transport:secure_datagram(Class, Bin, Now, St);
+                true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, St);
                 false -> St
             end
     end.
@@ -102,18 +102,18 @@ ice_action({event, {data, Via, Peer, Bin}}, St) ->
     %% relay; only a validated candidate pair may reach DTLS and SRTP
     %% (RFC 8445 §12.2, RFC 8826 §4.2).
     case webrtc_ice_agent:is_valid_remote(Via, Peer, St#st.ice) of
-        true -> webrtc_transport:secure_relayed(Peer, Bin, St);
+        true -> webrtc_transport_secure:secure_relayed(Peer, Bin, St);
         false -> St
     end;
 ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
     webrtc_transport:to_pc(E, St),
-    webrtc_transport:start_dtls_if_ready(webrtc_transport:flush_dtls(St#st{ice_usable = true}));
+    webrtc_transport_secure:start_dtls_if_ready(webrtc_transport_secure:flush_dtls(St#st{ice_usable = true}));
 ice_action({event, {connection_state, _} = E}, St) ->
     webrtc_transport:to_pc(E, St),
     St#st{ice_usable = false};
 ice_action({event, {selected_pair, L, R}}, St) ->
     webrtc_transport:to_pc({selected_pair, L, R}, St),
-    webrtc_transport:start_dtls_if_ready(webrtc_transport:flush_dtls(St));
+    webrtc_transport_secure:start_dtls_if_ready(webrtc_transport_secure:flush_dtls(St));
 ice_action({event, {local_candidate, C}}, St) ->
     local_candidate(C, St);
 ice_action({event, {consent_lost, _, _} = E}, St) ->

@@ -17,3 +17,4 @@
 | TR-13 | 8835 §3.5 | HTTP proxy traversal | | | Not implemented |
 | TR-14 | 8421 | Multihomed and dual stack host candidates | webrtc_transport, webrtc_ice_candidate | webrtc_ice_net_tests | Unit tested |
 | TR-15 | | A transport never outlives its peer connection: it monitors it, and close kills a transport that does not stop within 5 s (sockets, timers and TURN state released) | webrtc_pc, webrtc_transport | webrtc_security_SUITE:stuck_transport_killed_on_close | E2E tested |
+| TR-16 | 5246 §7.2.1, 7675 | After DTLS close or failure the transport is finished: SRTP keys and SCTP dropped, ICE closed (no consent checks, TURN deleted), media and data calls return `{error, closed}` | webrtc_transport | webrtc_security_SUITE:nothing_sent_after_peer_close | E2E tested |

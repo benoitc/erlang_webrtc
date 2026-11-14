@@ -16,7 +16,8 @@
     resources_released_on_close/1,
     owner_exit_closes/1,
     stuck_transport_killed_on_close/1,
-    turn_allocation_deleted_on_close/1
+    turn_allocation_deleted_on_close/1,
+    nothing_sent_after_peer_close/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -31,7 +32,8 @@ all() ->
         resources_released_on_close,
         owner_exit_closes,
         stuck_transport_killed_on_close,
-        turn_allocation_deleted_on_close
+        turn_allocation_deleted_on_close,
+        nothing_sent_after_peer_close
     ].
 
 init_per_suite(Config) ->
@@ -255,3 +257,27 @@ turn_allocation_deleted_on_close(_Config) ->
     timer:sleep(300),
     ?assertEqual(0, webrtc_test_turn_udp:allocations(Turn)),
     webrtc_test_turn_udp:stop(Turn).
+
+%% After the peer's close_notify the transport is finished: media and
+%% data calls fail and no datagram leaves (no SRTP on old keys, no
+%% consent checks, no RTCP).
+nothing_sent_after_peer_close(_Config) ->
+    Count = atomics:new(1, []),
+    Counter = {fun(_Dest, Bin, S) -> atomics:add(Count, 1, 1), {[{0, Bin}], S} end, undefined},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => Counter}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ok = webrtc:create_data_channel(A, <<"c">>, #{}),
+    ?S:connect(A, B),
+    {ok, {datachannel_open, Id, _, _, _}} =
+        ?S:wait(B, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 10000),
+    ok = webrtc:close(A),
+    {ok, _} = ?S:wait(B, fun({connection_state, closed}) -> true; (_) -> false end, 5000),
+    timer:sleep(200),
+    After = atomics:get(Count, 1),
+    ?assertEqual({error, closed}, webrtc:send_rtp(B, <<"0">>, <<"x">>, #{timestamp => 1})),
+    ?assertEqual({error, closed}, webrtc:send_data(B, Id, text, <<"x">>)),
+    timer:sleep(6000),
+    ?assertEqual(After, atomics:get(Count, 1)),
+    webrtc:close(B).

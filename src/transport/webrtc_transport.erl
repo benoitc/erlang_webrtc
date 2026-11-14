@@ -55,6 +55,9 @@
     cert :: map(),
     remote_fps = [] :: list(),
     remote_tls_id :: undefined | binary(),
+    %% DTLS closed or failed: the transport is finished, only stats and
+    %% stop are served.
+    finished = false :: boolean(),
     %% DTLS datagrams received before the DTLS role is known.
     early_dtls = [] :: [binary()],
     media :: term(),
@@ -209,6 +212,16 @@ handle_call({restart_ice, U, P}, _From, St) ->
 handle_call({configure, Neg}, _From, St) ->
     St1 = configure_engines(Neg, St),
     {reply, ok, arm(St1)};
+handle_call(Msg, _From, #st{finished = true} = St) when
+    element(1, Msg) =:= send_rtp;
+    element(1, Msg) =:= send_rtp_packet;
+    element(1, Msg) =:= request_keyframe;
+    element(1, Msg) =:= open_channel;
+    element(1, Msg) =:= send_data;
+    element(1, Msg) =:= close_channel;
+    element(1, Msg) =:= resume_stream
+->
+    {reply, {error, closed}, St};
 handle_call({send_rtp, Mid, Payload, Opts}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send(Mid, Payload, Opts, Now, M) end, St);
 handle_call({send_rtp_packet, Mid, Pkt}, _From, St) ->
@@ -559,10 +572,20 @@ dtls_action({event, {data, _}}, St) ->
     St;
 dtls_action({event, {closed, R}}, St) ->
     to_pc({dtls_closed, R}, St),
-    St;
+    finish(R, St);
 dtls_action({event, {failed, R}}, St) ->
     to_pc({dtls_failed, R}, St),
-    St.
+    finish(R, St).
+
+%% DTLS closed (close_notify) or failed: nothing can be sent or received
+%% securely any more. Drop SRTP keys and SCTP, stop ICE (consent checks
+%% end, TURN allocations are deleted); the peer connection reports the
+%% state and the application closes it.
+finish(Reason, St0) ->
+    St1 = end_association(Reason, St0),
+    {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
+    St2 = ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    St2#st{finished = true}.
 
 setup_srtp(#{srtp_profile := undefined}, St) ->
     St;

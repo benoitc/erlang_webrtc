@@ -69,6 +69,9 @@ from_client(Src, Bin, Now, S) ->
     case webrtc_stun:decode(Bin) of
         {ok, #stun{class = indication, method = send} = M} ->
             send_indication(Src, M, Now, S);
+        {ok, #stun{class = request, method = binding} = M} ->
+            %% TURN servers are STUN servers too.
+            reply(Src, webrtc_stun:success(M, [{xor_mapped_address, Src}]), undefined, S);
         {ok, #stun{class = request} = M} ->
             request(Src, M, Bin, Now, log_req(M, S));
         _ ->

@@ -526,3 +526,95 @@ garbage_test() ->
         lists:seq(1, 2000)
     ),
     survives(A, Inputs).
+
+%%--------------------------------------------------------------------
+%% Trickled pairs (RFC 8838 §12) and unfreezing (RFC 8445 §7.2.5.3.3)
+%%--------------------------------------------------------------------
+
+pair_state(A, IP) ->
+    #{pairs := Pairs} = ?AG:stats(A),
+    [St] = [St || #{state := St, remote := #ice_cand{address = I}} <- Pairs, I =:= IP],
+    St.
+
+trickle_states_test() ->
+    A0 = with_remote(agent(#{})),
+    %% Rule 1: the first pair of a foundation is Waiting.
+    {A1, _} = ?AG:add_remote_candidate(remote(1), 0, A0),
+    ?assertEqual(waiting, pair_state(A1, {10, 0, 0, 101})),
+    %% Rule 3: same foundation, lower priority, nothing succeeded: Frozen.
+    Low = (remote(5))#ice_cand{foundation = <<"1">>},
+    {A2, _} = ?AG:add_remote_candidate(Low, 0, A1),
+    ?assertEqual(frozen, pair_state(A2, {10, 0, 0, 105})),
+    %% The first pair succeeds: its frozen sibling is unfrozen.
+    {A3, Acts} = tick(A2, 0),
+    [{s, {{10, 0, 0, 101}, 6000} = To, Check, _}] = sends([X || {_, X} <- Acts]),
+    {A4, _} = deliver(success_for(Check, ?L, ?RP), To, 20, A3),
+    ?assertEqual(succeeded, pair_state(A4, {10, 0, 0, 101})),
+    ?assertEqual(waiting, pair_state(A4, {10, 0, 0, 105})),
+    %% Rule 2: a succeeded pair with the foundation makes a new one Waiting.
+    Lower = (remote(9))#ice_cand{foundation = <<"1">>},
+    {A5, _} = ?AG:add_remote_candidate(Lower, 30, A4),
+    ?assertEqual(waiting, pair_state(A5, {10, 0, 0, 109})).
+
+%%--------------------------------------------------------------------
+%% Nomination policy and failure (RFC 8445 §8.1.1, §7.2.5.3.4, RFC 8863)
+%%--------------------------------------------------------------------
+
+two_remotes(Opts) ->
+    A0 = with_remote(agent(Opts#{role => controlling})),
+    A1 = lists:foldl(fun(N, A) -> element(1, ?AG:add_remote_candidate(remote(N), 0, A)) end, A0, [1, 2]),
+    {A2, Acts} = tick(A1, 50),
+    [{_, {send, s, {{10, 0, 0, 101}, _}, _}}, {_, {send, s, {{10, 0, 0, 102}, _} = To2, B2}}] = Acts,
+    %% Only the lower priority pair answers.
+    {ok, C2} = webrtc_stun:decode(B2),
+    {A3, _} = deliver(success_for(C2, ?L, ?RP), To2, 60, A2),
+    {A3, To2}.
+
+use_candidate_sends(Acts) ->
+    [T || {T, {send, _, _, B}} <- Acts,
+          {ok, M} <- [webrtc_stun:decode(B)], M#stun.class =:= request,
+          webrtc_stun:get(use_candidate, M) =:= {ok, true}].
+
+nomination_best_waits_test() ->
+    {A, _} = two_remotes(#{nomination_timeout => 1000}),
+    {_, Acts} = tick(A, 2000),
+    %% The better pair is still in progress: nomination waits for the
+    %% timeout after the first valid pair (at 60 ms).
+    [First | _] = use_candidate_sends(Acts),
+    ?assert(First >= 1060 andalso First =< 1110).
+
+nomination_first_test() ->
+    {A, _} = two_remotes(#{nomination => first}),
+    {_, Acts} = tick(A, 2000),
+    [First | _] = use_candidate_sends(Acts),
+    ?assert(First =< 110).
+
+nomination_failure_test() ->
+    {A, _} = two_remotes(#{nomination => first}),
+    %% The nomination check is never answered.
+    {A1, _} = tick(A, 39000),
+    ?assertEqual(connected, ?AG:connection_state(A1)),
+    {A2, _} = tick(A1, 80000),
+    ?assertEqual(failed, ?AG:connection_state(A2)),
+    #{pairs := Pairs} = ?AG:stats(A2),
+    ?assertEqual([], [P || #{valid := true} = P <- Pairs]).
+
+%%--------------------------------------------------------------------
+%% Consent responses must be authentic and symmetric
+%%--------------------------------------------------------------------
+
+forged_consent_response_test() ->
+    {A, Check, _} = first_check(#{}),
+    {A1, _} = deliver(success_for(Check, ?L, ?RP), ?R, 30, A),
+    {A2, _} = deliver(encode(check_attrs() ++ [{use_candidate, true}], ?P), ?R, 40, A1),
+    {A3, Acts} = tick(A2, 7000),
+    [{_, {send, s, ?R, CBin}} | _] = [X || {_, {send, _, _, _}} = X <- Acts],
+    {ok, Consent} = webrtc_stun:decode(CBin),
+    Wrong = success_for(Consent, ?L, <<"not the remote password">>),
+    {A4, []} = deliver(Wrong, ?R, 7001, A3),
+    %% From another address: ignored as well.
+    {A5, []} = deliver(success_for(Consent, ?L, ?RP), {{10, 0, 0, 77}, 6000}, 7002, A4),
+    %% Without fresh responses consent expires 30 s after the last one.
+    {A6, Later} = tick(A5, 30100),
+    ?assertMatch([{consent_lost, _, _}], [E || {_, {event, {consent_lost, _, _} = E}} <- Later]),
+    ?assertEqual(failed, ?AG:connection_state(A6)).

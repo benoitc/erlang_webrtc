@@ -235,8 +235,24 @@ full_cone_test() ->
     %% The best working pair goes through the NATs, not the relay.
     ?assertNotEqual(relay, RT),
     ?assertEqual(?NAT_B, RIP),
+    %% Checks only leave from bases: a reflexive local candidate is
+    %% replaced by its base (RFC 8445 §6.1.2.4) and only appears in valid
+    %% pairs built from a mapped address.
+    #{pairs := Pairs} = ?AG:stats(?NET:agent(N, a)),
+    ?assertEqual([host, relay], lists:usort([T || #{requests_sent := R, local := #ice_cand{type = T}} = P0 <- Pairs, R > 0, not maps:get(valid, P0)])),
+    ?assert(lists:member(srflx, [T || #{valid := true, local := #ice_cand{type = T}} <- Pairs])),
     N1 = exchange(N),
     ?assertEqual([<<128, "from a">>], received(N1, b)).
+
+%% A TURN server out of allocations still yields a server-reflexive
+%% candidate through a Binding request (RFC 8445 §5.1.1.2).
+turn_quota_srflx_fallback_test() ->
+    Opts = #{turn_servers => [#{address => ?TURN, username => <<"user">>, password => <<"pass">>}]},
+    N0 = pair_net(#{nats => [{na, full_cone, ?NAT_A}], turn => #{max_allocations => 0}},
+                  {Opts, [{sa, {?A4, 5000}}], na}, {#{role => controlled}, [{sb, {?B4, 6000}}], none}),
+    N = run_ok(N0, fun(X) -> ?AG:gathering_state(?NET:agent(X, a)) =:= complete end, 5000),
+    ?assertEqual([host, srflx], types(N, a)),
+    ?assertMatch([{turn_error, ?TURN, {error, 486}}], events(N, a, turn_error)).
 
 port_restricted_test() ->
     N = run_ok(nat_pair(port_restricted, port_restricted, #{}), fun completed/1, 20000),

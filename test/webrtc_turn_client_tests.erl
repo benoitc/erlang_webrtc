@@ -300,3 +300,41 @@ malformed_input_test() ->
 flip(Bin, I) ->
     <<Pre:I, Bit:1, Post/bitstring>> = Bin,
     <<Pre:I, (1 - Bit):1, Post/bitstring>>.
+
+refresh_stale_nonce_test() ->
+    %% The second authenticated request (the first Refresh) gets a 438.
+    W = allocated(#{stale_nonce => 2}),
+    W1 = advance(W, 600000),
+    ?assertEqual(allocated, ?TC:state(maps:get(client, W1))),
+    ?assertEqual(2, length([x || {refresh, _} <- server_log(W1)])),
+    ?assertEqual(events(W), events(W1)).
+
+auth_algorithm_test_() ->
+    Cookie = fun(Bits) -> <<"obMatJos2", (base64:encode(<<Bits:24>>))/binary, "rest">> end,
+    [
+        ?_assertEqual({ok, undefined}, webrtc_turn_auth:pick_algorithm(<<"plain">>, undefined)),
+        ?_assertEqual({ok, {sha256, <<>>}},
+                      webrtc_turn_auth:pick_algorithm(Cookie(16#800000), [{sha256, <<>>}, {md5, <<>>}])),
+        ?_assertEqual({ok, {md5, <<>>}}, webrtc_turn_auth:pick_algorithm(Cookie(16#800000), [{7, <<>>}, {md5, <<>>}])),
+        ?_assertEqual({error, {unsupported, missing_password_algorithms}},
+                      webrtc_turn_auth:pick_algorithm(Cookie(16#800000), undefined)),
+        ?_assertEqual({error, {unsupported, userhash}}, webrtc_turn_auth:pick_algorithm(Cookie(16#400000), undefined)),
+        ?_assertEqual({error, {unsupported, password_algorithms}},
+                      webrtc_turn_auth:pick_algorithm(Cookie(16#800000), [{7, <<>>}])),
+        ?_assertEqual(16#C00000, webrtc_turn_auth:nonce_features(Cookie(16#C00000))),
+        ?_assertEqual(0, webrtc_turn_auth:nonce_features(<<"obMatJos2!!!!">>)),
+        %% RFC 8489 §9.2.2 example key.
+        ?_assertEqual({sha1, <<16#8493fbc53ba582fb4c044c456bdc40eb:128>>},
+                      webrtc_turn_auth:integrity(<<"user">>, <<"realm">>, <<"pass">>, undefined)),
+        ?_assertMatch({sha256, <<_:256>>}, webrtc_turn_auth:integrity(<<"u">>, <<"r">>, <<"p">>, {sha256, <<>>}))
+    ].
+
+challenge_with_cookie_without_algorithms_test() ->
+    C0 = ?TC:new(#{server => ?SRV, username => <<"u">>, password => <<"p">>}),
+    {C1, [{send, Req}]} = ?TC:allocate(0, C0),
+    {ok, M} = webrtc_stun:decode(Req),
+    Nonce = <<"obMatJos2", (base64:encode(<<16#800000:24>>))/binary, "x">>,
+    Err = webrtc_stun:encode(webrtc_stun:error_response(M, 401, [{realm, <<"r">>}, {nonce, Nonce}]), #{}),
+    %% RFC 8489 §9.2.5: no retry.
+    ?assertMatch({_, [{event, {allocate_failed, {unsupported, missing_password_algorithms}}}]},
+                 ?TC:handle_packet(Err, 10, C1)).

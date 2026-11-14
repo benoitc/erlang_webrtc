@@ -30,4 +30,4 @@ Apple M-series laptop, 14 schedulers, OTP 29.1.2, OpenSSL 4.1, loopback UDP. Sin
 
 ## Not measured yet
 
-Scheduler utilization under many concurrent media streams, recovery time after loss bursts at high rates, and congestion controlled sending (no pacer yet, see COMPLIANCE.md).
+Scheduler utilization under many concurrent media streams, recovery time after loss bursts at high rates, and the cost of pacing at high packet rates (the forwarding benchmark runs with pacing off).

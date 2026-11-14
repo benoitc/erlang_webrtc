@@ -457,7 +457,7 @@ peer_sends_simulcast(Config) ->
     end.
 
 peer_sends_simulcast_(Config) ->
-    {Pc, P0} = start(Config, no_bwe_feedback()),
+    {Pc, P0} = start(Config),
     P1 = peer_offer(Pc, P0, #{media => [<<"video">>], simulcast => true}),
     Answer = webrtc:local_description(Pc),
     ?assertNotEqual(nomatch, binary:match(Answer, <<"a=simulcast:recv q;h;f">>)),
@@ -503,17 +503,6 @@ erlang_sends_simulcast_(Config) ->
     Tracks = [R || #{<<"event">> := <<"track">>, <<"rid">> := R} <- ?P:events(P2)],
     ?assertEqual(lists:sort(?RIDS), lists:sort(Tracks)),
     put(peer, P2).
-
-%% We send no transport-wide congestion control feedback nor REMB.
-%% Negotiating them would leave the browser's bandwidth estimate at its
-%% start value, too low for the top layer; without them it follows the
-%% loss reported in our receiver reports.
-no_bwe_feedback() ->
-    Twcc = <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>,
-    Feedback = [#{type => <<"transport-cc">>, param => undefined}, #{type => <<"goog-remb">>, param => undefined}],
-    Codecs = [C#{rtcp_fb => Fb -- Feedback} || #{rtcp_fb := Fb} = C <- webrtc_jsep_caps:default_codecs(video)],
-    Exts = [E || #{uri := U} = E <- webrtc_jsep_caps:default_extensions(video), U =/= Twcc],
-    #{codecs => #{video => Codecs}, extensions => #{video => Exts}}.
 
 %% Until every layer has delivered 50 packets.
 count_layers(Pc, Counts, Deadline) ->

@@ -27,6 +27,7 @@ What works today, end to end and against independent implementations (see [INTER
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
 - JSEP offer/answer, renegotiation, rollback, pranswer.
 - Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, per-layer NACK, RTX and keyframe requests.
+- Congestion control: transport-wide CC feedback in both directions, a GCC delay and loss based estimator, a pacer with audio and retransmission priority, RFC 8083 circuit breakers (reported, not enforced). Chromium's estimate grows on our feedback and encodes its top simulcast layer.
 - Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay and floods.
 
 Known gaps that matter for a full WebRTC deployment:
@@ -35,7 +36,7 @@ Known gaps that matter for a full WebRTC deployment:
 |---|---|---|
 | DTLS 1.3 (RFC 9147) | Peers negotiate DTLS 1.2, which every current implementation supports | [dtls](compliance/dtls.md) |
 | Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
-| Congestion control and pacing (RFC 8836, RFC 8888, transport-wide CC) | Feedback is parsed and passed to the application; no built-in bandwidth estimator or pacer | [rtp](compliance/rtp.md) |
+| Bandwidth probing, RFC 8888 feedback as estimator input, enforcing circuit breakers | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link); breakers only emit events | [rtp](compliance/rtp.md) |
 | mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
 | ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |
 | Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |

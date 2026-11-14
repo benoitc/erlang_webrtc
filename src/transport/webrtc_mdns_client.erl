@@ -144,10 +144,20 @@ handle_info({'DOWN', Mon, process, _, _}, #c{mon = Mon} = C) ->
 handle_info(_, _) ->
     ignore.
 
-done(Values, #c{eoc = true, pending = P} = C) when map_size(P) =:= 0 ->
-    {ok, Values, true, C#c{eoc = false}};
-done(Values, C) ->
-    {ok, Values, false, C}.
+done(Values, C0) ->
+    case idle(C0) of
+        #c{eoc = true, pending = P} = C when map_size(P) =:= 0 -> {ok, Values, true, C#c{eoc = false}};
+        C -> {ok, Values, false, C}
+    end.
+
+%% Nothing left to resolve and no name of ours to answer: stop the
+%% resolver, so its group socket does not keep receiving the link's
+%% mDNS traffic. The next name starts a new one.
+idle(#c{pending = P, hide_host = false, pid = Pid} = C) when map_size(P) =:= 0, Pid =/= undefined ->
+    ok = stop(C),
+    C#c{pid = undefined, mon = undefined};
+idle(C) ->
+    C.
 
 usable(IPs, Cand, C) ->
     case choose(IPs, C#c.families) of

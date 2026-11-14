@@ -16,7 +16,9 @@ This page is for contributors. It says where each protocol lives, how the engine
 | SCTP and data channels | `src/sctp/` |
 | SDP grammar | `src/sdp/webrtc_sdp*.erl` |
 | Offer/answer rules | `src/sdp/webrtc_jsep*.erl` |
+| rid and simulcast negotiation | `src/sdp/webrtc_jsep_simulcast.erl` |
 | Media routing, RTCP reports, retransmission | `src/transport/webrtc_media.erl` |
+| Simulcast layers on receive (rid, repaired-rid) | `src/transport/webrtc_media_rid.erl` |
 | Sockets, demux, wiring of engines | `src/transport/webrtc_transport.erl` |
 | Peer connection API and states | `src/webrtc.erl`, `src/pc/webrtc_pc.erl` |
 
@@ -49,7 +51,7 @@ webrtc_pc --configure(Negotiated)--> webrtc_transport
 application <-- {webrtc, Pc, Event} -----+ (RTP and channel messages go straight here)
 ```
 
-`webrtc_jsep:negotiated/1` is the contract between negotiation and transport: ICE credentials and candidates, DTLS role and fingerprints, per-mid codecs, extension ids and SSRCs, SCTP ports and message size. Change it in one place and both sides follow.
+`webrtc_jsep:negotiated/1` is the contract between negotiation and transport: ICE credentials and candidates, DTLS role and fingerprints, per-mid codecs, extension ids, SSRCs and simulcast layers (`send_rids`, `recv_rids`), SCTP ports and message size. Change it in one place and both sides follow.
 
 ## Add a protocol feature
 

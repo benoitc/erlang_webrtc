@@ -97,8 +97,14 @@ offer_section({_, Mid, rejected}, _Setup, _Tag, J) ->
     rejected_section(atom_to_binary(K), ?PROTO_RTP, [<<"0">>], Mid);
 offer_section({_, Mid, data}, Setup, Tag, J) ->
     data_section(Mid, Setup, Mid =:= Tag, J);
-offer_section({_, Mid, #tr{} = T}, Setup, Tag, J) ->
-    rtp_section(T, Mid, T#tr.direction, T#tr.codecs, T#tr.extensions, Setup, Mid =:= Tag, J).
+offer_section({_, Mid, #tr{direction = Dir} = T}, Setup, Tag, J) ->
+    %% RFC 9429 §5.2.1: a=rid and a=simulcast only when sending.
+    Rids =
+        case Dir =:= sendrecv orelse Dir =:= sendonly of
+            true -> webrtc_jsep_simulcast:offer_attrs(T#tr.encodings);
+            false -> []
+        end,
+    rtp_section(T, Mid, Dir, T#tr.codecs, T#tr.extensions, Setup, Mid =:= Tag, J, Rids).
 
 %%====================================================================
 %% Answer
@@ -153,9 +159,10 @@ answer_section(I, #sdp_media{media = Kind} = M, Offer, Setup, J) ->
                     Exts = webrtc_jsep_caps:answer_extensions(
                         webrtc_sdp_media:attrs(extmap, M), T#tr.extensions
                     ),
+                    Rids = webrtc_jsep_simulcast:answer_attrs(M, Codecs, Exts),
                     case Codecs of
                         [] -> Reject;
-                        _ -> {Mid, rtp_section(T, Mid, Dir, Codecs, Exts, Setup, false, J)}
+                        _ -> {Mid, rtp_section(T, Mid, Dir, Codecs, Exts, Setup, false, J, Rids)}
                     end;
                 _ ->
                     Reject
@@ -206,12 +213,16 @@ transport_attrs(Setup, J) ->
         [{fingerprint, #{hash => H, value => V}} || {H, V} <- J#jsep.fingerprints] ++
         [{setup, Setup}].
 
-rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Tag, J) ->
+%% `Rids' are the a=rid and a=simulcast lines of the section. Layers sent
+%% with rids are identified by the RtpStreamId header extension (RFC
+%% 8852), so their SSRCs are not announced, as browsers do.
+rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Tag, J, Rids) ->
     Sending = Dir =:= sendrecv orelse Dir =:= sendonly,
     Msid = [{msid, #{stream => T#tr.stream_id, track => T#tr.track_id}} || Sending],
     HasRtx = lists:any(fun(#{name := N}) -> string:lowercase(N) =:= <<"rtx">> end, Codecs),
+    SendRids = [R || {rid, #{direction := send}} = R <- Rids] =/= [],
     Ssrcs =
-        case Sending of
+        case Sending andalso not SendRids of
             false -> [];
             true -> ssrc_attrs(T, HasRtx, J)
         end,
@@ -223,7 +234,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Tag, J) ->
              || #{id := Id, uri := U} <- Exts] ++
             [{direction, Dir}] ++ Msid ++
             [{rtcp_mux, true}, {rtcp_rsize, true}] ++
-            webrtc_sdp_media:codec_attributes(Codecs) ++ Ssrcs,
+            webrtc_sdp_media:codec_attributes(Codecs) ++ Ssrcs ++ Rids,
     Sec = #sdp_media{
         media = atom_to_binary(T#tr.kind),
         port = 9,

@@ -41,6 +41,7 @@ type command struct {
 	Data       string        `json:"data"`
 	Binary     bool          `json:"binary"`
 	AllIfaces  bool          `json:"all_interfaces"`
+	Simulcast  bool          `json:"simulcast"`
 	channelSpec
 }
 
@@ -202,6 +203,20 @@ func initPC(c command) error {
 	if err := m.RegisterDefaultCodecs(); err != nil {
 		return err
 	}
+	if c.Simulcast {
+		// Simulcast receive: layers are identified by MID and rid
+		// header extensions (RFC 8852), RTX streams by repaired-rid.
+		for _, uri := range []string{
+			"urn:ietf:params:rtp-hdrext:sdes:mid",
+			"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+			"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id",
+		} {
+			ext := webrtc.RTPHeaderExtensionCapability{URI: uri}
+			if err := m.RegisterHeaderExtension(ext, webrtc.RTPCodecTypeVideo); err != nil {
+				return err
+			}
+		}
+	}
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(se), webrtc.WithMediaEngine(m))
 	var err error
 	pc, err = api.NewPeerConnection(webrtc.Configuration{})
@@ -293,8 +308,9 @@ func watchChannel(dc *webrtc.DataChannel) {
 
 func onTrack(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 	kind := remote.Kind().String()
+	rid := remote.RID()
 	emit(map[string]any{"event": "track", "kind": kind, "ssrc": uint32(remote.SSRC()),
-		"codec": remote.Codec().MimeType})
+		"codec": remote.Codec().MimeType, "rid": rid})
 	local := tracks[kind]
 	if remote.Kind() == webrtc.RTPCodecTypeVideo {
 		// The echo goes to a receiver whose keyframe requests are not
@@ -319,7 +335,7 @@ func onTrack(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 		count++
 		bytes += len(pkt.Payload)
 		if count == 1 || count%50 == 0 {
-			emit(map[string]any{"event": "rtp", "kind": kind, "count": count, "bytes": bytes})
+			emit(map[string]any{"event": "rtp", "kind": kind, "count": count, "bytes": bytes, "rid": rid})
 		}
 		if local != nil {
 			// Keep version, marker, timestamp and sequence; the track

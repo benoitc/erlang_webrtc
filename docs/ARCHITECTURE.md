@@ -75,7 +75,7 @@ Inbound:
 2. `webrtc_demux:classify/1` looks at the first byte (RFC 7983 as updated by RFC 9443).
 3. STUN goes to the ICE agent. A valid check from an unknown address creates a peer-reflexive candidate. Consent responses refresh the selected pair.
 4. DTLS records go to the DTLS endpoint. Handshake output is sent back through the selected pair. Once connected, application data goes to the SCTP association; the exported keying material configures SRTP.
-5. RTP/RTCP is unprotected with the SRTP context of the remote side, parsed, and delivered to the owner as `{webrtc, Pc, {rtp, Mid, Packet}}` or handed to the RTCP handler.
+5. RTP/RTCP is unprotected with the SRTP context of the remote side, parsed, and delivered to the owner as `{webrtc, Pc, {rtp, Mid, Packet}}` (`{rtp, Mid, Rid, Packet}` for a simulcast layer, told apart by its rid header extension) or handed to the RTCP handler.
 
 Outbound follows the reverse path. Only the selected candidate pair is used for DTLS, SRTP and SCTP traffic; data is never sent before ICE has a valid pair and consent is fresh (RFC 7675).
 

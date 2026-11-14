@@ -20,7 +20,9 @@
     erlang_renegotiates_adds_audio/1,
     erlang_ice_restart/1,
     peer_ice_restart/1,
-    erlang_ice_lite/1
+    erlang_ice_lite/1,
+    peer_sends_simulcast/1,
+    erlang_sends_simulcast/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -37,7 +39,9 @@ cases() ->
         erlang_renegotiates_adds_audio,
         erlang_ice_restart,
         peer_ice_restart,
-        erlang_ice_lite
+        erlang_ice_lite,
+        peer_sends_simulcast,
+        erlang_sends_simulcast
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}].
@@ -86,13 +90,16 @@ flush() ->
 %%--------------------------------------------------------------------
 
 start(Config) ->
+    start(Config, #{}).
+
+start(Config, PcOpts) ->
     Peer = ?config(peer, Config),
     {ok, P} = ?P:start(Peer, ?config(priv_dir, Config)),
     put(peer, P),
     %% Pion is restricted to loopback; the others gather on every
     %% interface and need a routable host candidate from us.
     Opts = case Peer of pion -> #{loopback => true}; _ -> #{} end,
-    {ok, Pc} = webrtc:new_peer_connection(Opts),
+    {ok, Pc} = webrtc:new_peer_connection(maps:merge(Opts, PcOpts)),
     put(pc, Pc),
     {Pc, P}.
 
@@ -408,3 +415,116 @@ erlang_ice_lite(Config) ->
     {Id, _} = channel_open(Pc, <<"lite">>),
     {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"lite">>}),
     put(peer, echo_check(Pc, P2, Id, <<"lite">>)).
+
+%%--------------------------------------------------------------------
+%% Simulcast (RFC 8853, RFC 8852)
+%%--------------------------------------------------------------------
+
+-define(RIDS, [<<"q">>, <<"h">>, <<"f">>]).
+
+%% The peer sends three simulcast layers from its encoder; Erlang
+%% answers, receives every layer with its rid, and asks one layer for a
+%% keyframe, which the peer reports on that layer.
+peer_sends_simulcast(Config) ->
+    case ?config(peer, Config) of
+        Browser when Browser =:= chromium; Browser =:= firefox -> peer_sends_simulcast_(Config);
+        _ -> {skip, "adapter sends no simulcast"}
+    end.
+
+peer_sends_simulcast_(Config) ->
+    {Pc, P0} = start(Config, no_bwe_feedback()),
+    P1 = peer_offer(Pc, P0, #{media => [<<"video">>], simulcast => true}),
+    Answer = webrtc:local_description(Pc),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=simulcast:recv q;h;f">>)),
+    Counts = count_layers(Pc, #{}, erlang:monotonic_time(millisecond) + 20000),
+    {P2, Before, Outbound} = pli_counts(P1),
+    ct:log("packets per rid: ~p~npeer outbound streams: ~p~nstats: ~p", [Counts, Outbound, webrtc:get_stats(Pc)]),
+    ?assertEqual(lists:sort(?RIDS), lists:sort(maps:keys(Counts))),
+    [?assert(N >= 50) || N <- maps:values(Counts)],
+    ok = webrtc:request_keyframe(Pc, <<"0">>, #{rid => <<"h">>}),
+    put(peer, wait_pli(P2, Before, erlang:monotonic_time(millisecond) + 10000)).
+
+%% Erlang offers three layers; the peer answers with simulcast recv and
+%% receives every layer, telling them apart by their rid extension.
+%% Browsers cannot receive simulcast (RFC 9429 §3.7).
+erlang_sends_simulcast(Config) ->
+    case ?config(peer, Config) of
+        pion -> erlang_sends_simulcast_(Config);
+        _ -> {skip, "peer does not receive simulcast"}
+    end.
+
+erlang_sends_simulcast_(Config) ->
+    {Pc, P0} = start(Config),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{
+        direction => sendonly,
+        send_encodings => [#{rid => R} || R <- ?RIDS]
+    }),
+    P1 = erlang_offer(Pc, P0, #{simulcast => true}),
+    Answer = webrtc:remote_description(Pc),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=simulcast:recv q;h;f">>)),
+    [ok = webrtc:send_rtp(Pc, <<"0">>, <<R/binary, N:16>>, #{rid => R, timestamp => N * 3000, marker => true})
+     || N <- lists:seq(1, 60), R <- ?RIDS],
+    P2 = lists:foldl(
+        fun(Rid, P) ->
+            {ok, P3, _} = ?P:wait(P, fun(#{<<"event">> := <<"rtp">>, <<"rid">> := R, <<"count">> := N}) ->
+                                             R =:= Rid andalso N >= 50;
+                                        (_) -> false
+                                     end, 10000),
+            P3
+        end,
+        P1,
+        ?RIDS
+    ),
+    Tracks = [R || #{<<"event">> := <<"track">>, <<"rid">> := R} <- ?P:events(P2)],
+    ?assertEqual(lists:sort(?RIDS), lists:sort(Tracks)),
+    put(peer, P2).
+
+%% We send no transport-wide congestion control feedback nor REMB.
+%% Negotiating them would leave the browser's bandwidth estimate at its
+%% start value, too low for the top layer; without them it follows the
+%% loss reported in our receiver reports.
+no_bwe_feedback() ->
+    Twcc = <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>,
+    Feedback = [#{type => <<"transport-cc">>, param => undefined}, #{type => <<"goog-remb">>, param => undefined}],
+    Codecs = [C#{rtcp_fb => Fb -- Feedback} || #{rtcp_fb := Fb} = C <- webrtc_jsep_caps:default_codecs(video)],
+    Exts = [E || #{uri := U} = E <- webrtc_jsep_caps:default_extensions(video), U =/= Twcc],
+    #{codecs => #{video => Codecs}, extensions => #{video => Exts}}.
+
+%% Until every layer has delivered 50 packets.
+count_layers(Pc, Counts, Deadline) ->
+    Done = lists:all(fun(R) -> maps:get(R, Counts, 0) >= 50 end, ?RIDS),
+    Left = Deadline - erlang:monotonic_time(millisecond),
+    case Done orelse Left =< 0 of
+        true ->
+            Counts;
+        false ->
+            receive
+                {webrtc, Pc, {rtp, <<"0">>, Rid, #rtp{}}} ->
+                    count_layers(Pc, maps:update_with(Rid, fun(N) -> N + 1 end, 1, Counts), Deadline);
+                {webrtc, Pc, {rtp, Mid, #rtp{}}} ->
+                    ct:fail({packet_without_rid, Mid})
+            after Left ->
+                Counts
+            end
+    end.
+
+%% pliCount of the peer's outbound streams, by rid.
+pli_counts(P0) ->
+    P1 = ?P:cmd(P0, #{cmd => stats}),
+    {ok, P2, #{<<"stats">> := Stats} = Ev} = ?P:wait_event(P1, <<"stats">>, #{}),
+    Outbound = [S || S <- maps:values(Stats), maps:get(<<"type">>, S, undefined) =:= <<"outbound-rtp">>],
+    Counts = maps:from_list([{Rid, maps:get(<<"pliCount">>, S, 0)} || #{<<"rid">> := Rid} = S <- Outbound]),
+    {consume(P2, Ev), Counts, Outbound}.
+
+wait_pli(P0, Before, Deadline) ->
+    {P1, Now, _} = pli_counts(P0),
+    Asked = maps:get(<<"h">>, Now, 0) > maps:get(<<"h">>, Before, 0),
+    case Asked orelse erlang:monotonic_time(millisecond) > Deadline of
+        true ->
+            ct:log("pliCount before ~p after ~p", [Before, Now]),
+            ?assert(Asked),
+            P1;
+        false ->
+            timer:sleep(250),
+            wait_pli(P1, Before, Deadline)
+    end.

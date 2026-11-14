@@ -8,7 +8,7 @@ Diagnostics go to stderr, which the controller saves next to the test logs.
 
 | cmd | fields | effect |
 |---|---|---|
-| `init` | `media`: list of `"audio"`/`"video"`, `channels`: list of channel specs, `ice_lite`: bool | Create the peer connection. Channel specs are `{label, ordered, max_retransmits, max_packet_life_time, negotiated, id, protocol}`; they are created when the peer makes the offer. |
+| `init` | `media`: list of `"audio"`/`"video"`, `channels`: list of channel specs, `ice_lite`: bool, `simulcast`: bool | Create the peer connection. Channel specs are `{label, ordered, max_retransmits, max_packet_life_time, negotiated, id, protocol}`; they are created when the peer makes the offer. With `simulcast`, browsers send their video as three layers with rids `q`, `h` and `f` (scaled down by 4, 2 and 1), and Pion negotiates the MID, rid and repaired-rid header extensions to receive layers. |
 | `create_offer` | `ice_restart`: bool | Create an offer, set it as local description, emit `local_description`. |
 | `remote_description` | `type`, `sdp` | Apply. When `type` is `offer` the peer answers and emits `local_description`. |
 | `remote_candidate` | `candidate`, `mid` | Add a trickled candidate. An empty `candidate` means end of candidates. |
@@ -29,8 +29,8 @@ Diagnostics go to stderr, which the controller saves next to the test logs.
 | `channel_open` | `label`, `id`, `protocol`, `ordered` |
 | `channel_close` | `label` |
 | `message` | `label`, `data`, `binary` |
-| `track` | `mid`, `kind`, `ssrc`, `codec` |
-| `rtp` | `mid`, `count`, `bytes` (sent every 50 packets and on the first one) |
+| `track` | `mid`, `kind`, `ssrc`, `codec`, `rid` (Pion; empty without simulcast) |
+| `rtp` | `mid`, `count`, `bytes` (sent every 50 packets and on the first one), `rid` (Pion, per layer) |
 | `stats` | `stats` |
 | `error` | `message` |
 

@@ -81,14 +81,26 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
 
 %% @doc Add a transceiver (RTCPeerConnection.addTransceiver). Returns a
 %% handle that stays valid for the life of the connection.
--spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()}.
+%%
+%% `send_encodings' is a list of `#{rid => Rid, restrictions => [{Name,
+%% Value}]}' maps, one per simulcast layer (RFC 8853), most preferred
+%% first. Rids are offered as given, or generated when missing (RFC 9429
+%% §5.2.1); `restrictions' are RFC 8851 §5 restrictions such as
+%% `{<<"max-width">>, <<"640">>}'.
+-spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()} | {error, term()}.
 add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
     T = new_tr(Kind, maps:get(direction, Opts, sendrecv), J),
-    T1 = T#tr{
-        stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
-        track_id = maps:get(track_id, Opts, T#tr.track_id)
-    },
-    {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}}.
+    case webrtc_jsep_simulcast:encodings(maps:get(send_encodings, Opts, []), {T#tr.ssrc, T#tr.rtx_ssrc}) of
+        {ok, Encs} ->
+            T1 = T#tr{
+                stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
+                track_id = maps:get(track_id, Opts, T#tr.track_id),
+                encodings = Encs
+            },
+            {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}};
+        {error, _} = E ->
+            E
+    end.
 
 new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps}) ->
     {Codecs, Exts} = maps:get(Kind, Caps),
@@ -131,7 +143,8 @@ transceivers(#jsep{transceivers = Trs}) ->
             current_direction => T#tr.current_direction,
             stopped => T#tr.stopped,
             ssrc => T#tr.ssrc,
-            rtx_ssrc => T#tr.rtx_ssrc
+            rtx_ssrc => T#tr.rtx_ssrc,
+            send_encodings => [maps:with([rid, ssrc, rtx_ssrc], E) || E <- T#tr.encodings]
         }
      || T <- Trs
     ].
@@ -318,7 +331,9 @@ validate_sections([M | Rest], Sdp) ->
         {webrtc_sdp_media:setup(M, Sdp) =/= error, missing_setup},
         {webrtc_sdp_media:setup(M, Sdp) =/= {ok, holdconn}, unsupported_setup},
         %% RFC 8834 §4.5 and the JSEP require policy: rtcp-mux.
-        {(not Rtp) orelse webrtc_sdp_media:attr(rtcp_mux, M) =:= {ok, true}, missing_rtcp_mux}
+        {(not Rtp) orelse webrtc_sdp_media:attr(rtcp_mux, M) =:= {ok, true}, missing_rtcp_mux},
+        %% RFC 9429 §5.8.3: rid-ids of a=simulcast exist as a=rid lines.
+        {(not Rtp) orelse webrtc_jsep_simulcast:validate(M) =:= ok, unknown_rid}
     ],
     case [R || {false, R} <- Checks] of
         [] -> validate_sections(Rest, Sdp);
@@ -444,107 +459,8 @@ negotiated(#jsep{} = J) ->
         end,
     case Local =:= undefined orelse Remote =:= undefined of
         true -> undefined;
-        false -> negotiated(Local, Remote, J)
+        false -> webrtc_jsep_params:negotiated(Local, Remote, J)
     end.
-
-negotiated(Local, Remote, J) ->
-    [Tag | _] = [M || M <- Remote#sdp.media, M#sdp_media.port =/= 0],
-    {ok, Ice} = webrtc_sdp_media:ice_credentials(Tag, Remote),
-    Media = [
-        media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), Remote)
-     || #tr{mline = L, stopped = false} = T <- J#jsep.transceivers,
-        L =/= undefined,
-        section(L, Local) =/= undefined
-    ],
-    Data =
-        case J#jsep.data_mline of
-            undefined -> undefined;
-            DL -> data_params(J, section(DL, Remote))
-        end,
-    #{
-        ice => #{
-            remote_ufrag => maps:get(ufrag, Ice),
-            remote_pwd => maps:get(pwd, Ice),
-            remote_lite => webrtc_sdp_media:ice_lite(Remote),
-            remote_candidates => lists:flatmap(
-                fun(M) -> webrtc_sdp_media:candidates(M) end, Remote#sdp.media
-            ),
-            remote_end_of_candidates => lists:any(
-                fun(M) -> webrtc_sdp_media:end_of_candidates(M) end, Remote#sdp.media
-            ),
-            local_ufrag => J#jsep.ice_ufrag,
-            local_pwd => J#jsep.ice_pwd
-        },
-        dtls => #{
-            role => J#jsep.dtls_role,
-            remote_fingerprints => [
-                {H, V}
-             || #{hash := H, value := V} <- webrtc_sdp_media:fingerprints(Tag, Remote), is_atom(H)
-            ]
-        },
-        media => [M || M <- Media, M =/= undefined],
-        data => Data,
-        bundle => case webrtc_sdp_media:groups(<<"BUNDLE">>, Remote) of
-            [G | _] -> G;
-            [] -> []
-        end
-    }.
-
-media_params(_T, _L, #sdp_media{port = 0}, _Remote) ->
-    undefined;
-media_params(T, L, R, _Remote) ->
-    RemoteCodecs = webrtc_sdp_media:codecs(R),
-    LocalCodecs = webrtc_sdp_media:codecs(L),
-    #{
-        id => T#tr.id,
-        mid => T#tr.mid,
-        kind => T#tr.kind,
-        direction => T#tr.current_direction,
-        send_codecs => webrtc_jsep_caps:match_remote(RemoteCodecs, T#tr.codecs),
-        recv_codecs => LocalCodecs,
-        send_extensions => webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, R)),
-        recv_extensions => webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
-        ssrc => T#tr.ssrc,
-        rtx_ssrc => T#tr.rtx_ssrc,
-        cname => undefined,
-        remote_ssrcs => remote_ssrcs(R),
-        rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true}
-    }.
-
-remote_ssrcs(R) ->
-    Ssrcs = webrtc_sdp_media:attrs(ssrc, R),
-    Groups = webrtc_sdp_media:attrs(ssrc_group, R),
-    Rtx = maps:from_list([{P, X} || #{semantics := <<"FID">>, ssrcs := [P, X]} <- Groups]),
-    Primary = lists:usort([S || #{ssrc := S} <- Ssrcs]) -- maps:values(Rtx),
-    [
-        #{
-            ssrc => S,
-            rtx_ssrc => maps:get(S, Rtx, undefined),
-            cname => hd([V || #{ssrc := S1, attribute := <<"cname">>, value := V} <- Ssrcs, S1 =:= S] ++ [undefined])
-        }
-     || S <- Primary
-    ].
-
-data_params(_J, undefined) ->
-    undefined;
-data_params(_J, #sdp_media{port = 0}) ->
-    undefined;
-data_params(J, R) ->
-    #{
-        mid => J#jsep.data_mid,
-        local_port => J#jsep.sctp_port,
-        remote_port =>
-            case webrtc_sdp_media:attr(sctp_port, R) of
-                {ok, P} -> P;
-                error -> 5000
-            end,
-        %% RFC 8841 §6: absent means 64 KiB.
-        remote_max_message_size =>
-            case webrtc_sdp_media:attr(max_message_size, R) of
-                {ok, N} -> N;
-                error -> 65536
-            end
-    }.
 
 %%====================================================================
 %% Helpers

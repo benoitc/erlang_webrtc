@@ -122,8 +122,22 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp`: the 
 | RTX-2 | 4 | Timestamp equal to the original timestamp | webrtc_rtx | rtx_test | Unit tested |
 | RTX-3 | 4 | SSRC multiplexing: distinct SSRC, own sequence numbers, RTX payload type | webrtc_rtx | rtx_test | Unit tested |
 | RTX-4 | 4 | Packets without an OSN (padding only) are not retransmissions | webrtc_rtx | rtx_padding_only_test | Unit tested |
-| RTX-5 | 5.3 | Receiver associates the RTX SSRC with the original stream (apt, rid / repaired-rid) | | | Not implemented (session layer) |
+| RTX-5 | 5.3 | Receiver associates the RTX SSRC with the original stream (apt, rid / repaired-rid) | webrtc_media, webrtc_media_rid | webrtc_media_tests:nack_rtx_test, webrtc_media_simulcast_tests:layer_nack_rtx_test | Unit tested: `ssrc-group:FID` when announced, repaired-rid otherwise |
 | RTX-6 | 6 | Sender keeps sent packets and avoids resending within one RTT | webrtc_nack_buffer | buffer_test, buffer_max_age_test | Unit tested |
+
+## RFC 8852 and RFC 8853: RTP stream identifiers and simulcast
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| RID-1 | 8851 4, 8852 3.1 | Every layer sent has its own SSRC and RTX SSRC and carries the MID and RtpStreamId header extensions | webrtc_media | webrtc_media_simulcast_tests:send_layers_test | Unit tested |
+| RID-2 | 8851 4, 8852 3.2 | Retransmissions of a layer carry RepairedRtpStreamId, not RtpStreamId | webrtc_media | webrtc_media_simulcast_tests:layer_nack_rtx_test | Unit tested |
+| RID-3 | 8852 4, 8853 6.1 | RTCP SDES with the MID and RtpStreamId items for every sent layer, and a sender report per layer | webrtc_media | webrtc_media_simulcast_tests:sdes_teaches_layers_test | Unit tested |
+| RID-4 | 9143 9.2, 8852 3.1 | Layers without `a=ssrc` lines demultiplexed by MID and rid; the SSRC is learned from the first packet, later packets may omit the extensions | webrtc_media_rid | webrtc_media_simulcast_tests:receive_layers_test, classify_test | Unit tested, E2E (webrtc_pc_SUITE:simulcast_layers), interop (Chromium) |
+| RID-5 | 8852 3.2 | RTX stream of a layer bound by repaired-rid; repair packets before their layer is known are dropped | webrtc_media_rid | webrtc_media_simulcast_tests:layer_nack_rtx_test, classify_test | Unit tested |
+| RID-6 | 8852 4 | SSRC to rid mapping learned from RTCP SDES | webrtc_media_rid | webrtc_media_simulcast_tests:sdes_test, sdes_teaches_layers_test | Unit tested |
+| RID-7 | 8853 5.2 | Streams with a rid that was not negotiated, or without any rid in a simulcast section, are not delivered | webrtc_media_rid | webrtc_media_simulcast_tests:unknown_rid_dropped_test, classify_test | Unit tested (counter `unknown_rid`) |
+| RID-8 | 8853 6.1, 4585 | NACK, RTX and PLI per layer SSRC; keyframe request for one layer both ways | webrtc_media | webrtc_media_simulcast_tests:layer_nack_rtx_test, layer_keyframe_test | Unit tested, E2E, interop (Chromium reports the PLI on the requested layer only) |
+| RID-9 | 8853 5.2, RFC 7728 | Pause and resume of layers | | | Not implemented |
 
 ## RFC 5761 and RFC 8858: rtcp-mux
 

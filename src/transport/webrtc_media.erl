@@ -8,12 +8,20 @@
 %%
 %% Incoming RTP is matched to a transceiver (mid) in this order
 %% (RFC 9143 §9.2): known SSRC, the MID header extension, then a payload
-%% type used by a single m= section.
+%% type used by a single m= section. In a section with negotiated
+%% simulcast layers, the layer (rid) comes from the RtpStreamId and
+%% RepairedRtpStreamId header extensions (RFC 8852, see
+%% `webrtc_media_rid').
+%%
+%% Senders are keyed by mid, or by `{Mid, Rid}' for each simulcast layer
+%% we send (RFC 8853); every layer has its own SSRC and RTX SSRC and
+%% carries the RtpStreamId extension (RFC 8851 §4).
 %%
 %% Actions: `{send, Datagram}' and `{event, Event}' with Event one of
-%% `{rtp, Mid, #rtp{}}', `{keyframe_request, Mid}', `{rtcp, Mid, Packet}'
-%% (feedback the application may act on, such as REMB or TWCC) and
-%% `{bye, Mid, Ssrc}'.
+%% `{rtp, Mid, #rtp{}}', `{rtp, Mid, Rid, #rtp{}}' (a simulcast layer),
+%% `{keyframe_request, Mid}', `{keyframe_request, Mid, Rid}',
+%% `{rtcp, Mid, Packet}' (feedback the application may act on, such as
+%% REMB or TWCC) and `{bye, Mid, Ssrc}'.
 -module(webrtc_media).
 
 -include("webrtc_rtp.hrl").
@@ -33,9 +41,11 @@
     stats/1
 ]).
 
--export_type([state/0]).
+-export_type([state/0, sender_key/0]).
 
 -define(URI_MID, <<"urn:ietf:params:rtp-hdrext:sdes:mid">>).
+-define(URI_RID, <<"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id">>).
+-define(URI_RRID, <<"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id">>).
 -define(RTCP_INTERVAL, 1000).
 -define(BUFFER_SIZE, 512).
 
@@ -53,7 +63,12 @@
     last_ts = 0 :: non_neg_integer(),
     last_ts_at :: undefined | integer(),
     tx :: term(),
-    buffer :: term()
+    buffer :: term(),
+    %% Simulcast layer (RFC 8853) and the RtpStreamId and
+    %% RepairedRtpStreamId extension ids (RFC 8852).
+    rid :: undefined | binary(),
+    rid_ext :: undefined | pos_integer(),
+    rrid_ext :: undefined | pos_integer()
 }).
 
 -record(rcv, {
@@ -68,7 +83,7 @@
     rtcp_ssrc :: non_neg_integer(),
     out :: undefined | term(),
     in :: undefined | term(),
-    senders = #{} :: #{binary() => #snd{}},
+    senders = #{} :: #{sender_key() => #snd{}},
     %% Incoming streams by SSRC.
     receivers = #{} :: #{non_neg_integer() => #rcv{}},
     %% Demultiplexing tables, rebuilt on every negotiation.
@@ -77,11 +92,14 @@
     pt_mid = #{} :: #{0..127 => binary()},
     mid_ext = #{} :: #{binary() => pos_integer()},
     recv = #{} :: #{binary() => map()},
+    rids = webrtc_media_rid:new() :: webrtc_media_rid:state(),
     rtcp_at = infinity :: integer() | infinity,
     counters = #{} :: map()
 }).
 
 -opaque state() :: #media{}.
+%% A transceiver (mid) or one simulcast layer of it.
+-type sender_key() :: binary() | {binary(), binary()}.
 
 %%====================================================================
 %% Setup
@@ -96,10 +114,12 @@ new(Opts) ->
 %% are kept for transceivers that remain.
 -spec configure([map()], state()) -> state().
 configure(Sections, #media{} = M) ->
-    Senders = maps:from_list([
-        {Mid, sender(S, maps:get(Mid, M#media.senders, undefined))}
-     || #{mid := Mid, direction := D} = S <- Sections, D =:= sendrecv orelse D =:= sendonly
-    ]),
+    Senders = maps:from_list(
+        lists:append([
+            senders(S, M#media.senders)
+         || #{direction := D} = S <- Sections, D =:= sendrecv orelse D =:= sendonly
+        ])
+    ),
     Recv = maps:from_list([{Mid, S} || #{mid := Mid} = S <- Sections]),
     SsrcMid = maps:from_list(
         lists:append([
@@ -129,8 +149,26 @@ configure(Sections, #media{} = M) ->
         ssrc_mid = maps:merge(M#media.ssrc_mid, SsrcMid),
         rtx_ssrc = RtxSsrc,
         pt_mid = PtMid,
-        mid_ext = MidExt
+        mid_ext = MidExt,
+        rids = webrtc_media_rid:configure(Sections, M#media.rids)
     }.
+
+%% One sender per transceiver, or one per negotiated simulcast layer.
+senders(#{mid := Mid, send_rids := [_ | _] = Layers} = Sec, Old) ->
+    Exts = maps:get(send_extensions, Sec, #{}),
+    [
+        {{Mid, Rid}, (sender(Sec#{ssrc := S, rtx_ssrc := X}, maps:get({Mid, Rid}, Old, undefined)))#snd{
+            rid = Rid,
+            rid_ext = maps:get(?URI_RID, Exts, undefined),
+            rrid_ext = maps:get(?URI_RRID, Exts, undefined)
+        }}
+     || #{rid := Rid, ssrc := S, rtx_ssrc := X} <- Layers
+    ];
+senders(#{mid := Mid} = Sec, Old) ->
+    [{Mid, sender(Sec, maps:get(Mid, Old, undefined))}].
+
+skey(#snd{mid = Mid, rid = undefined}) -> Mid;
+skey(#snd{mid = Mid, rid = Rid}) -> {Mid, Rid}.
 
 sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = Sec, Old) ->
     Rtx = maps:from_list([
@@ -173,10 +211,15 @@ ready(#media{out = O}) -> O =/= undefined.
 
 %% @doc Send a payload on a transceiver. `Opts': `timestamp' (RTP
 %% clock), `marker', `pt' or `codec' (name), defaulting to the first
-%% negotiated codec.
+%% negotiated codec, and `rid' to send on one simulcast layer.
 -spec send(binary(), binary(), map(), integer(), state()) ->
     {ok, [{send, binary()}], state()} | {error, term()}.
-send(Mid, Payload, Opts, Now, M) ->
+send(Mid0, Payload, Opts, Now, M) ->
+    Mid =
+        case Opts of
+            #{rid := Rid} -> {Mid0, Rid};
+            _ -> Mid0
+        end,
     case maps:find(Mid, M#media.senders) of
         error ->
             {error, not_sending};
@@ -210,10 +253,11 @@ pick_pt(_, #snd{codecs = [#{pt := P} | _]}) ->
 pick_pt(_, _) ->
     error.
 
-%% @doc Send an RTP packet on a transceiver. The SSRC and sequence number
-%% are ours; payload type, timestamp, marker and payload come from the
-%% packet (forwarding rewrites only what identifies the stream).
--spec send_packet(binary(), #rtp{}, integer(), state()) ->
+%% @doc Send an RTP packet on a transceiver, or on one of its simulcast
+%% layers with `{Mid, Rid}'. The SSRC and sequence number are ours;
+%% payload type, timestamp, marker and payload come from the packet
+%% (forwarding rewrites only what identifies the stream).
+-spec send_packet(sender_key(), #rtp{}, integer(), state()) ->
     {ok, [{send, binary()}], state()} | {error, term()}.
 send_packet(_Mid, _Pkt, _Now, #media{out = undefined}) ->
     {error, not_ready};
@@ -242,12 +286,34 @@ send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
     end.
 
 %% RFC 9143 §9.1: carry the MID so the receiver can demultiplex before
-%% it has learned our SSRC.
-mid_ext(#snd{mid_ext = undefined}) -> undefined;
-mid_ext(#snd{mid_ext = Id, mid = Mid}) -> [{Id, webrtc_rtp_ext:sdes(Mid)}].
+%% it has learned our SSRC; a simulcast layer carries its RtpStreamId
+%% too (RFC 8851 §4, RFC 8852 §3.1).
+mid_ext(#snd{} = S) ->
+    case sdes_ext(S#snd.mid_ext, S#snd.mid) ++ sdes_ext(S#snd.rid_ext, S#snd.rid) of
+        [] -> undefined;
+        Elems -> Elems
+    end.
 
-%% @doc Ask the remote sender of a transceiver for a keyframe (PLI).
--spec request_keyframe(binary(), integer(), state()) -> {[{send, binary()}], state()}.
+sdes_ext(Id, Value) when is_integer(Id), is_binary(Value) -> [{Id, webrtc_rtp_ext:sdes(Value)}];
+sdes_ext(_, _) -> [].
+
+%% A retransmission of a layer names the layer it repairs (RFC 8852
+%% §3.2) instead of carrying its RtpStreamId.
+rtx_ext(#snd{rid = undefined}, Ext) ->
+    Ext;
+rtx_ext(#snd{} = S, _Ext) ->
+    case sdes_ext(S#snd.mid_ext, S#snd.mid) ++ sdes_ext(S#snd.rrid_ext, S#snd.rid) of
+        [] -> undefined;
+        Elems -> Elems
+    end.
+
+%% @doc Ask the remote sender of a transceiver for a keyframe (PLI), on
+%% every stream of the mid or on one simulcast layer with `{Mid, Rid}'.
+-spec request_keyframe(sender_key(), integer(), state()) -> {[{send, binary()}], state()}.
+request_keyframe({Mid, Rid}, _Now, M) ->
+    Ssrcs = [S || {ok, S} <- [webrtc_media_rid:source(Mid, Rid, M#media.rids)]],
+    Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
+    send_rtcp(Pkts, M);
 request_keyframe(Mid, _Now, M) ->
     Ssrcs = [S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid],
     Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
@@ -287,8 +353,21 @@ route(#rtp{ssrc = Ssrc} = Pkt, Now, M) ->
             M1 = M#media{ssrc_mid = (M#media.ssrc_mid)#{Ssrc => Mid}},
             case maps:find(Ssrc, M1#media.rtx_ssrc) of
                 {ok, Primary} -> rtx_in(Mid, Primary, Pkt, Now, M1);
-                error -> deliver(Mid, Pkt, Now, M1)
+                error -> layer_in(Mid, Pkt, Now, M1)
             end
+    end.
+
+%% Simulcast layers are told apart by rid (RFC 8852); an RTX stream is
+%% bound to its layer by repaired-rid and remembered.
+layer_in(Mid, #rtp{ssrc = Ssrc} = Pkt, Now, M) ->
+    case webrtc_media_rid:classify(Mid, Pkt, M#media.rids) of
+        {{repair, Primary}, R} ->
+            M1 = M#media{rids = R, rtx_ssrc = (M#media.rtx_ssrc)#{Ssrc => Primary}},
+            rtx_in(Mid, Primary, Pkt, Now, M1);
+        {drop, R} ->
+            {count(unknown_rid, M#media{rids = R}), []};
+        {_, R} ->
+            deliver(Mid, Pkt, Now, M#media{rids = R})
     end.
 
 find_mid(#rtp{ssrc = Ssrc, pt = Pt, ext = Ext}, M) ->
@@ -353,7 +432,12 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
     R1 = R0#rcv{rx = Rx, nack = Nack},
     M1 = M#media{receivers = (M#media.receivers)#{Ssrc => R1}},
     {Out, M2} = nack_actions(Mid, Ssrc, NackActions, M1),
-    {count(rtp_received, M2), [{event, {rtp, Mid, Pkt}} | Out]}.
+    Event =
+        case webrtc_media_rid:rid(Ssrc, M2#media.rids) of
+            undefined -> {rtp, Mid, Pkt};
+            Rid -> {rtp, Mid, Rid, Pkt}
+        end,
+    {count(rtp_received, M2), [{event, Event} | Out]}.
 
 new_receiver(Mid, Ssrc, Pt, M) ->
     Sec = maps:get(Mid, M#media.recv, #{}),
@@ -439,6 +523,8 @@ rtcp_packet(#rtcp_sr{ssrc = Ssrc} = SR, Now, M) ->
         error ->
             {M, []}
     end;
+rtcp_packet(#rtcp_sdes{chunks = Chunks}, _Now, M) ->
+    {M#media{rids = webrtc_media_rid:sdes(Chunks, M#media.ssrc_mid, M#media.rids)}, []};
 rtcp_packet(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
     {M, [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs]};
 rtcp_packet(P, _Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
@@ -448,7 +534,8 @@ rtcp_packet(_P, _Now, M) ->
 
 keyframe(Ssrc, M) ->
     case sender_by_ssrc(Ssrc, M) of
-        {ok, #snd{mid = Mid}} -> {M, [{event, {keyframe_request, Mid}}]};
+        {ok, #snd{mid = Mid, rid = undefined}} -> {M, [{event, {keyframe_request, Mid}}]};
+        {ok, #snd{mid = Mid, rid = Rid}} -> {M, [{event, {keyframe_request, Mid, Rid}}]};
         error -> {M, []}
     end.
 
@@ -459,7 +546,8 @@ sender_by_ssrc(Ssrc, M) ->
     end.
 
 %% Resend NACKed packets, over RTX when negotiated (RFC 4588 §4).
-retransmit(#snd{mid = Mid} = S0, Seqs, Now, M) ->
+retransmit(#snd{} = S0, Seqs, Now, M) ->
+    Key = skey(S0),
     {Found, Buf} = webrtc_nack_buffer:retransmit(Seqs, Now, S0#snd.buffer),
     {Bins, S1, Out} = lists:foldl(
         fun({_Seq, Pkt}, {Acc, S, O}) ->
@@ -472,13 +560,14 @@ retransmit(#snd{mid = Mid} = S0, Seqs, Now, M) ->
         {[], S0#snd{buffer = Buf}, M#media.out},
         Found
     ),
-    M1 = M#media{out = Out, senders = (M#media.senders)#{Mid := S1}},
+    M1 = M#media{out = Out, senders = (M#media.senders)#{Key := S1}},
     {count(retransmitted, length(Bins), M1), lists:reverse(Bins)}.
 
 rtx_packet(#rtp{pt = Pt} = Pkt, #snd{rtx = Rtx} = S) ->
     case maps:find(Pt, Rtx) of
         {ok, RtxPt} ->
-            Wire = webrtc_rtx:encapsulate(Pkt, #{ssrc => S#snd.rtx_ssrc, pt => RtxPt, seq => S#snd.rtx_seq}),
+            Wire0 = webrtc_rtx:encapsulate(Pkt, #{ssrc => S#snd.rtx_ssrc, pt => RtxPt, seq => S#snd.rtx_seq}),
+            Wire = Wire0#rtp{ext = rtx_ext(S, Wire0#rtp.ext)},
             {Wire, S#snd{rtx_seq = (S#snd.rtx_seq + 1) band 16#FFFF}};
         error ->
             {Pkt, S}
@@ -560,13 +649,19 @@ reports(Now, M) ->
                  || S <- Senders
                 ]
         end,
-    Ssrcs =
+    Cname = {cname, M1#media.cname},
+    Chunks =
         case Senders of
-            [] -> [M1#media.rtcp_ssrc];
-            _ -> [S#snd.ssrc || S <- Senders]
+            [] -> [{M1#media.rtcp_ssrc, [Cname]}];
+            _ -> [{S#snd.ssrc, [Cname | layer_sdes(S)]} || S <- Senders]
         end,
-    Sdes = #rtcp_sdes{chunks = [{S, [{cname, M1#media.cname}]} || S <- Ssrcs]},
+    Sdes = #rtcp_sdes{chunks = Chunks},
     send_rtcp(Reports ++ [Sdes], M1).
+
+%% RFC 8852 §4: the RtpStreamId (and MID) SDES items of a layer, so the
+%% receiver learns its SSRC even when no RTP flows.
+layer_sdes(#snd{rid = undefined}) -> [];
+layer_sdes(#snd{mid = Mid, rid = Rid}) -> [{mid, Mid}, {rid, Rid}].
 
 %% Extrapolate the RTP timestamp to now from the last packet sent.
 rtp_ts_now(#snd{last_ts_at = undefined, last_ts = Ts}, _Now) ->
@@ -602,7 +697,9 @@ stats(#media{} = M) ->
             M#media.senders
         ),
         receivers => maps:map(
-            fun(_Ssrc, R) -> (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid} end,
+            fun(Ssrc, R) ->
+                (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)}
+            end,
             M#media.receivers
         )
     }.

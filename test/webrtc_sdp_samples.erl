@@ -6,6 +6,7 @@
     all/0,
     chrome_offer/0,
     chrome_answer/0,
+    chrome_simulcast_offer/0,
     firefox_offer/0,
     firefox_legacy_datachannel/0,
     safari_offer/0,
@@ -22,6 +23,7 @@ all() ->
     [
         {chrome_offer, chrome_offer()},
         {chrome_answer, chrome_answer()},
+        {chrome_simulcast_offer, chrome_simulcast_offer()},
         {firefox_offer, firefox_offer()},
         {firefox_legacy_datachannel, firefox_legacy_datachannel()},
         {safari_offer, safari_offer()},
@@ -167,6 +169,25 @@ chrome_offer() ->
                 <<"a=max-message-size:262144">>
             ]
     ).
+
+%% The offer of Chrome for a camera track added with
+%% addTransceiver(track, {direction: 'sendonly', sendEncodings: [{rid: 'q',
+%% scaleResolutionDownBy: 4}, {rid: 'h', scaleResolutionDownBy: 2},
+%% {rid: 'f'}]}): rid lines and a=simulcast, no a=ssrc lines for video.
+-spec chrome_simulcast_offer() -> binary().
+chrome_simulcast_offer() ->
+    Lines = binary:split(chrome_offer(), <<"\r\n">>, [global, trim_all]),
+    {Before, [MVideo | After]} = lists:splitwith(fun(L) -> binary:match(L, <<"m=video">>) =:= nomatch end, Lines),
+    {Video, Rest} = lists:splitwith(fun(L) -> binary:match(L, <<"m=application">>) =:= nomatch end, After),
+    Video1 = [
+        case L of
+            <<"a=sendrecv">> -> <<"a=sendonly">>;
+            _ -> L
+        end
+     || L <- Video, binary:match(L, [<<"a=ssrc:">>, <<"a=ssrc-group:">>]) =:= nomatch
+    ],
+    Sim = [<<"a=rid:q send">>, <<"a=rid:h send">>, <<"a=rid:f send">>, <<"a=simulcast:send q;h;f">>],
+    sdp(Before ++ [MVideo | Video1] ++ Sim ++ Rest).
 
 -spec chrome_answer() -> binary().
 chrome_answer() ->

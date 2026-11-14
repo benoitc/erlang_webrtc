@@ -23,5 +23,7 @@ buffer_max_age_test() ->
     B = ?B:store(1, p, 0, ?B:new(#{max_age => 100})),
     ?assertMatch({[{1, p}], _}, ?B:retransmit([1], 100, B)),
     ?assertMatch({[], _}, ?B:retransmit([1], 101, B)),
-    ?assertMatch({[{1, p}], _}, ?B:retransmit([1], 100000, ?B:store(1, p, 0, ?B:new(#{max_age => infinity})))),
+    ?assertMatch(
+        {[{1, p}], _}, ?B:retransmit([1], 100000, ?B:store(1, p, 0, ?B:new(#{max_age => infinity})))
+    ),
     ?assertError(_, ?B:new(#{size => 0})).

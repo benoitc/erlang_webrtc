@@ -73,7 +73,9 @@ rb() ->
     ?LET(
         {S, F, L, E, J, Lsr, Dlsr},
         {u(32), u(8), integer(-16#800000, 16#7FFFFF), u(32), u(32), u(32), u(32)},
-        #rtcp_rb{ssrc = S, fraction_lost = F, lost = L, ext_seq = E, jitter = J, lsr = Lsr, dlsr = Dlsr}
+        #rtcp_rb{
+            ssrc = S, fraction_lost = F, lost = L, ext_seq = E, jitter = J, lsr = Lsr, dlsr = Dlsr
+        }
     ).
 
 rbs() -> ?LET(N, integer(0, 4), vector(N, rb())).
@@ -92,7 +94,14 @@ twcc_status() -> oneof([not_received, integer(0, 255), integer(-32768, 32767)]).
 twcc(MaxLen) ->
     ?LET(
         {S, M, Base, Ref, Fb, Statuses},
-        {u(32), u(32), u(16), integer(-16#800000, 16#7FFFFF), u(8), ?LET(N, integer(0, MaxLen), vector(N, twcc_status()))},
+        {
+            u(32),
+            u(32),
+            u(16),
+            integer(-16#800000, 16#7FFFFF),
+            u(8),
+            ?LET(N, integer(0, MaxLen), vector(N, twcc_status()))
+        },
         #rtcp_twcc{
             sender_ssrc = S,
             media_ssrc = M,
@@ -122,7 +131,9 @@ rtcp_packet() ->
         ?LET(
             {S, Ntp, Ts, P, O, R, E},
             {u(32), u(64), u(32), u(32), u(32), rbs(), words(3)},
-            #rtcp_sr{ssrc = S, ntp = Ntp, rtp_ts = Ts, packets = P, octets = O, reports = R, ext = E}
+            #rtcp_sr{
+                ssrc = S, ntp = Ntp, rtp_ts = Ts, packets = P, octets = O, reports = R, ext = E
+            }
         ),
         ?LET({S, R, E}, {u(32), rbs(), words(3)}, #rtcp_rr{ssrc = S, reports = R, ext = E}),
         ?LET(C, list({u(32), list(sdes_item())}), #rtcp_sdes{chunks = lists:sublist(C, 31)}),
@@ -308,7 +319,9 @@ is_result(_) -> false.
 
 prop_rtp_decode_never_crashes() ->
     ?FORALL(
-        Bin, oneof([binary(), ?LET({F, B}, {u(6), binary()}, <<2:2, F:6, B/binary>>)]), rtp_total(Bin)
+        Bin,
+        oneof([binary(), ?LET({F, B}, {u(6), binary()}, <<2:2, F:6, B/binary>>)]),
+        rtp_total(Bin)
     ).
 
 prop_rtp_mutation_never_crashes() ->
@@ -319,12 +332,20 @@ prop_rtp_mutation_never_crashes() ->
     ).
 
 rtcp_total(Bin) ->
-    is_result(webrtc_rtcp:decode(Bin)) andalso is_result(webrtc_rtcp:decode(Bin, #{mode => compound})).
+    is_result(webrtc_rtcp:decode(Bin)) andalso
+        is_result(webrtc_rtcp:decode(Bin, #{mode => compound})).
 
 prop_rtcp_decode_never_crashes() ->
     ?FORALL(
         Bin,
-        oneof([binary(), ?LET({T, B}, {oneof([200, 201, 202, 203, 204, 205, 206, 207]), binary()}, rtcp_header(T, B))]),
+        oneof([
+            binary(),
+            ?LET(
+                {T, B},
+                {oneof([200, 201, 202, 203, 204, 205, 206, 207]), binary()},
+                rtcp_header(T, B)
+            )
+        ]),
         rtcp_total(Bin)
     ).
 

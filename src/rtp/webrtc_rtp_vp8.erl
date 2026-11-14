@@ -52,9 +52,12 @@ extended(<<I:1, L:1, T:1, K:1, _:4, Rest0/binary>>, D0) ->
     case picture_id(I, Rest0) of
         {ok, PicId, IBytes, Rest1} ->
             case {L, Rest1} of
-                {1, <<Tl0, Rest2/binary>>} -> tk(T, K, Rest2, D0#{picture_id => PicId, tl0picidx => Tl0}, 2 + IBytes + 1);
-                {0, _} -> tk(T, K, Rest1, D0#{picture_id => PicId}, 2 + IBytes);
-                _ -> {error, truncated}
+                {1, <<Tl0, Rest2/binary>>} ->
+                    tk(T, K, Rest2, D0#{picture_id => PicId, tl0picidx => Tl0}, 2 + IBytes + 1);
+                {0, _} ->
+                    tk(T, K, Rest1, D0#{picture_id => PicId}, 2 + IBytes);
+                _ ->
+                    {error, truncated}
             end;
         error ->
             {error, truncated}

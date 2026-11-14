@@ -10,14 +10,19 @@ roundtrip(Bin, Expected) ->
     ?assertEqual({ok, [Expected]}, webrtc_rtcp:decode(Bin)),
     ?assertEqual(Bin, webrtc_rtcp:encode(Expected)),
     %% every cut is an error
-    [?assertMatch({error, _}, webrtc_rtcp:decode(binary:part(Bin, 0, N))) || N <- lists:seq(0, byte_size(Bin) - 1)],
+    [
+        ?assertMatch({error, _}, webrtc_rtcp:decode(binary:part(Bin, 0, N)))
+     || N <- lists:seq(0, byte_size(Bin) - 1)
+    ],
     ok.
 
 %% RFC 4585 §6.2.1: lost 100, 101, 105, 116 -> PID 100 BLP 0x8011; 117
 %% starts a new item.
 nack_test() ->
     Bin = b("81 cd 00 04 00 00 00 01 2a 3b 4c 5d 00 64 80 11 00 75 00 00"),
-    Nack = #rtcp_nack{sender_ssrc = 1, media_ssrc = 16#2a3b4c5d, items = [{100, 16#8011}, {117, 0}]},
+    Nack = #rtcp_nack{
+        sender_ssrc = 1, media_ssrc = 16#2a3b4c5d, items = [{100, 16#8011}, {117, 0}]
+    },
     roundtrip(Bin, Nack),
     ?assertEqual([{100, 16#8011}, {117, 0}], webrtc_rtcp_fb:nack_items([100, 101, 105, 116, 117])),
     ?assertEqual([100, 101, 105, 116, 117], webrtc_rtcp_fb:nack_seqs([{100, 16#8011}, {117, 0}])).
@@ -40,7 +45,8 @@ nack_helpers_test_() ->
 nack_errors_test_() ->
     [
         ?_assertMatch(
-            {error, {bad_packet, 205, empty_nack}}, webrtc_rtcp:decode(b("81 cd 00 02 00 00 00 01 00 00 00 02"))
+            {error, {bad_packet, 205, empty_nack}},
+            webrtc_rtcp:decode(b("81 cd 00 02 00 00 00 01 00 00 00 02"))
         ),
         %% TMMBR entries are 8 bytes
         ?_assertMatch(
@@ -48,15 +54,20 @@ nack_errors_test_() ->
             webrtc_rtcp:decode(b("83 cd 00 03 00 00 00 01 00 00 00 00 00 00 00 01"))
         ),
         %% feedback without the two SSRCs
-        ?_assertMatch({error, {bad_packet, 205, truncated}}, webrtc_rtcp:decode(b("81 cd 00 01 00 00 00 01"))),
+        ?_assertMatch(
+            {error, {bad_packet, 205, truncated}}, webrtc_rtcp:decode(b("81 cd 00 01 00 00 00 01"))
+        ),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_nack{items = []})),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_nack{items = [{70000, 0}]}))
     ].
 
 pli_test() ->
-    roundtrip(b("81 ce 00 02 00 00 00 01 2a 3b 4c 5d"), #rtcp_pli{sender_ssrc = 1, media_ssrc = 16#2a3b4c5d}),
+    roundtrip(b("81 ce 00 02 00 00 00 01 2a 3b 4c 5d"), #rtcp_pli{
+        sender_ssrc = 1, media_ssrc = 16#2a3b4c5d
+    }),
     ?assertMatch(
-        {error, {bad_packet, 206, bad_pli}}, webrtc_rtcp:decode(b("81 ce 00 03 00 00 00 01 00 00 00 02 00 00 00 00"))
+        {error, {bad_packet, 206, bad_pli}},
+        webrtc_rtcp:decode(b("81 ce 00 03 00 00 00 01 00 00 00 02 00 00 00 00"))
     ).
 
 %% RFC 4585 §6.3.2: First 13 bits, Number 13 bits, PictureID 6 bits.
@@ -106,9 +117,14 @@ remb_test() ->
     %% SSRC count larger than the packet
     ?assertMatch(
         {error, {bad_packet, 206, bad_remb}},
-        webrtc_rtcp:decode(b("8f ce 00 05 00 00 00 01 00 00 00 00 52 45 4d 42 02 16 dc 6c 2a 3b 4c 5d"))
+        webrtc_rtcp:decode(
+            b("8f ce 00 05 00 00 00 01 00 00 00 00 52 45 4d 42 02 16 dc 6c 2a 3b 4c 5d")
+        )
     ).
 
 afb_other_raw_test() ->
     Bin = b("8f ce 00 03 00 00 00 01 00 00 00 00 41 42 43 44"),
-    ?assertEqual({ok, [#rtcp_raw{pt = 206, count = 15, body = binary:part(Bin, 4, 12)}]}, webrtc_rtcp:decode(Bin)).
+    ?assertEqual(
+        {ok, [#rtcp_raw{pt = 206, count = 15, body = binary:part(Bin, 4, 12)}]},
+        webrtc_rtcp:decode(Bin)
+    ).

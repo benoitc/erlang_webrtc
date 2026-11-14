@@ -258,7 +258,10 @@ rewrite(<<2:2, B0:6, M0:1, PT0:7, Seq0:16, Ts0:32, Ssrc0:32, Rest/binary>>, Chan
     Seq = maps:get(seq, Changes, Seq0),
     Ts = maps:get(ts, Changes, Ts0),
     Ssrc = maps:get(ssrc, Changes, Ssrc0),
-    case ?is_uint(PT, 7) andalso ?is_uint(Seq, 16) andalso ?is_uint(Ts, 32) andalso ?is_uint(Ssrc, 32) of
+    case
+        ?is_uint(PT, 7) andalso ?is_uint(Seq, 16) andalso ?is_uint(Ts, 32) andalso
+            ?is_uint(Ssrc, 32)
+    of
         true -> {ok, <<2:2, B0:6, M:1, PT:7, Seq:16, Ts:32, Ssrc:32, Rest/binary>>};
         false -> error(badarg)
     end;

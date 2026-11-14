@@ -160,5 +160,7 @@ video_orientation_test() ->
 playout_delay_test() ->
     ?assertEqual(<<16#00, 16#A0, 16#64>>, webrtc_rtp_ext:playout_delay(100, 1000)),
     ?assertEqual({ok, {100, 1000}}, webrtc_rtp_ext:decode_playout_delay(<<16#00, 16#A0, 16#64>>)),
-    ?assertEqual({ok, {40950, 40950}}, webrtc_rtp_ext:decode_playout_delay(<<16#FF, 16#FF, 16#FF>>)),
+    ?assertEqual(
+        {ok, {40950, 40950}}, webrtc_rtp_ext:decode_playout_delay(<<16#FF, 16#FF, 16#FF>>)
+    ),
     ?assertEqual({error, bad_length}, webrtc_rtp_ext:decode_playout_delay(<<1, 2>>)).

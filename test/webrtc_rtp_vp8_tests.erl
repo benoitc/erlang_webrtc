@@ -36,7 +36,10 @@ vp8_parse_test() ->
 
 vp8_minimal_test() ->
     %% S=1, no extension, inter frame (P bit 1)
-    ?assertMatch({ok, #{start := true, picture_id := undefined, size := 1}, <<16#11>>}, ?VP8:parse(<<16#10, 16#11>>)),
+    ?assertMatch(
+        {ok, #{start := true, picture_id := undefined, size := 1}, <<16#11>>},
+        ?VP8:parse(<<16#10, 16#11>>)
+    ),
     ?assertNot(?VP8:is_keyframe(<<16#10, 16#11>>)),
     ?assert(?VP8:is_keyframe(<<16#10, 16#10>>)),
     %% not the start of partition 0
@@ -46,7 +49,9 @@ vp8_minimal_test() ->
     %% 7-bit picture ID
     ?assertMatch({ok, #{picture_id := {7, 5}}, <<>>}, ?VP8:parse(<<16#90, 16#80, 16#05>>)),
     %% K without T
-    ?assertMatch({ok, #{tid := undefined, keyidx := 7, size := 3}, <<>>}, ?VP8:parse(<<16#80, 16#10, 16#07>>)).
+    ?assertMatch(
+        {ok, #{tid := undefined, keyidx := 7, size := 3}, <<>>}, ?VP8:parse(<<16#80, 16#10, 16#07>>)
+    ).
 
 vp8_truncated_test_() ->
     [
@@ -66,10 +71,14 @@ vp8_rewrite_test() ->
     ?assertMatch(#{picture_id := {15, 1}, tl0picidx := 200, tid := 2, keyidx := 3}, D),
     ?assertEqual(b("10 02 9d 01 2a"), Rest),
     %% 7-bit picture IDs keep their width
-    {ok, P7} = ?VP8:rewrite(<<16#90, 16#C0, 16#05, 16#AA, 16#BB>>, #{picture_id => 130, tl0picidx => 1}),
+    {ok, P7} = ?VP8:rewrite(<<16#90, 16#C0, 16#05, 16#AA, 16#BB>>, #{
+        picture_id => 130, tl0picidx => 1
+    }),
     ?assertEqual(<<16#90, 16#C0, 2, 1, 16#BB>>, P7),
     ?assertEqual({error, {absent, picture_id}}, ?VP8:rewrite(<<16#10, 0>>, #{picture_id => 1})),
-    ?assertEqual({error, {absent, tl0picidx}}, ?VP8:rewrite(<<16#90, 16#80, 1>>, #{tl0picidx => 1})),
+    ?assertEqual(
+        {error, {absent, tl0picidx}}, ?VP8:rewrite(<<16#90, 16#80, 1>>, #{tl0picidx => 1})
+    ),
     ?assertEqual({ok, <<16#10, 0>>}, ?VP8:rewrite(<<16#10, 0>>, #{})).
 
 vp8_packetize_test() ->
@@ -78,7 +87,11 @@ vp8_packetize_test() ->
     ?assert(lists:all(fun(P) -> byte_size(P) =< 100 end, Payloads)),
     Parsed = [?VP8:parse(P) || P <- Payloads],
     [{ok, #{start := true}, _} | Others] = Parsed,
-    ?assert(lists:all(fun({ok, #{start := S, picture_id := {15, 77}, tl0picidx := 3}, _}) -> not S end, Others)),
+    ?assert(
+        lists:all(
+            fun({ok, #{start := S, picture_id := {15, 77}, tl0picidx := 3}, _}) -> not S end, Others
+        )
+    ),
     ?assertEqual(Frame, iolist_to_binary([R || {ok, _, R} <- Parsed])),
     [Single] = ?VP8:packetize(<<"x">>, 100, #{}),
     ?assertEqual(<<16#10, "x">>, Single).

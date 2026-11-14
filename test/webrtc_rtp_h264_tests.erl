@@ -73,6 +73,10 @@ h264_errors_test_() ->
         ?_assertEqual({error, {unsupported, 29}}, ?H264:depacketize(<<16#7D, 0>>)),
         ?_assertEqual({error, {bad_nal_type, 0}}, ?H264:depacketize(<<16#00, 0>>)),
         ?_assertEqual({error, {bad_nal_type, 30}}, ?H264:depacketize(<<16#1E, 0>>)),
-        ?_test(never_crashes(fun ?H264:depacketize/1, hd(?H264:packetize([sps(), pps(), idr(5)], 1200)))),
+        ?_test(
+            never_crashes(
+                fun ?H264:depacketize/1, hd(?H264:packetize([sps(), pps(), idr(5)], 1200))
+            )
+        ),
         ?_test(never_crashes(fun ?H264:is_keyframe/1, hd(?H264:packetize([idr(3000)], 1200))))
     ].

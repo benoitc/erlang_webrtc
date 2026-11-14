@@ -9,9 +9,11 @@
 %% ssrc-audio-level (id 1) and abs-send-time (id 2), two padding bytes in
 %% the extension block.
 opus_packet() ->
-    b("90 6f 12 34  00 00 03 c0  de ad be ef
-       be de 00 02  10 ff 22 12  34 56 00 00
-       fc ff fe").
+    b(
+        "90 6f 12 34  00 00 03 c0  de ad be ef\n"
+        "       be de 00 02  10 ff 22 12  34 56 00 00\n"
+        "       fc ff fe"
+    ).
 
 minimal_test() ->
     Bin = b("80 60 00 01 00 00 00 02 00 00 00 03"),
@@ -78,9 +80,15 @@ bad_padding_test_() ->
 
 bad_version_test_() ->
     [
-        ?_assertEqual({error, bad_version}, webrtc_rtp:decode(b("40 60 00 01 00 00 00 02 00 00 00 03"))),
-        ?_assertEqual({error, bad_version}, webrtc_rtp:decode(b("00 60 00 01 00 00 00 02 00 00 00 03"))),
-        ?_assertEqual({error, bad_version}, webrtc_rtp:decode(b("c0 60 00 01 00 00 00 02 00 00 00 03")))
+        ?_assertEqual(
+            {error, bad_version}, webrtc_rtp:decode(b("40 60 00 01 00 00 00 02 00 00 00 03"))
+        ),
+        ?_assertEqual(
+            {error, bad_version}, webrtc_rtp:decode(b("00 60 00 01 00 00 00 02 00 00 00 03"))
+        ),
+        ?_assertEqual(
+            {error, bad_version}, webrtc_rtp:decode(b("c0 60 00 01 00 00 00 02 00 00 00 03"))
+        )
     ].
 
 extension_length_test_() ->
@@ -121,7 +129,9 @@ bad_rfc8285_ext_test() ->
     %% one-byte element claims 4 bytes, only 3 left in the block
     Bin = b("90 60 00 01 00 00 00 02 00 00 00 03 be de 00 01 13 01 02 03"),
     ?assertMatch({ok, _}, webrtc_rtp:decode(Bin)),
-    ?assertEqual({error, {bad_extension, truncated}}, webrtc_rtp:decode(Bin, #{extensions => parse})).
+    ?assertEqual(
+        {error, {bad_extension, truncated}}, webrtc_rtp:decode(Bin, #{extensions => parse})
+    ).
 
 encode_badarg_test_() ->
     P = #rtp{pt = 96, seq = 1, ts = 1, ssrc = 1},
@@ -137,7 +147,15 @@ encode_badarg_test_() ->
 %% Every cut inside the header (fixed part, CSRCs, extension) is an
 %% error; cuts in the payload give a shorter valid packet; nothing crashes.
 truncation_test() ->
-    P = #rtp{pt = 96, seq = 1, ts = 1, ssrc = 1, csrcs = [9, 8], ext = [{1, <<"a">>}, {3, <<"xyz">>}], payload = <<"payload">>},
+    P = #rtp{
+        pt = 96,
+        seq = 1,
+        ts = 1,
+        ssrc = 1,
+        csrcs = [9, 8],
+        ext = [{1, <<"a">>}, {3, <<"xyz">>}],
+        payload = <<"payload">>
+    },
     Bin = webrtc_rtp:encode(P),
     {ok, HdrSize} = webrtc_rtp:header_size(Bin),
     ?assertEqual(12 + 8 + 4 + 8, HdrSize),
@@ -158,7 +176,9 @@ truncation_test() ->
     ).
 
 padded_truncation_never_crashes_test() ->
-    Bin = webrtc_rtp:encode(#rtp{pt = 96, seq = 1, ts = 1, ssrc = 1, padding = 4, payload = <<"abc">>}),
+    Bin = webrtc_rtp:encode(#rtp{
+        pt = 96, seq = 1, ts = 1, ssrc = 1, padding = 4, payload = <<"abc">>
+    }),
     [
         ?assertMatch({_, _}, webrtc_rtp:decode(binary:part(Bin, 0, N)))
      || N <- lists:seq(0, byte_size(Bin))
@@ -170,11 +190,15 @@ peek_rewrite_test() ->
         {ok, #{marker => false, pt => 111, seq => 16#1234, ts => 960, ssrc => 16#deadbeef}},
         webrtc_rtp:peek(Bin)
     ),
-    {ok, Bin2} = webrtc_rtp:rewrite(Bin, #{seq => 7, ts => 16#FFFFFFFF, ssrc => 42, pt => 96, marker => true}),
+    {ok, Bin2} = webrtc_rtp:rewrite(Bin, #{
+        seq => 7, ts => 16#FFFFFFFF, ssrc => 42, pt => 96, marker => true
+    }),
     {ok, P} = webrtc_rtp:decode(Bin),
     {ok, P2} = webrtc_rtp:decode(Bin2),
     ?assertEqual(P#rtp{seq = 7, ts = 16#FFFFFFFF, ssrc = 42, pt = 96, marker = true}, P2),
-    ?assertEqual(binary:part(Bin, 12, byte_size(Bin) - 12), binary:part(Bin2, 12, byte_size(Bin2) - 12)),
+    ?assertEqual(
+        binary:part(Bin, 12, byte_size(Bin) - 12), binary:part(Bin2, 12, byte_size(Bin2) - 12)
+    ),
     ?assertEqual({ok, Bin}, webrtc_rtp:rewrite(Bin, #{})),
     ?assertError(badarg, webrtc_rtp:rewrite(Bin, #{seq => 70000})),
     ?assertEqual({error, truncated}, webrtc_rtp:peek(<<16#80, 0>>)),

@@ -38,9 +38,14 @@ decode(_, _, _) ->
 
 fci(?RTCP_RTPFB, ?RTPFB_NACK, S, M, Fci) ->
     case words(Fci, 4) of
-        {ok, []} -> {error, empty_nack};
-        {ok, Ws} -> {ok, #rtcp_nack{sender_ssrc = S, media_ssrc = M, items = [{P, B} || <<P:16, B:16>> <- Ws]}};
-        Err -> Err
+        {ok, []} ->
+            {error, empty_nack};
+        {ok, Ws} ->
+            {ok, #rtcp_nack{
+                sender_ssrc = S, media_ssrc = M, items = [{P, B} || <<P:16, B:16>> <- Ws]
+            }};
+        Err ->
+            Err
     end;
 fci(?RTCP_RTPFB, Fmt, S, M, Fci) when Fmt =:= ?RTPFB_TMMBR; Fmt =:= ?RTPFB_TMMBN ->
     case words(Fci, 8) of
@@ -50,8 +55,10 @@ fci(?RTCP_RTPFB, Fmt, S, M, Fci) when Fmt =:= ?RTPFB_TMMBR; Fmt =:= ?RTPFB_TMMBN
              || <<Ssrc:32, Exp:6, Mant:17, Oh:9>> <- Ws
             ],
             case Fmt of
-                ?RTPFB_TMMBR -> {ok, #rtcp_tmmbr{sender_ssrc = S, media_ssrc = M, entries = Entries}};
-                ?RTPFB_TMMBN -> {ok, #rtcp_tmmbn{sender_ssrc = S, media_ssrc = M, entries = Entries}}
+                ?RTPFB_TMMBR ->
+                    {ok, #rtcp_tmmbr{sender_ssrc = S, media_ssrc = M, entries = Entries}};
+                ?RTPFB_TMMBN ->
+                    {ok, #rtcp_tmmbn{sender_ssrc = S, media_ssrc = M, entries = Entries}}
             end;
         Err ->
             Err

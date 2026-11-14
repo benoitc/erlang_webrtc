@@ -224,16 +224,17 @@ clamp_lost(L) when L < -16#800000 -> -16#800000;
 clamp_lost(L) -> L.
 
 %% @doc Current receiver statistics. `jitter' is in RTP timestamp units.
--spec rx_info(rx()) -> #{
-    ssrc := 0..16#FFFFFFFF,
-    valid := boolean(),
-    received := non_neg_integer(),
-    expected := integer(),
-    lost := integer(),
-    ext_max_seq := non_neg_integer(),
-    cycles := non_neg_integer(),
-    jitter := non_neg_integer()
-}.
+-spec rx_info(rx()) ->
+    #{
+        ssrc := 0..16#FFFFFFFF,
+        valid := boolean(),
+        received := non_neg_integer(),
+        expected := integer(),
+        lost := integer(),
+        ext_max_seq := non_neg_integer(),
+        cycles := non_neg_integer(),
+        jitter := non_neg_integer()
+    }.
 rx_info(#rx{} = S) ->
     Expected = expected(S),
     #{

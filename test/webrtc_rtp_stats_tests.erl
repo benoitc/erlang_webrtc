@@ -19,7 +19,9 @@ seqs(Seqs) ->
 probation_test() ->
     {V, Rx} = feed(seqs([10, 11, 12]), new()),
     ?assertEqual([invalid, valid, valid], V),
-    ?assertMatch(#{valid := true, received := 2, expected := 2, lost := 0, ext_max_seq := 12}, ?S:rx_info(Rx)).
+    ?assertMatch(
+        #{valid := true, received := 2, expected := 2, lost := 0, ext_max_seq := 12}, ?S:rx_info(Rx)
+    ).
 
 probation_restart_test() ->
     %% out of order during probation restarts it
@@ -31,7 +33,9 @@ probation_restart_test() ->
 wraparound_test() ->
     {V, Rx} = feed(seqs([65533, 65534, 65535, 0, 1]), new()),
     ?assertEqual([invalid, valid, valid, valid, valid], V),
-    ?assertMatch(#{cycles := 1, ext_max_seq := 65537, expected := 4, received := 4}, ?S:rx_info(Rx)),
+    ?assertMatch(
+        #{cycles := 1, ext_max_seq := 65537, expected := 4, received := 4}, ?S:rx_info(Rx)
+    ),
     {RB, _} = ?S:report_block(0, Rx),
     ?assertEqual(65537, RB#rtcp_rb.ext_seq).
 
@@ -39,7 +43,9 @@ wraparound_test() ->
 loss_and_fraction_test() ->
     {_, Rx} = feed(seqs([1, 2, 3, 4, 6, 7, 8, 9, 10]), new()),
     {RB, Rx1} = ?S:report_block(0, Rx),
-    ?assertEqual(#rtcp_rb{ssrc = 16#1234, fraction_lost = (1 bsl 8) div 9, lost = 1, ext_seq = 10}, RB),
+    ?assertEqual(
+        #rtcp_rb{ssrc = 16#1234, fraction_lost = (1 bsl 8) div 9, lost = 1, ext_seq = 10}, RB
+    ),
     %% next interval without loss
     {_, Rx2} = feed(seqs([11, 12]), Rx1),
     {RB2, _} = ?S:report_block(0, Rx2),
@@ -120,7 +126,14 @@ sender_test() ->
     ?assertEqual(#{packets => 3, octets => 600}, ?S:tx_info(Tx)),
     SR = ?S:sender_report(7, 1 bsl 32, 960, Tx, [#rtcp_rb{ssrc = 1}]),
     ?assertEqual(
-        #rtcp_sr{ssrc = 7, ntp = 1 bsl 32, rtp_ts = 960, packets = 3, octets = 600, reports = [#rtcp_rb{ssrc = 1}]},
+        #rtcp_sr{
+            ssrc = 7,
+            ntp = 1 bsl 32,
+            rtp_ts = 960,
+            packets = 3,
+            octets = 600,
+            reports = [#rtcp_rb{ssrc = 1}]
+        },
         SR
     ).
 

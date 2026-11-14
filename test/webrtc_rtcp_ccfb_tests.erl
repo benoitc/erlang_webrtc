@@ -6,10 +6,12 @@
 -import(webrtc_test_hex, [b/1]).
 
 ccfb() ->
-    b("8b cd 00 06 00 00 00 01
-       2a 3b 4c 5d 03 e8 00 03
-       80 10 00 00 c0 00 00 00
-       12 34 56 78").
+    b(
+        "8b cd 00 06 00 00 00 01\n"
+        "       2a 3b 4c 5d 03 e8 00 03\n"
+        "       80 10 00 00 c0 00 00 00\n"
+        "       12 34 56 78"
+    ).
 
 ccfb_test() ->
     Bin = ccfb(),
@@ -20,7 +22,10 @@ ccfb_test() ->
     },
     ?assertEqual({ok, [C]}, webrtc_rtcp:decode(Bin)),
     ?assertEqual(Bin, webrtc_rtcp:encode(C)),
-    [?assertMatch({error, _}, webrtc_rtcp:decode(binary:part(Bin, 0, N))) || N <- lists:seq(0, byte_size(Bin) - 1)].
+    [
+        ?assertMatch({error, _}, webrtc_rtcp:decode(binary:part(Bin, 0, N)))
+     || N <- lists:seq(0, byte_size(Bin) - 1)
+    ].
 
 ccfb_multi_and_empty_test() ->
     C = #rtcp_ccfb{
@@ -36,12 +41,16 @@ ccfb_multi_and_empty_test() ->
 %% R = 0: ECN and ATO must be ignored.
 ccfb_not_received_ignores_bits_test() ->
     Bin = b("8b cd 00 05 00 00 00 01 00 00 00 02 00 00 00 01 7f ff 00 00 00 00 00 09"),
-    ?assertMatch({ok, [#rtcp_ccfb{reports = [{2, 0, [not_received]}], timestamp = 9}]}, webrtc_rtcp:decode(Bin)).
+    ?assertMatch(
+        {ok, [#rtcp_ccfb{reports = [{2, 0, [not_received]}], timestamp = 9}]},
+        webrtc_rtcp:decode(Bin)
+    ).
 
 ccfb_limits_test_() ->
     [
         ?_assertError(
-            badarg, webrtc_rtcp:encode(#rtcp_ccfb{reports = [{1, 0, lists:duplicate(16385, not_received)}]})
+            badarg,
+            webrtc_rtcp:encode(#rtcp_ccfb{reports = [{1, 0, lists:duplicate(16385, not_received)}]})
         ),
         ?_assertMatch(
             {error, {bad_packet, 205, too_many_metrics}},

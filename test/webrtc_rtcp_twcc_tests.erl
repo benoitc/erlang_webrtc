@@ -9,9 +9,11 @@
 %% base 100, 5 packets: small 4, small 1, lost, large -4, small 255.
 %% One two-bit status vector chunk 0xD490, zero padding to 32 bits.
 mixed() ->
-    b("8f cd 00 06 00 00 00 01 2a 3b 4c 5d
-       00 64 00 05 00 01 23 07
-       d4 90 04 01 ff fc ff 00").
+    b(
+        "8f cd 00 06 00 00 00 01 2a 3b 4c 5d\n"
+        "       00 64 00 05 00 01 23 07\n"
+        "       d4 90 04 01 ff fc ff 00"
+    ).
 
 mixed_record() ->
     #rtcp_twcc{
@@ -30,9 +32,11 @@ mixed_test() ->
 
 %% libwebrtc pads with the P bit and a count octet instead.
 padding_bit_test() ->
-    Bin = b("af cd 00 06 00 00 00 01 2a 3b 4c 5d
-             00 64 00 05 00 01 23 07
-             d4 90 04 01 ff fc ff 01"),
+    Bin = b(
+        "af cd 00 06 00 00 00 01 2a 3b 4c 5d\n"
+        "             00 64 00 05 00 01 23 07\n"
+        "             d4 90 04 01 ff fc ff 01"
+    ),
     ?assertEqual({ok, [mixed_record()]}, webrtc_rtcp:decode(Bin)).
 
 %% Draft §3.1.3 example 1: run of 221 "not received".
@@ -68,7 +72,9 @@ reserved_symbol_test() ->
     ?assertEqual({error, {bad_packet, 205, reserved_symbol}}, webrtc_rtcp:decode(Rle)).
 
 run_length_received_test() ->
-    T = #rtcp_twcc{base_seq = 65530, packets = [{(65530 + I) band 16#FFFF, 1} || I <- lists:seq(0, 19)]},
+    T = #rtcp_twcc{
+        base_seq = 65530, packets = [{(65530 + I) band 16#FFFF, 1} || I <- lists:seq(0, 19)]
+    },
     Fci = webrtc_rtcp_twcc:encode_fci(T),
     <<65530:16, 20:16, _:32, 16#2014:16, _/binary>> = Fci,
     ?assertEqual({ok, [T]}, webrtc_rtcp:decode(webrtc_rtcp:encode(T))).
@@ -91,7 +97,9 @@ twcc_errors_test_() ->
         %% two received symbols but one delta
         ?_assertMatch(
             {error, {bad_packet, 205, truncated}},
-            webrtc_rtcp:decode(b("8f cd 00 05 00 00 00 01 00 00 00 02 00 00 00 03 00 00 00 00 20 03 05 00"))
+            webrtc_rtcp:decode(
+                b("8f cd 00 05 00 00 00 01 00 00 00 02 00 00 00 03 00 00 00 00 20 03 05 00")
+            )
         ),
         %% status count with no chunk
         ?_assertMatch(
@@ -101,7 +109,11 @@ twcc_errors_test_() ->
         %% more than 3 trailing bytes
         ?_assertMatch(
             {error, {bad_packet, 205, trailing_data}},
-            webrtc_rtcp:decode(b("8f cd 00 06 00 00 00 01 00 00 00 02 00 00 00 01 00 00 00 00 20 01 05 00 00 00 00 00"))
+            webrtc_rtcp:decode(
+                b(
+                    "8f cd 00 06 00 00 00 01 00 00 00 02 00 00 00 01 00 00 00 00 20 01 05 00 00 00 00 00"
+                )
+            )
         ),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_twcc{base_seq = 1, packets = [{2, 1}]})),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_twcc{base_seq = 1, packets = [{1, 40000}]}))
@@ -109,7 +121,10 @@ twcc_errors_test_() ->
 
 every_truncation_test() ->
     Bin = mixed(),
-    [?assertMatch({error, _}, webrtc_rtcp:decode(binary:part(Bin, 0, N))) || N <- lists:seq(0, byte_size(Bin) - 1)].
+    [
+        ?assertMatch({error, _}, webrtc_rtcp:decode(binary:part(Bin, 0, N)))
+     || N <- lists:seq(0, byte_size(Bin) - 1)
+    ].
 
 empty_feedback_test() ->
     T = #rtcp_twcc{base_seq = 5, fb_count = 1},
@@ -117,7 +132,9 @@ empty_feedback_test() ->
 
 from_arrivals_test() ->
     %% arrivals in microseconds: 64 ms reference grid, 250 us ticks
-    Arrivals = [{65535, 128000 + 1000}, {0, 128000 + 1500}, {2, 128000 + 1250}, {3, 128000 + 101500}],
+    Arrivals = [
+        {65535, 128000 + 1000}, {0, 128000 + 1500}, {2, 128000 + 1250}, {3, 128000 + 101500}
+    ],
     [T] = webrtc_rtcp_twcc:from_arrivals(1, 2, 9, Arrivals),
     ?assertEqual(65535, T#rtcp_twcc.base_seq),
     ?assertEqual(2, T#rtcp_twcc.ref_time),
@@ -132,7 +149,9 @@ from_arrivals_test() ->
 from_arrivals_split_test() ->
     %% a 9 s gap does not fit a 16-bit delta: two messages
     [A, B] = webrtc_rtcp_twcc:from_arrivals(1, 2, 255, [{10, 0}, {11, 9000000}]),
-    ?assertEqual({10, 255, [{10, 0}]}, {A#rtcp_twcc.base_seq, A#rtcp_twcc.fb_count, A#rtcp_twcc.packets}),
+    ?assertEqual({10, 255, [{10, 0}]}, {
+        A#rtcp_twcc.base_seq, A#rtcp_twcc.fb_count, A#rtcp_twcc.packets
+    }),
     ?assertEqual({11, 0}, {B#rtcp_twcc.base_seq, B#rtcp_twcc.fb_count}),
     ?assertEqual([{11, 9000000}], webrtc_rtcp_twcc:arrivals(B)),
     ?assertEqual([], webrtc_rtcp_twcc:from_arrivals(1, 2, 0, [])).

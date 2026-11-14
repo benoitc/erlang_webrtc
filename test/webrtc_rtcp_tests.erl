@@ -9,19 +9,23 @@
 %% Browser sender report: SR without report blocks followed by SDES
 %% with a 16 character CNAME.
 sr_sdes() ->
-    b("80 c8 00 06  2a 3b 4c 5d
-       e5 4f 3a 2b  80 00 00 00
-       00 01 e2 40  00 00 01 f4  00 01 86 a0
-       81 ca 00 06  2a 3b 4c 5d
-       01 10 61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 70 00 00").
+    b(
+        "80 c8 00 06  2a 3b 4c 5d\n"
+        "       e5 4f 3a 2b  80 00 00 00\n"
+        "       00 01 e2 40  00 00 01 f4  00 01 86 a0\n"
+        "       81 ca 00 06  2a 3b 4c 5d\n"
+        "       01 10 61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 70 00 00"
+    ).
 
 %% Browser receiver: RR with one report block followed by REMB.
 rr_remb() ->
-    b("81 c9 00 07  00 00 00 01
-       2a 3b 4c 5d  05 00 00 0a  00 01 12 34  00 00 00 20
-       4f 3a 2b 80  00 01 00 00
-       8f ce 00 05  00 00 00 01  00 00 00 00
-       52 45 4d 42  01 16 dc 6c  2a 3b 4c 5d").
+    b(
+        "81 c9 00 07  00 00 00 01\n"
+        "       2a 3b 4c 5d  05 00 00 0a  00 01 12 34  00 00 00 20\n"
+        "       4f 3a 2b 80  00 01 00 00\n"
+        "       8f ce 00 05  00 00 00 01  00 00 00 00\n"
+        "       52 45 4d 42  01 16 dc 6c  2a 3b 4c 5d"
+    ).
 
 sr_sdes_test() ->
     Bin = sr_sdes(),
@@ -75,7 +79,9 @@ negative_lost_test() ->
 
 sr_with_reports_and_extension_test() ->
     RBs = [#rtcp_rb{ssrc = N, ext_seq = N * 100} || N <- lists:seq(1, 31)],
-    SR = #rtcp_sr{ssrc = 9, ntp = 1, rtp_ts = 2, packets = 3, octets = 4, reports = RBs, ext = <<1, 2, 3, 4>>},
+    SR = #rtcp_sr{
+        ssrc = 9, ntp = 1, rtp_ts = 2, packets = 3, octets = 4, reports = RBs, ext = <<1, 2, 3, 4>>
+    },
     Bin = webrtc_rtcp:encode(SR),
     <<2:2, 0:1, 31:5, 200, _/binary>> = Bin,
     ?assertEqual({ok, [SR]}, webrtc_rtcp:decode(Bin)),
@@ -103,7 +109,9 @@ sdes_items_test() ->
 
 sdes_empty_chunk_layout_test() ->
     %% A chunk without items is the SSRC and one word of null octets.
-    ?assertEqual(b("81 ca 00 02 00 00 00 07 00 00 00 00"), webrtc_rtcp:encode(#rtcp_sdes{chunks = [{7, []}]})).
+    ?assertEqual(
+        b("81 ca 00 02 00 00 00 07 00 00 00 00"), webrtc_rtcp:encode(#rtcp_sdes{chunks = [{7, []}]})
+    ).
 
 sdes_errors_test_() ->
     [
@@ -137,7 +145,9 @@ bye_test() ->
     Multi = #rtcp_bye{ssrcs = [1, 2, 3]},
     ?assertEqual({ok, [Multi]}, webrtc_rtcp:decode(webrtc_rtcp:encode(Multi))),
     ?assertEqual({ok, [#rtcp_bye{}]}, webrtc_rtcp:decode(b("80 cb 00 00"))),
-    ?assertMatch({error, {bad_packet, 203, truncated}}, webrtc_rtcp:decode(b("82 cb 00 01 00 00 00 01"))),
+    ?assertMatch(
+        {error, {bad_packet, 203, truncated}}, webrtc_rtcp:decode(b("82 cb 00 01 00 00 00 01"))
+    ),
     %% reason length past the end
     ?assertMatch(
         {error, {bad_packet, 203, truncated}},
@@ -147,9 +157,13 @@ bye_test() ->
 app_test() ->
     Bin = b("82 cc 00 03 00 00 00 01 54 45 53 54 de ad be ef"),
     {ok, [App]} = webrtc_rtcp:decode(Bin),
-    ?assertEqual(#rtcp_app{subtype = 2, ssrc = 1, name = <<"TEST">>, data = <<16#deadbeef:32>>}, App),
+    ?assertEqual(
+        #rtcp_app{subtype = 2, ssrc = 1, name = <<"TEST">>, data = <<16#deadbeef:32>>}, App
+    ),
     ?assertEqual(Bin, webrtc_rtcp:encode(App)),
-    ?assertMatch({error, {bad_packet, 204, truncated}}, webrtc_rtcp:decode(b("80 cc 00 01 00 00 00 01"))).
+    ?assertMatch(
+        {error, {bad_packet, 204, truncated}}, webrtc_rtcp:decode(b("80 cc 00 01 00 00 00 01"))
+    ).
 
 unknown_type_preserved_test() ->
     %% RSI (PT 208) and an unknown PSFB format are kept raw.
@@ -177,13 +191,19 @@ compound_validation_test_() ->
     [
         %% RFC 5506: reduced-size packets start with any type
         ?_assertMatch({ok, [#rtcp_pli{}]}, webrtc_rtcp:decode(Pli)),
-        ?_assertMatch({ok, [#rtcp_sdes{}, #rtcp_sr{}]}, webrtc_rtcp:decode(<<SDES/binary, SR/binary>>)),
+        ?_assertMatch(
+            {ok, [#rtcp_sdes{}, #rtcp_sr{}]}, webrtc_rtcp:decode(<<SDES/binary, SR/binary>>)
+        ),
         ?_assertEqual(
-            {error, first_not_report}, webrtc_rtcp:decode(<<SDES/binary, SR/binary>>, #{mode => compound})
+            {error, first_not_report},
+            webrtc_rtcp:decode(<<SDES/binary, SR/binary>>, #{mode => compound})
         ),
         ?_assertEqual({error, first_not_report}, webrtc_rtcp:decode(Pli, #{mode => compound})),
         %% padding only on the last packet
-        ?_assertMatch({ok, [_, _, _]}, webrtc_rtcp:decode(<<SR/binary, SDES/binary, Padded/binary>>, #{mode => compound})),
+        ?_assertMatch(
+            {ok, [_, _, _]},
+            webrtc_rtcp:decode(<<SR/binary, SDES/binary, Padded/binary>>, #{mode => compound})
+        ),
         ?_assertEqual(
             {error, padding_not_last},
             webrtc_rtcp:decode(<<SR/binary, Padded/binary, SDES/binary>>, #{mode => compound})
@@ -241,7 +261,9 @@ encode_badarg_test_() ->
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_rr{ssrc = 1, ext = <<1, 2>>})),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_app{name = <<"ab">>})),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_raw{pt = 210, body = <<1>>})),
-        ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_rr{reports = [#rtcp_rb{fraction_lost = 256}]})),
+        ?_assertError(
+            badarg, webrtc_rtcp:encode(#rtcp_rr{reports = [#rtcp_rb{fraction_lost = 256}]})
+        ),
         ?_assertError(badarg, webrtc_rtcp:encode(#rtcp_rr{reports = [#rtcp_rb{lost = 16#800000}]})),
         ?_assertError(badarg, webrtc_rtcp:encode({not_a_packet}))
     ].

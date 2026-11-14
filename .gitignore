@@ -9,3 +9,5 @@ rebar3.crashdump
 __pycache__/
 .venv/
 .claude/
+/interop/aiortc/.venv/
+/interop/browser/node_modules/

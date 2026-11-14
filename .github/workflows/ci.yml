@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  protocol:
+    name: Build, conformance tests, static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.25'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: otp29-${{ hashFiles('rebar.lock', 'rebar.config') }}
+      - run: rebar3 compile
+      - run: rebar3 eunit
+      - run: rebar3 proper -n 200
+      - run: rebar3 xref
+      - run: rebar3 dialyzer
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: protocol-logs
+          path: _build/test/logs
+
+  e2e:
+    name: Erlang to Erlang over UDP
+    needs: protocol
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.25'
+      - run: rebar3 ct --dir test/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-logs
+          path: _build/test/logs
+
+  interop:
+    name: Interop (OTP ssl, OpenSSL, Pion, aiortc, Chromium)
+    needs: protocol
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.25'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build peer adapters
+        run: make -C interop all
+      - name: Install headless Chromium
+        run: cd interop/browser && npm ci && npx playwright install --with-deps chromium firefox
+      - name: Run interop suites
+        run: rebar3 ct --dir test/interop
+      - name: Report skipped peers
+        if: always()
+        run: grep -rh "SKIPPED\|skip" _build/test/logs/*/suite.summary || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interop-logs
+          path: _build/test/logs

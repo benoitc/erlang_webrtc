@@ -37,6 +37,11 @@
 %% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
 %% <li>`{datachannel_error, Id, message_too_large}': the peer sent a
 %%     message over our `max_message_size'; the channel is closed.</li>
+%% <li>`{datachannel_error, Id, invalid_stream_id}': a channel created
+%%     before the connection on an id beyond the streams negotiated
+%%     with the peer; it is closed.</li>
+%% <li>`{datachannel_open_failed, Label, Reason}': a channel created
+%%     before the connection could not be opened once it came up.</li>
 %% <li>`{dtls_error, Reason}'</li>
 %% </ul>
 %%

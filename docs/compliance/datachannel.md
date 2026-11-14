@@ -36,6 +36,7 @@ Data channels are implemented by `webrtc_dcep`: the DCEP codec and a sans-IO man
 | DCEP-7 | 6 | The opener may send right after OPEN; user data goes ordered until the peer sent anything on the channel | webrtc_dcep | dcep:ordered_until_ack_test | Unit tested |
 | DCEP-8 | 6 | User data on an unused stream: the stream is reset | webrtc_dcep | dcep:data_on_unused_stream_test | Unit tested |
 | DCEP-9 | 6 | Channels opened before the association is up are announced once it is | webrtc_dcep | dcep:open_before_connect_test | Unit tested |
+| DCEP-11 | 6, RFC 8831 §6.2 | A DATA_CHANNEL_OPEN or ACK that SCTP refuses (full send buffer, shutdown) is reported: the open fails with that error and no channel is left, an incoming channel is refused with a stream reset; ids must be below the negotiated stream counts once known, and channels opened earlier on higher ids are reported `channel_error` then closed, their queued data dropped | webrtc_dcep, webrtc_sctp_send | dcep:open_send_error_test, dcep:stream_ids_bounded_test | Unit tested |
 | DCEP-10 | 6 | A stream reset of a channel that was never acknowledged reports the setup failure | webrtc_dcep | dcep:wrong_parity_open_test (raw peer side) | Unit tested |
 
 ## RFC 8841 (max-message-size)

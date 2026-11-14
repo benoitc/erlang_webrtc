@@ -442,7 +442,15 @@ transport_event({dtls_closed, _R}, St) ->
 transport_event({consent_lost, _, _}, St) ->
     update_connection(St#st{ice_state = failed});
 transport_event({datachannel, {connected, _}}, St) ->
-    _ = [webrtc_transport:open_channel(St#st.transport, L, O) || {L, O} <- St#st.pending_channels],
+    lists:foreach(
+        fun({L, O}) ->
+            case webrtc_transport:open_channel(St#st.transport, L, O) of
+                {ok, _} -> ok;
+                {error, R} -> notify({datachannel_open_failed, L, R}, St)
+            end
+        end,
+        St#st.pending_channels
+    ),
     St#st{sctp_up = true, pending_channels = []};
 transport_event({datachannel, {channel_open, Id, Label, Proto, Opts}}, St) ->
     notify({datachannel_open, Id, Label, Proto, Opts}, St),

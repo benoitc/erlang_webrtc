@@ -232,18 +232,24 @@ open_channel(Label, Opts, Now, #dc{} = D) when is_binary(Label), is_map(Opts) ->
     case channel_from_opts(Label, Opts, D) of
         {ok, Ch} ->
             D1 = D#dc{channels = (D#dc.channels)#{Ch#ch.id => Ch}},
-            D2 =
+            Sent =
                 case Ch#ch.negotiated of
-                    true -> D1;
+                    true -> {ok, D1};
                     false -> dcep_send(Ch#ch.id, encode({open, open_msg(Ch)}), Now, D1)
                 end,
-            D3 =
-                case D2#dc.connected of
-                    true -> announce(Ch#ch.id, D2);
-                    false -> D2
-                end,
-            {D4, Acts} = finish(Now, D3),
-            {ok, Ch#ch.id, D4, Acts};
+            case Sent of
+                {ok, D2} ->
+                    D3 =
+                        case D2#dc.connected of
+                            true -> announce(Ch#ch.id, D2);
+                            false -> D2
+                        end,
+                    {D4, Acts} = finish(Now, D3),
+                    {ok, Ch#ch.id, D4, Acts};
+                {error, _} = E ->
+                    %% Nothing was queued: the channel does not exist.
+                    E
+            end;
         {error, _} = E ->
             E
     end;
@@ -282,10 +288,12 @@ channel_from_opts(Label, Opts, #dc{channels = Chs} = D) ->
             {_, undefined} ->
                 free_id(D);
             {_, I} when is_integer(I), I >= 0, I =< ?MAX_ID ->
-                case maps:is_key(I, Chs) of
-                    true -> {error, id_in_use};
-                    false when not Negotiated -> parity(I, D#dc.role);
-                    false -> {ok, I}
+                case {maps:is_key(I, Chs), D#dc.connected andalso I > max_id(D)} of
+                    {true, _} -> {error, id_in_use};
+                    %% RFC 8831 §6.2: only negotiated streams exist.
+                    {false, true} -> {error, invalid_stream_id};
+                    {false, false} when not Negotiated -> parity(I, D#dc.role);
+                    {false, false} -> {ok, I}
                 end;
             _ ->
                 {error, badarg}
@@ -321,10 +329,13 @@ parity(I, Role) ->
 own_parity(client) -> 0;
 own_parity(server) -> 1.
 
-free_id(#dc{role = Role, channels = Chs, sctp = S}) ->
+free_id(#dc{role = Role, channels = Chs} = D) ->
+    free_id(own_parity(Role), max_id(D), Chs).
+
+%% Highest stream id usable in both directions.
+max_id(#dc{sctp = S}) ->
     Info = webrtc_sctp_assoc:info(S),
-    Max = min(?MAX_ID, min(maps:get(outbound_streams, Info), maps:get(inbound_streams, Info)) - 1),
-    free_id(own_parity(Role), Max, Chs).
+    min(?MAX_ID, min(maps:get(outbound_streams, Info), maps:get(inbound_streams, Info)) - 1).
 
 free_id(I, Max, _Chs) when I > Max -> {error, no_stream_id};
 free_id(I, Max, Chs) ->
@@ -448,7 +459,19 @@ assoc_actions([{event, E} | Rest], Now, D) ->
 
 assoc_event({connected, Info}, _Now, #dc{channels = Chs} = D) ->
     D1 = event({connected, Info}, D#dc{connected = true}),
-    lists:foldl(fun announce/2, D1, lists:sort(maps:keys(Chs)));
+    %% Channels created before the association on ids beyond the
+    %% negotiated streams cannot exist; SCTP dropped what they queued.
+    Max = max_id(D1),
+    {Bad, Good} = lists:partition(fun(Id) -> Id > Max end, lists:sort(maps:keys(Chs))),
+    D2 = lists:foldl(
+        fun(Id, Acc) ->
+            Acc1 = event({channel_error, Id, invalid_stream_id}, Acc),
+            event({channel_closed, Id}, Acc1#dc{channels = maps:remove(Id, Acc1#dc.channels)})
+        end,
+        D1,
+        Bad
+    ),
+    lists:foldl(fun announce/2, D2, Good);
 assoc_event({message, Id, ?PPID_DCEP, Bin}, Now, D) ->
     dcep_message(Id, decode(Bin), Now, D);
 assoc_event({message, Id, Ppid, Data}, Now, #dc{channels = Chs} = D) ->
@@ -537,8 +560,14 @@ dcep_message(Id, {ok, {open, M}}, Now, #dc{channels = Chs, role = Role} = D) ->
                 heard = true
             },
             D1 = D#dc{channels = Chs#{Id => Ch}},
-            D2 = dcep_send(Id, encode(ack), Now, D1),
-            event({channel_open, Id, L, Proto, event_opts(Ch)}, D2)
+            case dcep_send(Id, encode(ack), Now, D1) of
+                {ok, D2} ->
+                    event({channel_open, Id, L, Proto, event_opts(Ch)}, D2);
+                {error, _} ->
+                    %% Without an ACK the peer would wait for ever: refuse
+                    %% the channel by resetting the stream.
+                    reset_unknown(Id, Now, D)
+            end
     end;
 dcep_message(Id, {ok, ack}, _Now, #dc{channels = Chs} = D) ->
     case Chs of
@@ -661,8 +690,8 @@ event_opts(#ch{} = Ch) ->
 %% DCEP messages are ordered and reliable on the channel's stream.
 dcep_send(Id, Msg, Now, #dc{sctp = S} = D) ->
     case webrtc_sctp_assoc:send(Id, ?PPID_DCEP, Msg, #{ordered => true}, Now, S) of
-        {ok, S1, Acts} -> assoc_actions(Acts, Now, D#dc{sctp = S1});
-        {error, _} -> D
+        {ok, S1, Acts} -> {ok, assoc_actions(Acts, Now, D#dc{sctp = S1})};
+        {error, _} = E -> E
     end.
 
 event(E, #dc{acts = A} = D) -> D#dc{acts = [{event, E} | A]}.

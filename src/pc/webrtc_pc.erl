@@ -30,8 +30,13 @@
     remote_candidates_sent = 0 :: non_neg_integer(),
     remote_ice :: undefined | {binary(), binary()},
     %% We started an ICE restart and wait for the peer's new credentials.
-    local_restart = false :: boolean()
+    local_restart = false :: boolean(),
+    %% Remote candidates trickled after the remote description but before
+    %% our local description started the transport (bounded).
+    early_candidates = [] :: [binary() | end_of_candidates]
 }).
+
+-define(MAX_EARLY_CANDIDATES, 64).
 
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
@@ -117,13 +122,12 @@ handle_call({set_remote_description, Type, Sdp}, _From, St) ->
         {error, _} = E ->
             {reply, E, St}
     end;
-handle_call({add_ice_candidate, end_of_candidates}, _From, #st{transport = T} = St) when is_pid(T) ->
-    {reply, webrtc_transport:end_of_candidates(T), St};
-handle_call({add_ice_candidate, Cand}, _From, #st{transport = T} = St) when is_pid(T) ->
-    {reply, webrtc_transport:add_remote_candidate(T, Cand), St};
-handle_call({add_ice_candidate, _}, _From, St) ->
-    %% RFC 9429 §4.1.17: candidates need a remote description.
-    {reply, {error, no_remote_description}, St};
+handle_call({add_ice_candidate, Cand}, _From, St) ->
+    case webrtc_jsep:remote_description(St#st.jsep) of
+        %% RFC 9429 §4.1.17: candidates need a remote description.
+        undefined -> {reply, {error, no_remote_description}, St};
+        _ -> add_candidate(Cand, St)
+    end;
 handle_call(restart_ice, _From, St) ->
     U = ice_string(8),
     P = ice_string(24),
@@ -179,6 +183,17 @@ handle_info(_Other, St) ->
 terminate(_Reason, St) ->
     _ = close_now(St),
     ok.
+
+%% The transport starts with our local description; until then trickled
+%% candidates are kept (bounded).
+add_candidate(end_of_candidates, #st{transport = T} = St) when is_pid(T) ->
+    {reply, webrtc_transport:end_of_candidates(T), St};
+add_candidate(Cand, #st{transport = T} = St) when is_pid(T) ->
+    {reply, webrtc_transport:add_remote_candidate(T, Cand), St};
+add_candidate(_Cand, #st{early_candidates = E} = St) when length(E) >= ?MAX_EARLY_CANDIDATES ->
+    {reply, {error, too_many_candidates}, St};
+add_candidate(Cand, St) ->
+    {reply, ok, St#st{early_candidates = St#st.early_candidates ++ [Cand]}}.
 
 %%====================================================================
 %% Negotiation glue
@@ -242,7 +257,15 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     ),
     {ok, T} = webrtc_transport:start_link(TOpts),
     ok = webrtc_transport:gather(T),
-    push_remote_ice(St#st{transport = T, ice_role = Role});
+    St1 = push_remote_ice(St#st{transport = T, ice_role = Role}),
+    _ = [
+        case C of
+            end_of_candidates -> webrtc_transport:end_of_candidates(T);
+            _ -> webrtc_transport:add_remote_candidate(T, C)
+        end
+     || C <- St1#st.early_candidates
+    ],
+    St1#st{early_candidates = []};
 ensure_transport(_Type, St) ->
     St.
 

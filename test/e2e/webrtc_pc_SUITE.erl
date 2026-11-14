@@ -19,7 +19,8 @@
     ice_restart/1,
     fingerprint_mismatch_fails/1,
     close_notifies_peer/1,
-    concurrent_peer_connections/1
+    concurrent_peer_connections/1,
+    candidates_before_local_description/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -38,7 +39,8 @@ all() ->
         ice_restart,
         fingerprint_mismatch_fails,
         close_notifies_peer,
-        concurrent_peer_connections
+        concurrent_peer_connections,
+        candidates_before_local_description
     ].
 
 init_per_suite(Config) ->
@@ -308,3 +310,32 @@ concurrent_peer_connections(_Config) ->
     ),
     [begin webrtc:close(A), webrtc:close(B) end || {A, B} <- Pairs],
     ok.
+
+%% Trickled candidates can arrive after the remote offer but before the
+%% answer is set; they are kept and used once the transport starts.
+candidates_before_local_description(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"early">>, #{}),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    ok = webrtc:set_remote_description(B, offer, Offer),
+    ?assertEqual({error, no_remote_description}, webrtc:add_ice_candidate(A, <<"candidate:1 1 UDP 1 127.0.0.1 9 typ host">>)),
+    %% Deliver A's candidates to B now, before B has a local description.
+    Early = gather_candidates(A, []),
+    ?assert(length(Early) > 0),
+    [ok = webrtc:add_ice_candidate(B, C) || C <- Early],
+    {ok, Answer} = webrtc:create_answer(B, #{}),
+    ok = webrtc:set_local_description(B, answer, Answer),
+    ok = webrtc:set_remote_description(A, answer, Answer),
+    ok = ?S:wait_connected([A, B], 10000),
+    _ = channel_id(B, <<"early">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+gather_candidates(Pc, Acc) ->
+    receive
+        {webrtc, Pc, {ice_candidate, end_of_candidates, _}} -> lists:reverse([end_of_candidates | Acc]);
+        {webrtc, Pc, {ice_candidate, C, _}} -> gather_candidates(Pc, [C | Acc])
+    after 3000 -> lists:reverse(Acc)
+    end.

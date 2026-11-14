@@ -48,7 +48,8 @@ fmt:
 bench:
 	$(REBAR) as test compile
 	erl -noshell -pa _build/test/lib/*/ebin -pa _build/test/lib/webrtc/bench \
-	    -eval 'webrtc_srtp_bench:run(), halt().'
+	    -pa _build/test/lib/webrtc/test/support \
+	    -eval 'webrtc_srtp_bench:run(), webrtc_pc_bench:run(), halt().'
 
 clean:
 	$(REBAR) clean

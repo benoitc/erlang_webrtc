@@ -15,6 +15,33 @@ Statuses:
 
 A protocol is complete only when its mandatory requirements reach E2E tested, and interoperability tested where an independent peer exists.
 
+## Summary
+
+What works today, end to end and against independent implementations (see [INTEROP.md](INTEROP.md)):
+
+- Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, TURN relay over UDP.
+- DTLS 1.2 with use_srtp and extended master secret, interoperable with OTP ssl, OpenSSL, Pion, aiortc and Chromium.
+- SRTP and SRTCP (AES-CM and AES-GCM profiles).
+- RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
+- SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
+- JSEP offer/answer, renegotiation, rollback, pranswer.
+- Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay and floods.
+
+Known gaps that matter for a full WebRTC deployment:
+
+| Gap | Effect | Page |
+|---|---|---|
+| DTLS 1.3 (RFC 9147) | Peers negotiate DTLS 1.2, which every current implementation supports | [dtls](compliance/dtls.md) |
+| Simulcast and RID (RFC 8853, RFC 8851) | Negotiation and forwarding of simulcast layers are not available | [sdp](compliance/sdp.md) |
+| Congestion control and pacing (RFC 8836, RFC 8888, transport-wide CC) | Feedback is parsed and passed to the application; no built-in bandwidth estimator or pacer | [rtp](compliance/rtp.md) |
+| mDNS host candidates (`.local`) | Rejected; browsers that hide local addresses connect through server-reflexive or relay candidates only | [ice](compliance/ice.md) |
+| ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |
+| Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |
+| SCTP priorities, PMTUD | Round robin scheduling between streams, fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
+| Firefox interop | Runs in CI only; not verified on the development machine | [INTEROP.md](INTEROP.md) |
+
+Codec encoding and decoding are not part of the library. Opus, G.711, VP8 and H.264 are negotiated and their RTP payloads are transported and forwarded; producing or consuming the media is the application's job.
+
 ## Specifications tracked
 
 Superseded documents named in older WebRTC RFCs are tracked under their replacement.

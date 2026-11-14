@@ -59,3 +59,7 @@ The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and a
 
 - Specification status checked on 2026-11-14 at rfc-editor.org: RFC 8656 and RFC 8489 have no update or obsoleting document.
 - Per-allocation state is bounded: data queued while a permission is pending (64 datagrams per peer IP), permissions and channels follow the remote candidates the ICE agent keeps (`max_remote`).
+
+| ID | Spec | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| TURN-INTEROP-1 | 7, 9, 11 | Allocate with the 401 retry, permissions for remote candidates and relayed connectivity checks and data, against an independent server (pion/turn v5) | webrtc_turn_client, webrtc_ice_relay | webrtc_turn_interop_SUITE (relay/relay, relay/host, wrong password) | Interoperability tested |

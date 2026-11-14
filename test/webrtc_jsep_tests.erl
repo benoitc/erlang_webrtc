@@ -315,3 +315,45 @@ port_zero_without_bundle_only_rejected_test() ->
     {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
     [_, AV] = (wire(Answer))#sdp.media,
     ?assertEqual(0, AV#sdp_media.port).
+
+%% RFC 8842 §5, RFC 9429 §5.8.3: a re-offer with other fingerprints is
+%% only acceptable as part of an ICE restart, and then starts a new DTLS
+%% association (role negotiated again, new tls-id).
+other_fingerprint(Sdp) ->
+    FP = #{hash => sha256, value => crypto:strong_rand_bytes(32)},
+    Sdp#sdp{media = [M#sdp_media{attributes = [case A of {fingerprint, _} -> {fingerprint, FP}; _ -> A end
+                                               || A <- M#sdp_media.attributes]}
+                     || M <- Sdp#sdp.media]}.
+
+tls_id_offered_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),
+    [M] = (wire(Offer))#sdp.media,
+    ?assertMatch({ok, <<_:24/binary>>}, ?M:attr(tls_id, M)).
+
+fingerprint_change_without_ice_restart_refused_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A1),
+    ?assertEqual({error, dtls_identity_changed},
+                 webrtc_jsep:set_remote_description(offer, other_fingerprint(wire(Offer)), B1)).
+
+fingerprint_change_with_ice_restart_new_association_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, Answer1} = exchange(A0, new()),
+    A2 = webrtc_jsep:restart_ice(<<"newufrag">>, <<"newpasswordnewpassword">>, A1),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, other_fingerprint(wire(Offer)), B1),
+    {ok, Answer2, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(answer, Answer2, B3),
+    Tls = fun(S) -> [M | _] = (wire(S))#sdp.media, ?M:attr(tls_id, M) end,
+    ?assertNotEqual(Tls(Answer1), Tls(Answer2)),
+    #{dtls := #{role := Role, remote_fingerprints := [{sha256, _}]}} = webrtc_jsep:negotiated(B4),
+    ?assertNotEqual(undefined, Role).
+
+identity_unchanged_renegotiation_ok_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    {ok, _, A2} = webrtc_jsep:add_transceiver(video, #{}, A1),
+    {_, B2, _, _} = exchange(A2, B1),
+    ?assertEqual(stable, webrtc_jsep:signaling_state(B2)).

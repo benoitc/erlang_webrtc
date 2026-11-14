@@ -21,6 +21,8 @@
     close_notifies_peer/1,
     concurrent_peer_connections/1,
     candidates_before_local_description/1,
+    fingerprint_change_refused/1,
+    fingerprint_change_ends_association/1,
     simulcast_layers/1,
     simulcast_sfu_forward/1
 ]).
@@ -43,6 +45,8 @@ all() ->
         close_notifies_peer,
         concurrent_peer_connections,
         candidates_before_local_description,
+        fingerprint_change_refused,
+        fingerprint_change_ends_association,
         simulcast_layers,
         simulcast_sfu_forward
     ].
@@ -405,3 +409,42 @@ simulcast_sfu_forward(_Config) ->
     {ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>, <<"h">>} end, 5000),
     [webrtc:close(P) || P <- [A, B, C, D]],
     ok.
+
+tamper_fingerprint(Sdp) ->
+    Other = webrtc_dtls_cert:format_fingerprint(
+        webrtc_dtls_cert:fingerprint(sha256, maps:get(der, webrtc_dtls_cert:generate()))
+    ),
+    re:replace(Sdp, <<"a=fingerprint:[^\r]*">>, <<"a=fingerprint:", Other/binary>>, [global, {return, binary}]).
+
+%% RFC 8842 §5, RFC 9429 §5.8.3: other fingerprints without an ICE
+%% restart are refused.
+fingerprint_change_refused(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"id">>, #{}),
+    ?S:connect(A, B),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ?assertEqual({error, dtls_identity_changed}, webrtc:set_remote_description(B, offer, tamper_fingerprint(Offer))),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% With an ICE restart the description is accepted, and the peer that
+%% got the new fingerprint drops the old association: its channels close
+%% and nothing more flows on the old keys.
+fingerprint_change_ends_association(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"id">>, #{}),
+    ?S:connect(A, B),
+    IdB = channel_id(B, <<"id">>),
+    ok = webrtc:restart_ice(A),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    ok = webrtc:set_remote_description(B, offer, tamper_fingerprint(Offer)),
+    {ok, Answer} = webrtc:create_answer(B, #{}),
+    ok = webrtc:set_local_description(B, answer, Answer),
+    ok = webrtc:set_remote_description(A, answer, Answer),
+    {ok, _} = ?S:wait(B, fun(E) -> E =:= {datachannel_closed, IdB} end, 10000),
+    ?assertMatch({error, _}, webrtc:send_data(B, IdB, text, <<"old keys">>)),
+    webrtc:close(A),
+    webrtc:close(B).

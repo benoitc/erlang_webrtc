@@ -62,7 +62,9 @@
     local_candidates = [] :: list(),
     local_eoc = false :: boolean(),
     %% State saved when a remote offer is applied, for rollback.
-    snapshot :: undefined | {[#tr{}], pos_integer(), undefined | binary(), undefined | non_neg_integer()},
+    snapshot :: undefined | tuple(),
+    %% Our a=tls-id (RFC 8842 §5), new for every DTLS association.
+    tls_id :: binary(),
     %% Remote ICE credentials of the current remote description.
     remote_ice :: undefined | #{ufrag := binary(), pwd := binary()},
     ice_restart = false :: boolean()

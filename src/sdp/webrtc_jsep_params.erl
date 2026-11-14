@@ -39,6 +39,11 @@ negotiated(Local, Remote, J) ->
         },
         dtls => #{
             role => J#jsep.dtls_role,
+            remote_tls_id =>
+                case webrtc_sdp_media:find_attr(tls_id, Tag, Remote) of
+                    {ok, T} -> T;
+                    error -> undefined
+                end,
             remote_fingerprints => [
                 {H, V}
              || #{hash := H, value := V} <- webrtc_sdp_media:fingerprints(Tag, Remote), is_atom(H)

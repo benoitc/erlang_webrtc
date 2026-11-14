@@ -54,6 +54,7 @@
     dtls_role :: undefined | client | server,
     cert :: map(),
     remote_fps = [] :: list(),
+    remote_tls_id :: undefined | binary(),
     %% DTLS datagrams received before the DTLS role is known.
     early_dtls = [] :: [binary()],
     media :: term(),
@@ -309,8 +310,23 @@ run(St, F, Reply) ->
     end.
 
 configure_engines(Neg, St0) ->
-    #{dtls := #{role := Role, remote_fingerprints := FPs}, media := Media, data := Data} = Neg,
-    St1 = St0#st{media = webrtc_media:configure(Media, St0#st.media), data = Data, remote_fps = FPs},
+    #{dtls := #{role := Role, remote_fingerprints := FPs} = Dtls, media := Media, data := Data} = Neg,
+    TlsId = maps:get(remote_tls_id, Dtls, undefined),
+    %% RFC 8842 §5: changed fingerprints or tls-id mean a new DTLS
+    %% association (JSEP only accepts that with an ICE restart).
+    St00 =
+        case St0#st.dtls =/= undefined andalso
+                 (lists:sort(FPs) =/= lists:sort(St0#st.remote_fps) orelse
+                      tls_id_changed(St0#st.remote_tls_id, TlsId)) of
+            true -> end_association(dtls_identity_changed, St0);
+            false -> St0
+        end,
+    St1 = St00#st{
+        media = webrtc_media:configure(Media, St00#st.media),
+        data = Data,
+        remote_fps = FPs,
+        remote_tls_id = TlsId
+    },
     St2 =
         case St1#st.dtls of
             undefined when Role =/= undefined ->
@@ -328,6 +344,42 @@ configure_engines(Neg, St0) ->
         true -> start_sctp(St2);
         false -> St2
     end.
+
+%% A peer that never sent a tls-id (older stacks) is compared on its
+%% fingerprints only.
+tls_id_changed(undefined, _) -> false;
+tls_id_changed(_, undefined) -> false;
+tls_id_changed(Old, New) -> Old =/= New.
+
+%% Close the DTLS association and everything keyed or carried by it:
+%% SRTP contexts and the SCTP association (its channels are reported
+%% closed). ICE is kept.
+end_association(Reason, #st{dtls = D} = St0) ->
+    St1 =
+        case D of
+            undefined ->
+                St0;
+            _ ->
+                {_, Acts} = webrtc_dtls:close(D),
+                transmit_dtls(Acts, St0)
+        end,
+    St2 =
+        case St1#st.dcep of
+            undefined ->
+                St1;
+            Dc ->
+                _ = [to_pc({datachannel, {channel_closed, Id}}, St1) || Id <- maps:keys(webrtc_dcep:channels(Dc))],
+                to_pc({datachannel, {closed, Reason}}, St1),
+                St1
+        end,
+    St2#st{
+        dtls = undefined,
+        dtls_role = undefined,
+        dcep = undefined,
+        connected = false,
+        early_dtls = [],
+        media = webrtc_media:clear_srtp(St2#st.media)
+    }.
 
 %% The client starts the handshake once ICE has a pair; buffered early
 %% DTLS datagrams are replayed for the server.

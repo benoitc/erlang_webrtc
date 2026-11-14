@@ -75,6 +75,7 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         ice_lite = maps:get(ice_lite, Opts, false),
         fingerprints = FPs,
         cname = token(16),
+        tls_id = token(24),
         session_id = Sid,
         caps = Caps,
         sctp_port = maps:get(sctp_port, Opts, 5000),
@@ -235,8 +236,10 @@ set_remote_description(offer, Sdp0, #jsep{signaling = S} = J) when
     maybe
         ok ?= validate(offer, Sdp, J),
         J0 = restore(J),
-        Snap = {J0#jsep.transceivers, J0#jsep.next_id, J0#jsep.data_mid, J0#jsep.data_mline},
-        J1 = associate(Sdp, J0#jsep{snapshot = Snap}),
+        Snap = {J0#jsep.transceivers, J0#jsep.next_id, J0#jsep.data_mid, J0#jsep.data_mline,
+                J0#jsep.dtls_role, J0#jsep.tls_id},
+        {ok, J01} ?= dtls_identity(Sdp, J0#jsep{snapshot = Snap}),
+        J1 = associate(Sdp, J01),
         {ok, J1#jsep{
             pending_remote = Sdp,
             pending_remote_orig = Sdp0,
@@ -252,7 +255,8 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
     maybe
         ok ?= validate(answer, Sdp, J),
         ok ?= check_answer_mids(Sdp, J#jsep.pending_local),
-        J1 = negotiate(offerer, J#jsep.pending_local, Sdp, J),
+        {ok, Jd} ?= dtls_identity(Sdp, J),
+        J1 = negotiate(offerer, J#jsep.pending_local, Sdp, Jd),
         J2 = J1#jsep{remote_ice = remote_ice(Sdp)},
         case Type of
             pranswer ->
@@ -279,6 +283,8 @@ set_remote_description(_, _, _) ->
 %% Undo the transceiver changes of a previous remote offer (§4.1.10.2).
 restore(#jsep{snapshot = undefined} = J) ->
     J;
+restore(#jsep{snapshot = {Trs, Next, DMid, DLine, Role, TlsId}} = J) ->
+    J#jsep{transceivers = Trs, next_id = Next, data_mid = DMid, data_mline = DLine, dtls_role = Role, tls_id = TlsId};
 restore(#jsep{snapshot = {Trs, Next, DMid, DLine}} = J) ->
     J#jsep{transceivers = Trs, next_id = Next, data_mid = DMid, data_mline = DLine}.
 
@@ -330,6 +336,48 @@ first_defined(A, _) -> A.
 
 -spec close(state()) -> state().
 close(J) -> J#jsep{signaling = closed}.
+
+%%====================================================================
+%% DTLS identity (RFC 8842 §5, RFC 9429 §5.8.3)
+%%====================================================================
+
+%% A remote description whose fingerprints (or tls-id) differ from the
+%% current ones asks for a new DTLS association. That is only allowed
+%% with an ICE restart (new remote ufrag and pwd); then the DTLS role is
+%% negotiated again and we pick a new tls-id. Otherwise the description
+%% is refused: keeping the old association would leave the connection
+%% authenticated against a certificate the peer no longer claims.
+dtls_identity(_Sdp, #jsep{current_remote = undefined} = J) ->
+    {ok, J};
+dtls_identity(Sdp, #jsep{current_remote = Cur} = J) ->
+    case identity(Sdp) =:= identity(Cur) of
+        true ->
+            {ok, J};
+        false ->
+            case remote_ice(Sdp) =/= remote_ice(Cur) of
+                true -> {ok, J#jsep{dtls_role = undefined, tls_id = token(24)}};
+                false -> {error, dtls_identity_changed}
+            end
+    end.
+
+%% Fingerprints and tls-id of the first active m= section; a missing
+%% tls-id (older peers) only compares the fingerprints.
+identity(#sdp{media = Media} = Sdp) ->
+    case [M || M <- Media, M#sdp_media.port =/= 0] of
+        [M | _] ->
+            FPs = lists:sort([{H, V} || #{hash := H, value := V} <- webrtc_sdp_media:fingerprints(M, Sdp)]),
+            TlsId =
+                case webrtc_sdp_media:find_attr(tls_id, M, Sdp) of
+                    {ok, T} -> T;
+                    error -> undefined
+                end,
+            case TlsId of
+                undefined -> {FPs, any};
+                _ -> {FPs, TlsId}
+            end;
+        [] ->
+            undefined
+    end.
 
 %%====================================================================
 %% Validation (RFC 9429 §5.8, RFC 8839, RFC 8842)

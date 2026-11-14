@@ -41,6 +41,7 @@
     new/1,
     configure/2,
     set_srtp/5,
+    clear_srtp/1,
     ready/1,
     send/5,
     send_packet/4,
@@ -132,6 +133,12 @@ configure(Sections, #media{} = M) ->
 set_srtp(Profile, Material, Role, Now, M) ->
     {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{}),
     M#media{out = Out, in = In, rtcp_at = Now + ?RTCP_INTERVAL}.
+
+%% @doc Forget the SRTP contexts: the DTLS association they came from is
+%% gone. Sending fails with `not_ready' until `set_srtp/5'.
+-spec clear_srtp(state()) -> state().
+clear_srtp(M) ->
+    M#media{out = undefined, in = undefined}.
 
 -spec ready(state()) -> boolean().
 ready(#media{out = O}) -> O =/= undefined.

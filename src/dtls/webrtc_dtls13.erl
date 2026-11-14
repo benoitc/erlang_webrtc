@@ -71,8 +71,16 @@ one(#{format := unified} = R, _Now, #dtls{role = client, state = wait_server_hel
 one(_R, _Now, St) ->
     St.
 
-buffer(R, #dtls{early = Early} = St) when length(Early) < ?MAX_EARLY ->
-    St#dtls{early = [R | Early]};
+%% Only records that may belong to a handshake epoch (2 or 3) whose
+%% keys are not installed yet are kept; others (e.g. 0-RTT data we never
+%% accept) cannot take the space.
+buffer(#{epoch_bits := B} = R, #dtls{early = Early, read_keys = RK, handshake_done = false} = St) when
+    (B =:= 2 orelse B =:= 3), length(Early) < ?MAX_EARLY
+->
+    case maps:is_key(B, RK) of
+        true -> St;
+        false -> St#dtls{early = [R | Early]}
+    end;
 buffer(_R, St) ->
     St.
 

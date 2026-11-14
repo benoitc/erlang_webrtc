@@ -589,6 +589,30 @@ fallback_without_13_suites_test() ->
     {_, _, #{ev := #{c := CE}}} = established(#{suites => [16#C02B]}, #{}),
     ?assertMatch([#{version := 'dtlsv1.2', suite := tls_ecdhe_ecdsa_with_aes_128_gcm_sha256}], connected(CE)).
 
+%% A server without DTLS 1.3 suites does not support DTLS 1.3: it
+%% negotiates DTLS 1.2 without the downgrade sentinel.
+server_without_13_suites_test() ->
+    {_, _, #{ev := #{c := CE}}} = established(#{}, #{suites => [16#C02B]}),
+    ?assertMatch([#{version := 'dtlsv1.2'}], connected(CE)).
+
+%% Encrypted records of the server flight arrive before its ServerHello:
+%% they are buffered and processed once the handshake keys exist.
+records_before_server_hello_test() ->
+    C = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
+    S = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
+    {Cl, Sv} = pair(C, S, #{mtu => 300}, #{mtu => 300, use_cookie => false}),
+    Self = self(),
+    F = fun
+        (s, 1, D) -> Self ! {held, D}, [];
+        (s, 2, D) -> receive {held, H} -> [D, H] end;
+        (_, _, D) -> [D]
+    end,
+    #{ev := #{c := CE, s := SE}, now := Now} = run(Cl, Sv, F),
+    ?assertMatch([_], connected(CE)),
+    ?assertMatch([_], connected(SE)),
+    %% No timer fired: nothing was lost or retransmitted.
+    ?assertEqual(0, Now).
+
 no_common_version_test_() ->
     [
         ?_test(begin

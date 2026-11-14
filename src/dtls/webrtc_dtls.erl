@@ -109,6 +109,14 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
 ->
     Initial = maps:get(rtx_initial, Opts, 400),
     Suites = maps:get(suites, Opts, webrtc_dtls13_keys:supported_suites() ++ webrtc_dtls_crypto:supported_suites()),
+    Suites13 = [S || S <- Suites, webrtc_dtls13_keys:suite(S) =/= error],
+    %% Without a DTLS 1.3 suite the endpoint does not support DTLS 1.3
+    %% (and a server then sets no downgrade sentinel).
+    Versions = [
+        V
+     || V <- [version_atom(N) || N <- maps:get(versions, Opts, ['dtlsv1.3', 'dtlsv1.2'])],
+        V =/= dtls13 orelse Suites13 =/= []
+    ],
     #dtls{
         role = Role,
         state =
@@ -120,9 +128,9 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         key = Key,
         remote_fps = maps:get(remote_fingerprints, Opts, undefined),
         srtp_profiles = maps:get(srtp_profiles, Opts, ?DEFAULT_SRTP),
-        versions = [version_atom(V) || V <- maps:get(versions, Opts, ['dtlsv1.3', 'dtlsv1.2'])],
+        versions = Versions,
         suites = suites_for_key(Key, Suites),
-        suites13 = [S || S <- Suites, webrtc_dtls13_keys:suite(S) =/= error],
+        suites13 = Suites13,
         rekey_records = maps:get(rekey_records, Opts, 1 bsl 23),
         cookie_lifetime = maps:get(cookie_lifetime, Opts, 60000),
         groups = maps:get(groups, Opts, [x25519, secp256r1, secp384r1]),

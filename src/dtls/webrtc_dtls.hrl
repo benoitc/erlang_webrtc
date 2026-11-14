@@ -1,0 +1,93 @@
+%% Private state of the DTLS engine (webrtc_dtls, webrtc_dtls_hs).
+
+-define(DTLS12, 16#FEFD).
+-define(DTLS10, 16#FEFF).
+
+%% Alert descriptions (RFC 5246 §7.2).
+-define(ALERT_CLOSE_NOTIFY, 0).
+-define(ALERT_UNEXPECTED_MESSAGE, 10).
+-define(ALERT_HANDSHAKE_FAILURE, 40).
+-define(ALERT_BAD_CERTIFICATE, 42).
+-define(ALERT_UNSUPPORTED_CERTIFICATE, 43).
+-define(ALERT_ILLEGAL_PARAMETER, 47).
+-define(ALERT_DECODE_ERROR, 50).
+-define(ALERT_DECRYPT_ERROR, 51).
+-define(ALERT_PROTOCOL_VERSION, 70).
+-define(ALERT_INSUFFICIENT_SECURITY, 71).
+-define(ALERT_INTERNAL_ERROR, 80).
+-define(ALERT_NO_RENEGOTIATION, 100).
+
+-record(dtls, {
+    role :: client | server,
+    %% client: idle | wait_server_hello | wait_server_hello_done |
+    %%         wait_server_finished | connected
+    %% server: wait_client_hello | wait_client_finished | connected
+    %% both:   closed | failed
+    state :: atom(),
+    cert_der :: binary(),
+    key :: public_key:private_key(),
+    remote_fps :: undefined | [webrtc_dtls_cert:fingerprint()],
+    peer_cert :: undefined | binary(),
+    peer_key :: undefined | {ecdsa | rsa | eddsa, term()},
+    verified = false :: boolean(),
+    handshake_done = false :: boolean(),
+    srtp_profiles = [] :: [0..16#FFFF],
+    srtp_profile :: undefined | 0..16#FFFF,
+    suites :: [0..16#FFFF],
+    groups :: [webrtc_dtls_crypto:group()],
+    require_ems = true :: boolean(),
+    use_cookie = true :: boolean(),
+    cookie_secret :: binary(),
+    mtu :: pos_integer(),
+    %% Handshake parameters.
+    client_random :: undefined | binary(),
+    server_random :: undefined | binary(),
+    cookie = <<>> :: binary(),
+    suite :: undefined | webrtc_dtls_crypto:suite(),
+    group :: undefined | webrtc_dtls_crypto:group(),
+    ecdh_priv :: undefined | binary(),
+    peer_ecdh :: undefined | binary(),
+    peer_schemes = [] :: [0..16#FFFF],
+    cert_requested = false :: boolean(),
+    cv_ok = false :: boolean(),
+    announced = false :: boolean(),
+    hvr_count = 0 :: non_neg_integer(),
+    ems = false :: boolean(),
+    master :: undefined | binary(),
+    keys :: undefined | {binary(), binary(), binary(), binary()},
+    %% Full handshake messages in reverse order (RFC 6347 §4.2.6).
+    transcript = [] :: [binary()],
+    %% Handshake message sequence numbers.
+    send_msg_seq = 0 :: non_neg_integer(),
+    recv_msg_seq = 0 :: non_neg_integer(),
+    %% Reassembly: Seq => {Type, Len, #{Offset => Bin}}.
+    reasm = #{} :: map(),
+    %% Record layer.
+    write_epoch = 0 :: non_neg_integer(),
+    write_seq = #{0 => 0} :: #{non_neg_integer() => non_neg_integer()},
+    write_ciphers = #{} :: #{non_neg_integer() => webrtc_dtls_record:cipher()},
+    read_epoch = 0 :: non_neg_integer(),
+    read_cipher :: undefined | webrtc_dtls_record:cipher(),
+    pending_read :: undefined | webrtc_dtls_record:cipher(),
+    replay = #{} :: #{non_neg_integer() => webrtc_dtls_record:replay()},
+    %% Records of the next epoch received before ChangeCipherSpec.
+    early = [] :: [webrtc_dtls_record:dtls_record()],
+    %% Flight being built and the last flight sent (for retransmission).
+    building = [] :: [flight_item()],
+    last_flight = [] :: [flight_item()],
+    rtx_at = infinity :: integer() | infinity,
+    rtx_interval :: pos_integer(),
+    rtx_initial :: pos_integer(),
+    rtx_max_interval :: pos_integer(),
+    rtx_count = 0 :: non_neg_integer(),
+    rtx_limit :: non_neg_integer(),
+    last_peer_rtx = undefined :: undefined | integer(),
+    %% Application data received before the fingerprint is verified.
+    held = [] :: [binary()],
+    out = [] :: [term()]
+}).
+
+-type flight_item() ::
+    {handshake, Epoch :: non_neg_integer(), webrtc_dtls_msg:msg_type(), Seq :: non_neg_integer(),
+        Body :: binary()}
+    | {change_cipher_spec, Epoch :: non_neg_integer()}.

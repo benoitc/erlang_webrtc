@@ -24,3 +24,8 @@ Use OTP ssl and OpenSSL as independent DTLS peers in the test suite. This checks
 - The library controls the socket, timers and role, and can be tested deterministically.
 - More code to own. The handshake is restricted to what WebRTC requires (ECDHE with ECDSA or RSA, AEAD ciphers), which keeps it small.
 - OTP limitations 1 and 2 should be reported upstream with a regression test. Until fixed, interop tests against OTP ssl as a server offer a single profile.
+
+## Findings from the interop suite
+
+- OTP ssl 11.7.8 does not implement the extended master secret (RFC 7627). Our endpoint requires it by default (`require_ems => true`), as Chrome, Firefox, OpenSSL and Pion support it. The OTP interop tests set `require_ems => false` explicitly, and `otp_server_without_ems_rejected` checks the default refuses the fallback.
+- `ssl:export_key_materials/4` returns `{ok, Binary}` for a single label in this release, not `{ok, [Binary]}` as its spec states.

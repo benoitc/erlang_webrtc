@@ -8,3 +8,4 @@ rebar3.crashdump
 /interop/*/bin/
 __pycache__/
 .venv/
+.claude/

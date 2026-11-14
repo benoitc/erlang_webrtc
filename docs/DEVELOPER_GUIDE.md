@@ -17,7 +17,10 @@ This page is for contributors. It says where each protocol lives, how the engine
 | SDP grammar | `src/sdp/webrtc_sdp*.erl` |
 | Offer/answer rules | `src/sdp/webrtc_jsep*.erl` |
 | rid and simulcast negotiation | `src/sdp/webrtc_jsep_simulcast.erl` |
-| Media routing, RTCP reports, retransmission | `src/transport/webrtc_media.erl` |
+| Media session API | `src/transport/webrtc_media.erl` |
+| Media receive path: demux, RTX, NACK generation, RTCP processing | `src/transport/webrtc_media_in.erl` |
+| Media send path: pacing, TWCC sequence, retransmission, RTCP reports | `src/transport/webrtc_media_out.erl` |
+| Congestion control, pacer, circuit breakers | `src/cc/` |
 | Simulcast layers on receive (rid, repaired-rid) | `src/transport/webrtc_media_rid.erl` |
 | Sockets, demux, wiring of engines | `src/transport/webrtc_transport.erl` |
 | Peer connection API and states | `src/webrtc.erl`, `src/pc/webrtc_pc.erl` |

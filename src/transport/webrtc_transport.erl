@@ -177,7 +177,7 @@ handle_call({add_remote_candidate, Cand}, _From, St) ->
     case webrtc_mdns_client:remote_candidate(Cand, St#st.mdns) of
         {add, Value, M} ->
             run(St#st{mdns = M}, fun(Now, I) -> webrtc_ice_agent:add_remote_candidate(Value, Now, I) end, ok);
-        {pending, M} ->
+        {Waiting, M} when Waiting =:= pending; Waiting =:= ignored ->
             {reply, ok, St#st{mdns = M}};
         {error, R, M} ->
             {reply, {error, R}, St#st{mdns = M}}

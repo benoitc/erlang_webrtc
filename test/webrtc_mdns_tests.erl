@@ -141,10 +141,19 @@ owner_exit_stops_resolver() ->
 responder_answers_queries() ->
     GP = free_port(),
     LP = free_port(),
+    {ok, G} = gen_udp:open(GP, [binary, {ip, ?LO}, {active, true}]),
     {ok, M} = webrtc_mdns:start(#{group => {?LO, GP}, listen => {?LO, LP}}),
     {ok, Name} = webrtc_mdns:register_name(M, {192, 0, 2, 10}),
+    %% A new name is announced on the group (draft §3.1.1, RFC 6762 §8.3).
+    receive
+        {udp, G, _, LP, Ann} ->
+            ?assertMatch({ok, #{qr := true, answers := [#{name := Name, data := {192, 0, 2, 10}, ttl := 120}]}},
+                         ?MSG:decode(Ann))
+    after 2000 -> error(no_announcement)
+    end,
     ?assertMatch({match, _}, re:run(Name, "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.local$")),
     ?assertEqual({ok, Name}, webrtc_mdns:register_name(M, {192, 0, 2, 10})),
+    receive {udp, G, _, _, _} -> error(announced_twice) after 200 -> ok end,
     %% A legacy one-shot query from an ephemeral port: unicast reply,
     %% ID and question repeated, TTL 10 (RFC 6762 §6.7).
     {ok, Q} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
@@ -157,7 +166,6 @@ responder_answers_queries() ->
     after 2000 -> error(no_reply)
     end,
     %% A query from the mDNS port is answered on the group.
-    {ok, G} = gen_udp:open(GP, [binary, {ip, ?LO}, {active, true}]),
     ok = gen_udp:send(G, ?LO, LP, ?MSG:encode_query(0, [{Name, a, false}])),
     receive
         {udp, G, _, LP, Bin2} ->

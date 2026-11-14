@@ -5,7 +5,7 @@
 
 -export([start/1, stop/1, free_port/0, multicast_works/0]).
 
-%% @doc Start a responder for `#{Name => IP}'. Returns `{Pid, Port}';
+%% @doc Start a responder for `#{Name => IP | [IP]}'. Returns `{Pid, Port}';
 %% resolvers use `#{group => {{127,0,0,1}, Port}}'.
 start(Names) ->
     Parent = self(),
@@ -26,7 +26,7 @@ loop(S, Names) ->
         {udp, S, IP, P, Bin} ->
             _ = case webrtc_mdns_msg:decode(Bin) of
                 {ok, #{qr := false, id := Id, questions := [#{name := N, type := a}]}} when is_map_key(N, Names) ->
-                    Ans = [{N, maps:get(N, Names), 10, false}],
+                    Ans = [{N, Addr, 10, false} || Addr <- lists:flatten([maps:get(N, Names)])],
                     gen_udp:send(S, IP, P, webrtc_mdns_msg:encode_response(Id, [{N, a}], Ans, []));
                 _ ->
                     ok

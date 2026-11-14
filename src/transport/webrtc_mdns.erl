@@ -18,8 +18,8 @@
 %% <li>Responses must come from an address on a local subnet
 %%     (RFC 6762 §11).</li>
 %% <li>`register_name/2' gives an address a random `<uuid>.local' name
-%%     (draft §3.1) and answers queries for it on the group socket
-%%     (`webrtc_mdns_responder').</li>
+%%     (draft §3.1.1), announces it and answers queries for it on the
+%%     group socket (`webrtc_mdns_responder').</li>
 %% </ul>
 %%
 %% Options: `group' (`{IP, Port}' the queries go to), `listen'
@@ -151,7 +151,10 @@ handle_call({register_name, IP}, _From, #st{msock = undefined} = St) when is_tup
     {reply, {error, no_listener}, St};
 handle_call({register_name, IP}, _From, St) when is_tuple(IP) ->
     case webrtc_mdns_responder:register(IP, St#st.responder) of
-        {ok, Name, R1} -> {reply, {ok, Name}, St#st{responder = R1}};
+        {ok, Name, R1} ->
+            _ = is_map_key(Name, webrtc_mdns_responder:names(St#st.responder)) orelse
+                send_group(webrtc_mdns_responder:announcement(Name, R1), St),
+            {reply, {ok, Name}, St#st{responder = R1}};
         {error, _} = E -> {reply, E, St}
     end;
 handle_call(_, _From, St) ->

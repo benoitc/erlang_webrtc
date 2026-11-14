@@ -2,9 +2,9 @@
 %% our own host candidates (draft-ietf-mmusic-mdns-ice-candidates §3.1).
 %%
 %% Each registered address gets a random version 4 UUID name
-%% (draft §3.1). Being random, the names are not probed for
-%% uniqueness and are not announced; they are only answered (RFC 6762
-%% §6):
+%% (draft-ietf-mmusic-mdns-ice-candidates-03 §3.1.1). As the draft
+%% recommends, a new name is announced (`announcement/2', RFC 6762 §8.3)
+%% without probing. Queries are answered (RFC 6762 §6):
 %% <ul>
 %% <li>a query from a port other than the mDNS port is a legacy one-shot
 %%     query: unicast reply to its source, ID and question repeated,
@@ -19,7 +19,7 @@
 %% answered; there is no negative (NSEC) answer.
 -module(webrtc_mdns_responder).
 
--export([new/1, register/2, names/1, handle_query/5, goodbye/1]).
+-export([new/1, register/2, names/1, handle_query/5, announcement/2, goodbye/1]).
 
 -export_type([responder/0, dest/0]).
 
@@ -118,6 +118,12 @@ reply(false, Src, _Id, Hits, Known, Now, R) ->
 response(Qs, Known, R) ->
     As = lists:usort([{N, IP, ?TTL, true} || Q <- Qs, {N, IP} <- answers(Q, Known, R)]),
     webrtc_mdns_msg:encode_response(0, [], As, []).
+
+%% @doc Unsolicited response announcing a registered name, cache-flush
+%% bit set (RFC 6762 §8.3, §10.2).
+-spec announcement(binary(), responder()) -> binary().
+announcement(Name, #rs{names = N}) ->
+    webrtc_mdns_msg:encode_response(0, [], [{Name, maps:get(Name, N), ?TTL, true}], []).
 
 %% @doc Goodbye packets withdrawing every name (TTL 0, RFC 6762 §10.1).
 -spec goodbye(responder()) -> [binary()].

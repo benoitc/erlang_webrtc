@@ -65,7 +65,7 @@ webrtc_sup (one_for_one)
 - Each transport process handles one ICE component. With BUNDLE (the WebRTC default) that is one per peer connection.
 - Peer connections are independent. There is no global registry on the packet path.
 
-Sockets are opened in `{active, N}` mode so the transport process gets a bounded burst of datagrams and re-arms. Outgoing queues (SCTP send buffer, pacer) are bounded; when a limit is reached the API returns `{error, buffer_full}` and the application receives a `buffered_amount_low` event when it can send again.
+Sockets are opened in `{active, N}` mode so the transport process gets a bounded burst of datagrams and re-arms. Outgoing queues are bounded. When the SCTP send buffer is full the API returns `{error, buffer_full}` and the application receives a `buffered_amount_low` event when it can send again. When the media pacer queue is full it drops the oldest video packet and counts it (see below).
 
 ## How a packet enters and leaves
 
@@ -87,6 +87,30 @@ Outbound follows the reverse path. Only the selected candidate pair is used for 
 - SCTP runs over DTLS application data (RFC 8261). The data channel protocol (RFC 8832) runs on top of SCTP.
 - ICE restarts keep the DTLS association (RFC 8842 §4). Losing consent closes the transport.
 
+## Congestion control and pacing
+
+`webrtc_media` owns one `webrtc_cc` engine per transport. It is sans-IO like the others and is driven from `webrtc_media`'s `send_packet/4`, `handle_packet/3` and `handle_timeout/2`:
+
+```
+send_packet ---> NACK buffer ---> webrtc_pacer (audio > rtx > video)
+                                        |  released by budget or timeout
+                                        v
+                      transport-wide seq (webrtc_twcc_sender) -> SRTP -> {send, Bin}
+
+RTCP in: transport-wide feedback -> webrtc_twcc_sender -> webrtc_gcc -> target
+         REMB --------------------------------------------> webrtc_gcc
+         SR/RR report blocks -> webrtc_circuit_breaker, RTT, loss (no feedback)
+target -> pacing rate (2.5 x target), event {bandwidth_estimate, Bps}
+
+RTP in:  transport-wide seq -> webrtc_twcc_receiver -> feedback every 100 ms
+```
+
+- The estimator is Google Congestion Control (`webrtc_gcc`): a delay-based controller (`webrtc_gcc_delay`, trendline filter and adaptive over-use threshold; `webrtc_gcc_aimd`, the rate controller) and a loss-based controller. The target is the minimum of both and of a received REMB, within `min_bitrate` and `max_bitrate`.
+- One estimate covers every stream of the transport. The application gets `{bandwidth_estimate, Bps}` when it moves by more than 5% and splits it between its encoders; the stack never re-encodes media.
+- The pacer (`webrtc_pacer`) is a leaky bucket at 2.5 x the target with a 10 ms burst. It only holds packets back once feedback backs the estimate, so a peer that sends no feedback is not limited by a guess. Retransmissions are limited to the target over one second. `webrtc:set_congestion_control/2` turns pacing off or changes the bitrate limits.
+- The RTP circuit breakers of RFC 8083 (`webrtc_circuit_breaker`) report `{circuit_breaker, Mid, Reason}`; stopping or reducing the stream is the application's decision.
+- Times are the engine's millisecond clock, so the whole path is tested with a synthetic clock: `test/webrtc_cc_sim.erl` runs flows over a simulated bottleneck (`test/webrtc_cc_link.erl`) through the real engines and RTCP codec.
+
 ## Negotiation
 
 `webrtc_jsep` implements the JSEP state machine (RFC 9429) on structured `webrtc_sdp` records, never on strings. Offer and answer generation, BUNDLE (RFC 9143), codec intersection, direction negotiation, rollback and renegotiation all operate on records and are tested without a network.
@@ -100,6 +124,7 @@ Outbound follows the reverse path. Only the selected candidate pair is used for 
 | `src/dtls`         | DTLS record layer, handshake, key schedule   |
 | `src/srtp`         | SRTP/SRTCP protection, key derivation, replay|
 | `src/rtp`          | RTP, RTCP, header extensions, payload helpers|
+| `src/cc`           | congestion control, pacer, circuit breakers  |
 | `src/sctp`         | SCTP chunks, association, DCEP               |
 | `src/sdp`          | SDP codec and JSEP                           |
 | `src/transport`    | demux, UDP transport process                 |

@@ -15,7 +15,8 @@
     teardown_during_traffic/1,
     resources_released_on_close/1,
     owner_exit_closes/1,
-    stuck_transport_killed_on_close/1
+    stuck_transport_killed_on_close/1,
+    turn_allocation_deleted_on_close/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -29,7 +30,8 @@ all() ->
         teardown_during_traffic,
         resources_released_on_close,
         owner_exit_closes,
-        stuck_transport_killed_on_close
+        stuck_transport_killed_on_close,
+        turn_allocation_deleted_on_close
     ].
 
 init_per_suite(Config) ->
@@ -233,3 +235,23 @@ stuck_transport_killed_on_close(_Config) ->
     webrtc:close(B),
     %% The sockets of the killed transport are released.
     ?assertEqual([], [P || P <- Ports, erlang:port_info(P) =/= undefined]).
+
+%% RFC 8656 §8: closing deletes the TURN allocation (Refresh with a zero
+%% lifetime) instead of leaving it until it expires.
+turn_allocation_deleted_on_close(_Config) ->
+    {Turn, Addr} = webrtc_test_turn_udp:start(#{users => #{<<"u">> => <<"p">>}}),
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        turn_servers => [#{address => Addr, username => <<"u">>, password => <<"p">>}]
+    }),
+    ok = webrtc:create_data_channel(A, <<"t">>, #{}),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    {ok, _} = ?S:wait(A, fun({ice_candidate, C, _}) when is_binary(C) ->
+                                 binary:match(C, <<"typ relay">>) =/= nomatch;
+                            (_) -> false end, 5000),
+    ?assertEqual(1, webrtc_test_turn_udp:allocations(Turn)),
+    ok = webrtc:close(A),
+    timer:sleep(300),
+    ?assertEqual(0, webrtc_test_turn_udp:allocations(Turn)),
+    webrtc_test_turn_udp:stop(Turn).

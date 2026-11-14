@@ -291,13 +291,19 @@ handle_info(Other, St) ->
 eoc(true, Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I);
 eoc(false, _Now, I) -> {I, []}.
 
-terminate(_Reason, St) ->
-    ok = webrtc_mdns_client:stop(St#st.mdns),
-    case St#st.dtls of
-        undefined -> ok;
-        D -> _ = transmit_dtls(element(2, webrtc_dtls:close(D)), St)
-    end,
-    _ = [gen_udp:close(S) || {S, _} <- St#st.sockets],
+terminate(_Reason, St0) ->
+    ok = webrtc_mdns_client:stop(St0#st.mdns),
+    %% close_notify first (it needs the selected pair), then the ICE
+    %% agent: it deletes TURN allocations with a zero lifetime Refresh
+    %% (RFC 8656 §8) instead of leaving them until they expire.
+    St1 =
+        case St0#st.dtls of
+            undefined -> St0;
+            D -> transmit_dtls(element(2, webrtc_dtls:close(D)), St0)
+        end,
+    {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
+    _ = ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
     ok.
 
 %%====================================================================

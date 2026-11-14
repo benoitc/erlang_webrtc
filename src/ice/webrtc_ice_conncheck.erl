@@ -237,7 +237,11 @@ success(#pair{} = P, Info, Mapped, Now, S) ->
         generated_by = P#pair.id,
         rtt = P1#pair.rtt,
         consent_expires = Now + S#ice.consent_expiry,
-        consent_ok = Now
+        consent_ok = Now,
+        consent_next = case V0#pair.consent_next of
+            undefined -> Now + S#ice.consent_interval;
+            Next -> Next
+        end
     },
     S3 = webrtc_ice_checklist:put_pair(V, S2),
     S4 = webrtc_ice_checklist:unfreeze(P#pair.foundation, S3),
@@ -308,7 +312,10 @@ select(#pair{id = VId, component = Comp} = V, Now, S) ->
     {Jitter, R} = rand:uniform_s(S#ice.rand),
     Interval = round(S#ice.consent_interval * (0.8 + 0.4 * Jitter)),
     V1 = V#pair{
-        consent_next = Now + Interval,
+        consent_next = case V#pair.consent_next of
+            undefined -> Now + Interval;
+            Next -> min(Next, Now + Interval)
+        end,
         consent_expires = case V#pair.consent_expires of
             undefined -> Now + S#ice.consent_expiry;
             E -> E

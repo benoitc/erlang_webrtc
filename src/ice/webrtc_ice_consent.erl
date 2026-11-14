@@ -34,10 +34,12 @@
 %% RemotePwd} to use.
 -type where() :: current | prev.
 
-targets(#ice{selected = Sel, prev = Prev} = S) ->
+%% Consent runs on the pair data would use: the selected pair, or the
+%% best valid pair before nomination (RFC 8445 §12.1).
+targets(#ice{prev = Prev} = S) ->
     Current = [{current, C, P, webrtc_ice_checklist:remote(P#pair.remote, S),
                 {S#ice.ufrag, S#ice.remote_ufrag, S#ice.remote_pwd}}
-               || C := Id <- Sel, #pair{} = P <- [webrtc_ice_checklist:pair(Id, S)]],
+               || C <- S#ice.components, #pair{} = P <- [active(C, S)]],
     Old =
         case Prev of
             #prev{pairs = PP, ufrag = U, remote_ufrag = RU, remote_pwd = RP} ->
@@ -46,6 +48,13 @@ targets(#ice{selected = Sel, prev = Prev} = S) ->
                 []
         end,
     Current ++ Old.
+
+active(C, #ice{selected = Sel} = S) ->
+    case maps:find(C, Sel) of
+        {ok, Id} -> webrtc_ice_checklist:pair(Id, S);
+        error when S#ice.lite -> undefined;
+        error -> webrtc_ice_checklist:best_valid(C, S)
+    end.
 
 put(current, _C, P, S) -> webrtc_ice_checklist:put_pair(P, S);
 put(prev, C, P, #ice{prev = #prev{pairs = PP} = Pv} = S) ->

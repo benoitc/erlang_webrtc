@@ -167,7 +167,8 @@ new(Opts) ->
         tiebreaker = maps:get(tiebreaker, Opts, T - 1),
         rand = Rand1,
         ufrag = Ufrag,
-        pwd = Pwd
+        pwd = Pwd,
+        tx = webrtc_stun_tx:new()
     },
     S1 = lists:foldl(
         fun({K, Pos}, Acc) ->

@@ -475,6 +475,32 @@ split_test() ->
     ?assertEqual([], webrtc_dtls13_record:split(<<16#2E, 1, 2, 0, 3, 1, 2, 3>>)),
     ?assertEqual([], webrtc_dtls13_record:split(<<64, 1, 2, 3>>)).
 
+%% Erratum 8108: an ACK may not cover records of a later epoch than its
+%% own.
+ack_for_later_epoch_test() ->
+    {C, S, _} = established(#{}, #{}),
+    Body = webrtc_dtls13_record:encode_ack([{4, 0}]),
+    {ok, Rec, _} = webrtc_dtls13:encode_record(ack, 3, Body, C),
+    {S1, A} = webrtc_dtls:handle_packet(Rec, 0, S),
+    ?assertMatch([{send, _}, {event, {failed, ack_for_later_epoch}}], A),
+    ?assertEqual(failed, webrtc_dtls:status(S1)).
+
+%% Unknown record numbers in an ACK are ignored.
+ack_unknown_records_test() ->
+    {C, S, _} = established(#{}, #{}),
+    Body = webrtc_dtls13_record:encode_ack([{2, 99}, {3, 7}]),
+    {ok, Rec, C1} = webrtc_dtls13:encode_record(ack, 3, Body, C),
+    {S1, []} = webrtc_dtls:handle_packet(Rec, 0, S),
+    data(C1, S1, <<"fine">>, 0).
+
+%% Unauthenticated alerts are ignored once handshake keys exist.
+plaintext_alert_ignored_test() ->
+    {C, S, _} = established(#{}, #{}),
+    Alert = webrtc_dtls_record:encode(alert, 16#FEFD, 0, 1000, <<2, 40>>),
+    {S1, []} = webrtc_dtls:handle_packet(Alert, 0, S),
+    {C1, []} = webrtc_dtls:handle_packet(Alert, 0, C),
+    data(C1, S1, <<"alive">>, 0).
+
 ack_codec_test() ->
     Recs = [{2, 5}, {0, 1}, {3, 1 bsl 40}],
     Bin = webrtc_dtls13_record:encode_ack(Recs),

@@ -222,7 +222,12 @@ handle(Type, Body, Epoch, Now, St) ->
                 server -> webrtc_dtls13_server:handle(St#dtls.state, Type, Msg, Full, Now, St)
             end;
         {error, _} ->
-            fail(?ALERT_DECODE_ERROR, {decode_error, Type}, St)
+            %% A message type without a place in DTLS 1.3 here (a late
+            %% ClientHello, an unknown type) is unexpected.
+            case webrtc_dtls13_msg:known(Type) of
+                true -> fail(?ALERT_DECODE_ERROR, {decode_error, Type}, St);
+                false -> fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St)
+            end
     end.
 
 %% Handshake messages use epoch 2, post-handshake messages epoch 3 or

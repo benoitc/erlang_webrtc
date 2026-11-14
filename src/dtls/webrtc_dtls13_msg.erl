@@ -10,6 +10,7 @@
 -export([
     encode/2,
     decode/2,
+    known/1,
     ext/3,
     supported_versions_ext/1,
     key_share_ext/1,
@@ -120,7 +121,14 @@ encode(key_update, update_requested) ->
 encode(key_update, update_not_requested) ->
     <<0>>.
 
--spec decode(atom(), binary()) -> {ok, term()} | {error, decode_error}.
+%% @doc True for the message types `decode/2' handles.
+-spec known(term()) -> boolean().
+known(Type) ->
+    lists:member(Type, [
+        encrypted_extensions, certificate_request, certificate, certificate_verify, finished, key_update, new_session_ticket
+    ]).
+
+-spec decode(atom() | 0..255, binary()) -> {ok, term()} | {error, decode_error}.
 decode(Type, Bin) ->
     try body(Type, Bin) of
         M -> {ok, M}

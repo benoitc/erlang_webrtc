@@ -76,7 +76,7 @@
     %% Record layer.
     write_epoch = 0 :: non_neg_integer(),
     write_seq = #{0 => 0} :: #{non_neg_integer() => non_neg_integer()},
-    write_ciphers = #{} :: #{non_neg_integer() => webrtc_dtls_record:cipher()},
+    write_ciphers = #{} :: #{non_neg_integer() => webrtc_dtls_record:cipher() | webrtc_dtls13_keys:keys()},
     read_epoch = 0 :: non_neg_integer(),
     read_cipher :: undefined | webrtc_dtls_record:cipher(),
     pending_read :: undefined | webrtc_dtls_record:cipher(),

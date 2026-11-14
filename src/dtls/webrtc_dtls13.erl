@@ -98,7 +98,15 @@ record(#{format := unified, epoch_bits := Bits} = R, Now, St) ->
 %% plaintext. Once handshake keys exist, plaintext handshake records
 %% only signal a peer retransmission and plaintext alerts are ignored.
 plain(handshake, F, Seq, Now, #dtls{role = client, state = wait_server_hello} = St) ->
-    handshake(F, 0, Seq, Now, St);
+    case webrtc_dtls_msg:decode_fragment(F) of
+        {ok, [_ | _] = Frags} ->
+            case lists:all(fun(#{type := T}) -> T =:= server_hello end, Frags) of
+                true -> handshake(F, 0, Seq, Now, St);
+                false -> St
+            end;
+        _ ->
+            St
+    end;
 plain(handshake, F, _Seq, Now, St) ->
     case webrtc_dtls_msg:decode_fragment(F) of
         {ok, Frags = [_ | _]} ->

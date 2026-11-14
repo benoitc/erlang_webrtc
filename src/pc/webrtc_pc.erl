@@ -79,7 +79,12 @@ handle_call({create_data_channel, Label, COpts}, _From, St) ->
                 #{data := #{}} -> ok;
                 _ -> notify(negotiation_needed, St)
             end,
-            {reply, ok, St1#st{pending_channels = St1#st.pending_channels ++ [{Label, COpts}]}}
+            %% A pre-negotiated channel already has its id (RFC 8832 §6).
+            Reply = case COpts of
+                #{negotiated := true, id := Id} -> {ok, Id};
+                _ -> ok
+            end,
+            {reply, Reply, St1#st{pending_channels = St1#st.pending_channels ++ [{Label, COpts}]}}
     end;
 handle_call({create_offer, Opts}, _From, St) ->
     J0 = St#st.jsep,

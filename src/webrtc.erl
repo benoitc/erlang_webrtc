@@ -107,9 +107,10 @@ transceivers(Pc) ->
     call(Pc, transceivers).
 
 %% @doc Create a data channel. `Opts': `ordered', `max_retransmits',
-%% `max_packet_life_time', `protocol', `negotiated' and `id'. Before the
-%% SCTP association is up the channel is opened as soon as it is; the
-%% `datachannel_open' event carries its id.
+%% `max_packet_life_time', `protocol', `negotiated' and `id'. Returns
+%% `{ok, Id}' when the id is known (association up, or a pre-negotiated
+%% channel); otherwise `ok', the channel is opened as soon as the
+%% association is up and the `datachannel_open' event carries its id.
 -spec create_data_channel(pc(), binary(), map()) -> ok | {ok, non_neg_integer()} | {error, term()}.
 create_data_channel(Pc, Label, Opts) ->
     call(Pc, {create_data_channel, Label, Opts}).

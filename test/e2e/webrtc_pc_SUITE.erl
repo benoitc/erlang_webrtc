@@ -144,8 +144,8 @@ data_channel_unordered_unreliable(_Config) ->
 negotiated_data_channel(_Config) ->
     A = pc(),
     B = pc(),
-    {ok, 7} = to_ok(webrtc:create_data_channel(A, <<"pre">>, #{negotiated => true, id => 7})),
-    {ok, 7} = to_ok(webrtc:create_data_channel(B, <<"pre">>, #{negotiated => true, id => 7})),
+    {ok, 7} = webrtc:create_data_channel(A, <<"pre">>, #{negotiated => true, id => 7}),
+    {ok, 7} = webrtc:create_data_channel(B, <<"pre">>, #{negotiated => true, id => 7}),
     ?S:connect(A, B),
     _ = channel_id(A, <<"pre">>),
     _ = channel_id(B, <<"pre">>),
@@ -153,11 +153,6 @@ negotiated_data_channel(_Config) ->
     _ = message(B, <<"pre-agreed">>),
     webrtc:close(A),
     webrtc:close(B).
-
-%% Before the association is up the call returns ok; the id is in the
-%% open event.
-to_ok(ok) -> {ok, 7};
-to_ok(Other) -> Other.
 
 data_channel_close(_Config) ->
     A = pc(),

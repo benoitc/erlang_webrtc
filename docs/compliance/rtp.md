@@ -262,3 +262,4 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 - `webrtc_rtp:encode/1` does not check that the payload type avoids 64..95 (MUX-2); the SDP layer must enforce it.
 - The RTCP and AVPF scheduling state machines (RTCP-20, AVPF-13, RSIZE-3) are not implemented; `webrtc_rtcp_interval` provides the pure computations they need.
 - `webrtc_nack` (receiver NACK generation) follows RFC 4585 §6.2.1 for the message and libwebrtc for the retry policy (retry every max(RTT, min interval), give up after `max_retries` or `max_age`, request a key frame when more than `max_missing` packets are missing); RFC 4585 does not specify this policy.
+| NACK-10 | RFC 4585 §6.2.1, RFC 3711 §3.3 | NACK answered without RTX: the exact SRTP bytes of the first transmission are resent (no second protection of the same index) | webrtc_media_out | webrtc_media_tests:nack_without_rtx_test | Unit tested |

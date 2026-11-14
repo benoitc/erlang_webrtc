@@ -5,12 +5,12 @@
 -include("webrtc_rtp.hrl").
 -include("webrtc_rtp_rtcp.hrl").
 
-jsep() ->
-    webrtc_jsep:new(#{
+jsep(Extra) ->
+    webrtc_jsep:new(maps:merge(#{
         ice_ufrag => <<"ufrag">>,
         ice_pwd => <<"passwordpasswordpassword">>,
         fingerprints => [{sha256, crypto:strong_rand_bytes(32)}]
-    }).
+    }, Extra)).
 
 wire(Sdp) ->
     {ok, P} = webrtc_sdp:parse(webrtc_sdp:encode(Sdp)),
@@ -18,9 +18,12 @@ wire(Sdp) ->
 
 %% Negotiate audio + video both ways and return configured sessions.
 pair() ->
-    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
+    pair(#{}).
+
+pair(JsepOpts) ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep(JsepOpts)),
     {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
-    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, jsep(JsepOpts)),
     {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),
     {ok, O, A2} = webrtc_jsep:create_offer(#{}, A1),
     {ok, A3} = webrtc_jsep:set_local_description(offer, O, A2),
@@ -158,3 +161,29 @@ garbage_test() ->
     [_ = webrtc_media:handle_packet(<<128, (rand:bytes(rand:uniform(200)))/binary>>, 0, SB)
      || _ <- lists:seq(1, 2000)],
     ok.
+
+%% Without RTX a NACK is answered with the bytes of the first
+%% transmission (protecting the packet again would reuse its SRTP index).
+nack_without_rtx_test() ->
+    Vp8 = hd(webrtc_jsep_caps:default_codecs(video)),
+    {SA0, SB0, _, _} = pair(#{codecs => #{video => [Vp8]}}),
+    {Pkts, SA1} = lists:foldl(
+        fun(I, {Acc, S}) ->
+            {ok, O, S1} = webrtc_media:send(<<"1">>, <<I>>, #{timestamp => I * 3000}, 0, S),
+            {Acc ++ O, S1}
+        end,
+        {[], SA0},
+        lists:seq(1, 5)
+    ),
+    [P1, P2, Lost, P4, P5] = Pkts,
+    {SB1, A1} = deliver([P1, P2, P4, P5], SB0, 0),
+    {SB2, A2} = webrtc_media:handle_timeout(50, SB1),
+    Nacks = sends(A1) ++ sends(A2),
+    ?assert(length(Nacks) >= 1),
+    {SA2, A3} = deliver(Nacks, SA1, 60),
+    ?assertEqual([Lost], sends(A3)),
+    {_SB3, A4} = deliver(sends(A3), SB2, 70),
+    ?assertMatch([{rtp, <<"1">>, #rtp{payload = <<3>>}}], events(A4)),
+    #{counters := C} = webrtc_media:stats(SA2),
+    ?assertEqual(1, maps:get(retransmitted, C)),
+    ?assertEqual(0, maps:get(srtp_failed, C, 0)).

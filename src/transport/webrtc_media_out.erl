@@ -97,6 +97,7 @@ pace(Class, Items, Now, M) ->
     egress(Out, Now, M#media{cc = Cc}).
 
 %% Header, payload and an allowance for extensions and the SRTP tag.
+wire_size({raw, Bin}) -> byte_size(Bin);
 wire_size(#rtp{payload = P, csrcs = Cs}) -> 12 + 4 * length(Cs) + byte_size(P) + 32.
 
 %% Add the transport-wide sequence number, protect and count.
@@ -112,6 +113,12 @@ egress(Items, Now, M0) ->
                 {true, _} ->
                     %% Halted while queued in the pacer (RFC 8083 §4.5).
                     {Acc, count(circuit_breaker_dropped, M1)};
+                false when element(1, Pkt0) =:= raw ->
+                    %% A retransmission without RTX: the exact bytes sent
+                    %% the first time, not protected again.
+                    {raw, Srtp} = Pkt0,
+                    Cc = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
+                    {[{send, Srtp} | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
                 false ->
                     Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
                     case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), M1#media.out) of
@@ -119,7 +126,8 @@ egress(Items, Now, M0) ->
                             %% Circuit breakers work per transceiver: all
                             %% simulcast layers of a mid share the flow.
                             Cc = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
-                            {[{send, Srtp} | Acc], sent_stats(Key, Pkt, Rtx, M1#media{out = Out, cc = Cc})};
+                            M2 = keep_wire(Key, Pkt, Srtp, Rtx, Now, M1#media{out = Out, cc = Cc}),
+                            {[{send, Srtp} | Acc], sent_stats(Key, Pkt, Rtx, M2)};
                         {error, _} ->
                             {Acc, count(srtp_failed, M1)}
                     end
@@ -137,6 +145,22 @@ add_twcc(_Id, undefined, Pkt) ->
 add_twcc(Id, Seq, #rtp{ext = Ext} = Pkt) ->
     Elems = [E || is_list(Ext), {I, _} = E <- Ext, I =/= Id],
     Pkt#rtp{ext = Elems ++ [{Id, webrtc_rtp_ext:twcc_seq(Seq)}]}.
+
+%% Keep the protected bytes of a first transmission with its packet in
+%% the retransmission buffer: without RTX a NACK is answered with them.
+%% Protecting the packet again would reuse its SRTP index, which SRTP
+%% refuses (it would reuse keystream); the same bytes reuse nothing and
+%% the receiver accepts them since it never got that index.
+keep_wire(_Key, _Pkt, _Srtp, true, _Now, M) ->
+    M;
+keep_wire(Key, #rtp{seq = Seq} = Pkt, Srtp, false, Now, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, S} ->
+            Buf = webrtc_nack_buffer:store(Seq, {Pkt, Srtp}, Now, S#snd.buffer),
+            M#media{senders = (M#media.senders)#{Key := S#snd{buffer = Buf}}};
+        error ->
+            M
+    end.
 
 sent_stats(_Mid, _Pkt, true, M) ->
     count(retransmitted, M);
@@ -176,10 +200,21 @@ rtx_ext(#snd{} = S, _Ext) ->
 retransmit(#snd{} = S0, Seqs, Now, M) ->
     Key = skey(S0),
     {Found, Buf} = webrtc_nack_buffer:retransmit(Seqs, Now, S0#snd.buffer),
-    {Wires, S1} = lists:mapfoldl(fun({_Seq, Pkt}, S) -> rtx_packet(Pkt, S) end, S0#snd{buffer = Buf}, Found),
+    {Wires, S1} = lists:mapfoldl(fun({_Seq, Entry}, S) -> resend(Entry, S) end, S0#snd{buffer = Buf}, Found),
     M1 = M#media{senders = (M#media.senders)#{Key := S1}},
-    {Sends, M2} = pace(rtx, [{Key, W, true} || W <- Wires], Now, M1),
+    {Sends, M2} = pace(rtx, [{Key, W, true} || W <- Wires, W =/= skip], Now, M1),
     {M2, Sends}.
+
+%% Over RTX when negotiated (a new packet on the RTX stream), else the
+%% bytes of the first transmission; a packet still in the pacer has not
+%% been sent and is skipped.
+resend(Entry, #snd{rtx = Rtx} = S) ->
+    Pkt = case Entry of {P, _} -> P; P -> P end,
+    case {maps:is_key(Pkt#rtp.pt, Rtx), Entry} of
+        {true, _} -> rtx_packet(Pkt, S);
+        {false, {_, Srtp}} -> {{raw, Srtp}, S};
+        {false, #rtp{}} -> {skip, S}
+    end.
 
 rtx_packet(#rtp{pt = Pt} = Pkt, #snd{rtx = Rtx} = S) ->
     case maps:find(Pt, Rtx) of

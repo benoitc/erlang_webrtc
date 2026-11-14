@@ -119,7 +119,8 @@ groups_test_() ->
 rsa_certificate_test() ->
     C = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
     S = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
-    Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(S)]}),
+    %% DTLS 1.2 suites carry the authentication algorithm.
+    Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(S)], versions => ['dtlsv1.2']}),
     Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(C)]}),
     #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
     ?assertMatch([#{suite := tls_ecdhe_rsa_with_aes_128_gcm_sha256}], connected(CE)),

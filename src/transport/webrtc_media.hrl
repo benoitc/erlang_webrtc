@@ -7,6 +7,11 @@
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
 -define(RTCP_INTERVAL, 1000).
 -define(BUFFER_SIZE, 512).
+%% Receive streams: idle time after which one is forgotten, and the
+%% number kept per transceiver (simulcast layers and RTX) and in total.
+-define(RECV_IDLE, 60000).
+-define(MAX_MID_STREAMS, 16).
+-define(MAX_STREAMS, 256).
 
 -record(snd, {
     mid :: binary(),
@@ -46,8 +51,13 @@
     senders = #{} :: #{sender_key() => #snd{}},
     %% Incoming streams by SSRC.
     receivers = #{} :: #{non_neg_integer() => #rcv{}},
-    %% Demultiplexing tables, rebuilt on every negotiation.
+    %% Demultiplexing tables, rebuilt on every negotiation. ssrc_mid also
+    %% holds the SSRCs learned from accepted packets; signaled are the
+    %% ones of the remote description.
     ssrc_mid = #{} :: #{non_neg_integer() => binary()},
+    signaled = #{} :: #{non_neg_integer() => binary()},
+    %% Time of the last accepted packet of every learned SSRC.
+    last_seen = #{} :: #{non_neg_integer() => integer()},
     rtx_ssrc = #{} :: #{non_neg_integer() => non_neg_integer()},
     pt_mid = #{} :: #{0..127 => binary()},
     mid_ext = #{} :: #{binary() => pos_integer()},

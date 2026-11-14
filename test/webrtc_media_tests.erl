@@ -187,3 +187,81 @@ nack_without_rtx_test() ->
     #{counters := C} = webrtc_media:stats(SA2),
     ?assertEqual(1, maps:get(retransmitted, C)),
     ?assertEqual(0, maps:get(srtp_failed, C, 0)).
+
+%%--------------------------------------------------------------------
+%% Receive streams stay bounded when the peer keeps changing SSRC
+%%--------------------------------------------------------------------
+
+-define(URI_MID, <<"urn:ietf:params:rtp-hdrext:sdes:mid">>).
+
+%% B without signaled SSRCs, and A's sending key, so the test can send
+%% packets with any SSRC.
+keyed() ->
+    {_, _, _, MB} = pair(),
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    MB1 = [M#{remote_ssrcs => []} || M <- MB],
+    SB = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{}))),
+    {Tx, _} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    [#{mid := <<"0">>, recv_extensions := #{?URI_MID := MidId}, recv_codecs := [#{pt := Pt} | _]} | _] = MB1,
+    {SB, {Tx, MidId, Pt}}.
+
+from(Ssrc, Seq, {Tx, MidId, Pt}) ->
+    Pkt = #rtp{pt = Pt, seq = Seq, ts = Seq * 960, ssrc = Ssrc, ext = [{MidId, <<"0">>}], payload = <<"x">>},
+    {ok, Bin, Tx1} = webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), Tx),
+    {Bin, setelement(1, {Tx, MidId, Pt}, Tx1)}.
+
+receivers(S) -> maps:size(maps:get(receivers, webrtc_media:stats(S))).
+
+counter(K, S) -> maps:get(K, maps:get(counters, webrtc_media:stats(S)), 0).
+
+rotate(S0, Ssrcs, Now, K0) ->
+    lists:foldl(
+        fun(Ssrc, {S, K, N}) ->
+            {Bin, K1} = from(Ssrc, 1, K),
+            {S1, A} = webrtc_media:handle_packet(Bin, Now, S),
+            {S1, K1, N + length([x || {rtp, _, _} <- events(A)])}
+        end,
+        {S0, K0, 0},
+        Ssrcs
+    ).
+
+ssrc_churn_bounded_test() ->
+    {SB0, K0} = keyed(),
+    {SB1, K1, Got} = rotate(SB0, lists:seq(1, 1000), 10, K0),
+    %% One transceiver keeps at most 16 receive streams.
+    ?assertEqual(16, Got),
+    ?assertEqual(16, receivers(SB1)),
+    ?assertEqual(1000 - 16, counter(too_many_streams, SB1)),
+    %% Once the memory of forgotten SSRCs is full (1024), the state no
+    %% longer grows.
+    {SB1b, K1b, 0} = rotate(SB1, lists:seq(2000, 3000), 20, K1),
+    Size = erts_debug:flat_size(SB1b),
+    {SB2, K2, 0} = rotate(SB1b, lists:seq(4000, 6000), 30, K1b),
+    ?assert(erts_debug:flat_size(SB2) =< Size + 256),
+    %% Streams silent for 60 s are forgotten, making room again.
+    {SB3, _} = webrtc_media:handle_timeout(60010, SB2),
+    ?assertEqual(0, receivers(SB3)),
+    {SB4, _, 1} = rotate(SB3, [9999], 60020, K2),
+    ?assertEqual(1, receivers(SB4)).
+
+%% RFC 3550 §6.6: a BYE removes the stream; the SSRC is accepted again
+%% only with later packets.
+bye_removes_stream_test() ->
+    {SB0, K0} = keyed(),
+    {Bin, {Tx1, _, _} = K1} = from(77, 1, K0),
+    {SB1, _} = webrtc_media:handle_packet(Bin, 0, SB0),
+    ?assertEqual(1, receivers(SB1)),
+    Bye = webrtc_rtcp:encode([#rtcp_rr{ssrc = 77}, #rtcp_bye{ssrcs = [77]}]),
+    {ok, SBye, _} = webrtc_srtp:protect_rtcp(Bye, Tx1),
+    {SB2, A} = webrtc_media:handle_packet(SBye, 0, SB1),
+    ?assertEqual([{bye, <<"0">>, 77}], [E || {bye, _, _} = E <- events(A)]),
+    ?assertEqual(0, receivers(SB2)),
+    %% A replay of the packet sent before the BYE is refused.
+    {SB3, A3} = webrtc_media:handle_packet(Bin, 0, SB2),
+    ?assertEqual([], events(A3)),
+    ?assertEqual(1, counter(srtp_rejected, SB3)),
+    {Bin2, _} = from(77, 2, K1),
+    {SB4, A4} = webrtc_media:handle_packet(Bin2, 0, SB3),
+    ?assertMatch([{rtp, <<"0">>, #rtp{ssrc = 77, seq = 2}}], events(A4)),
+    ?assertEqual(1, receivers(SB4)).

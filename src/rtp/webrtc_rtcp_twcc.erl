@@ -57,28 +57,28 @@ decode(Sender, Media, <<Base:16, Count:16, Ref:24/signed, FbCount:8, Rest/binary
 decode(_, _, _) ->
     {error, truncated}.
 
-%% Read chunks until Count symbols are known. Symbols are returned in
-%% order and the list is cut to Count.
-chunks(Count, Rest, Acc) when Count =< 0 ->
-    {ok, lists:sublist(lists:append(lists:reverse(Acc)), length_acc(Acc) + Count), Rest};
-chunks(Count, <<0:1, S:2, Run:13, Rest/binary>>, Acc) ->
-    case S of
-        3 -> {error, reserved_symbol};
-        _ -> chunks(Count - Run, Rest, [lists:duplicate(Run, S) | Acc])
-    end;
-chunks(Count, <<1:1, 0:1, Bits:14/bitstring, Rest/binary>>, Acc) ->
-    chunks(Count - 14, Rest, [[B || <<B:1>> <= Bits] | Acc]);
-chunks(Count, <<1:1, 1:1, Syms:14/bitstring, Rest/binary>>, Acc) ->
-    L = [S || <<S:2>> <= Syms],
-    case lists:member(3, L) of
+%% Read chunks until Count symbols are known. A chunk describing more
+%% symbols than remain is cut; the reserved symbol 3 is only an error
+%% when it describes a packet within the status count.
+chunks(0, Rest, Acc) ->
+    Symbols = lists:append(lists:reverse(Acc)),
+    case lists:member(3, Symbols) of
         true -> {error, reserved_symbol};
-        false -> chunks(Count - 7, Rest, [L | Acc])
+        false -> {ok, Symbols, Rest}
     end;
+chunks(Count, <<0:1, S:2, Run:13, Rest/binary>>, Acc) ->
+    N = min(Run, Count),
+    chunks(Count - N, Rest, [lists:duplicate(N, S) | Acc]);
+chunks(Count, <<1:1, 0:1, Bits:14/bitstring, Rest/binary>>, Acc) ->
+    take_symbols(Count, [B || <<B:1>> <= Bits], Rest, Acc);
+chunks(Count, <<1:1, 1:1, Syms:14/bitstring, Rest/binary>>, Acc) ->
+    take_symbols(Count, [S || <<S:2>> <= Syms], Rest, Acc);
 chunks(_, _, _) ->
     {error, truncated}.
 
-length_acc(Acc) ->
-    lists:sum([length(L) || L <- Acc]).
+take_symbols(Count, Symbols, Rest, Acc) ->
+    L = lists:sublist(Symbols, Count),
+    chunks(Count - length(L), Rest, [L | Acc]).
 
 deltas([], _Seq, Rest, Acc) ->
     {ok, lists:reverse(Acc), Rest};

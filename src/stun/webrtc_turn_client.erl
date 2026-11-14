@@ -422,9 +422,7 @@ success(allocate, M, Now, C) ->
         _ ->
             fail_allocate({error, malformed_response}, C)
     end;
-success(refresh, M, Now, #turn{state = closing} = C) ->
-    _ = M,
-    _ = Now,
+success(refresh, _M, _Now, #turn{state = closing} = C) ->
     {closed_state(C), [{event, closed}]};
 success(refresh, M, Now, C) ->
     case webrtc_stun:get(lifetime, M) of
@@ -473,7 +471,10 @@ schedule_refresh(Life, Now, C) ->
     C#turn{expires = Now + Ms, refresh_at = Now + Lead}.
 
 closed_state(C) ->
-    C#turn{state = closed, refresh_at = infinity, perms = #{}, chans = #{}, by_num = #{}}.
+    (lost_state(C))#turn{state = closed}.
+
+lost_state(C) ->
+    C#turn{state = failed, refresh_at = infinity, perms = #{}, chans = #{}, by_num = #{}}.
 
 error_response(Kind, Attrs, 401, M, Now, C) when Kind =:= allocate ->
     %% Retry only when the credentials change (RFC 8489 §9.2.5).
@@ -497,7 +498,7 @@ error_response(refresh, _Attrs, 437, _M, _Now, #turn{state = closing} = C) ->
     %% Deleting an allocation that no longer exists succeeded (§8.3).
     {closed_state(C), [{event, closed}]};
 error_response(Kind, _Attrs, 437, _M, _Now, C) when Kind =/= allocate ->
-    {closed_state(C#turn{state = failed}), [{event, {allocation_lost, {error, 437}}}]};
+    {lost_state(C), [{event, {allocation_lost, {error, 437}}}]};
 error_response(Kind, _Attrs, Code, _M, _Now, C) ->
     fail(Kind, {error, Code}, C).
 
@@ -559,7 +560,7 @@ fail(allocate, Reason, C) ->
 fail(refresh, _Reason, #turn{state = closing} = C) ->
     {closed_state(C), [{event, closed}]};
 fail(refresh, Reason, C) ->
-    {closed_state(C#turn{state = failed}), [{event, {allocation_lost, Reason}}]};
+    {lost_state(C), [{event, {allocation_lost, Reason}}]};
 fail({permission, IP}, Reason, #turn{perms = P} = C) ->
     {C#turn{perms = maps:remove(IP, P)}, [{event, {permission, IP, Reason}}]};
 fail({channel, Peer, N}, Reason, #turn{chans = Ch, by_num = B} = C) ->
@@ -591,7 +592,7 @@ handle_timeout(Now, C) ->
     {C2, A1 ++ A2}.
 
 refresh_timers(Now, #turn{state = allocated, expires = Exp} = C) when Now >= Exp ->
-    {closed_state(C#turn{state = failed}), [{event, {allocation_lost, expired}}]};
+    {lost_state(C), [{event, {allocation_lost, expired}}]};
 refresh_timers(Now, #turn{state = allocated} = C) ->
     {C1, A1} =
         case C#turn.refresh_at of

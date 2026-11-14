@@ -533,6 +533,7 @@ ufrag(Sdp) ->
 %% the peer honours the one it was given.
 max_message_size_wired(_Config) ->
     {error, {badarg, max_message_size}} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 0}),
+    {error, {badarg, congestion_control}} = webrtc:new_peer_connection(#{loopback => true, congestion_control => false}),
     {ok, A} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 10000}),
     {ok, B} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 300000}),
     ok = webrtc:create_data_channel(A, <<"m">>, #{}),

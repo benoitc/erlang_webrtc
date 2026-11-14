@@ -135,6 +135,8 @@ new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
     %% RFC 8841 §6 gives 0 the meaning "any size"; we always have a
     %% memory bound, so a positive limit is required.
     {error, {badarg, max_message_size}};
+new_peer_connection(#{congestion_control := C}) when not is_map(C) ->
+    {error, {badarg, congestion_control}};
 new_peer_connection(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 

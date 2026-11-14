@@ -287,20 +287,21 @@ close(Pc) ->
 call(Pc, Msg) ->
     gen_server:call(Pc, Msg, ?TIMEOUT).
 
-%% Media and data go straight to the transport process. Its pid is
-%% looked up once per caller and cached in the caller's dictionary.
+%% Media and data go straight to the transport process, found in the
+%% `webrtc_transports' table that the peer connection keeps up to date.
 transport(Pc, F) ->
-    case get({?MODULE, transport, Pc}) of
-        undefined ->
-            case call(Pc, transport_pid) of
-                {ok, T} ->
-                    put({?MODULE, transport, Pc}, T),
-                    run_transport(Pc, T, F);
-                {error, _} = E ->
-                    E
-            end;
-        T ->
-            run_transport(Pc, T, F)
+    case ets:lookup(webrtc_transports, Pc) of
+        [{_, T}] ->
+            run_transport(Pc, T, F);
+        [] ->
+            %% No transport yet, or the peer connection is gone.
+            try call(Pc, transport_pid) of
+                {ok, T} -> run_transport(Pc, T, F);
+                {error, _} = E -> E
+            catch
+                exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown ->
+                    {error, closed}
+            end
     end.
 
 run_transport(Pc, T, F) ->
@@ -308,7 +309,7 @@ run_transport(Pc, T, F) ->
         F(T)
     catch
         exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown ->
-            erase({?MODULE, transport, Pc}),
+            ets:delete_object(webrtc_transports, {Pc, T}),
             {error, closed}
     end.
 

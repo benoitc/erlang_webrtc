@@ -1,5 +1,8 @@
 %% @private Top-level supervisor. Peer connections are started under
-%% `webrtc_pc_sup' and are independent of each other.
+%% `webrtc_pc_sup' and are independent of each other. The supervisor
+%% owns the `webrtc_transports' table: `{PeerConnection, Transport}'
+%% rows that let the API reach a transport without a call to its peer
+%% connection.
 -module(webrtc_sup).
 -behaviour(supervisor).
 -export([start_link/0, init/1]).
@@ -8,6 +11,7 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
+    webrtc_transports = ets:new(webrtc_transports, [set, public, named_table, {read_concurrency, true}]),
     Children = [
         #{
             id => webrtc_pc_sup,

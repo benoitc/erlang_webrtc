@@ -17,7 +17,8 @@
     owner_exit_closes/1,
     stuck_transport_killed_on_close/1,
     turn_allocation_deleted_on_close/1,
-    nothing_sent_after_peer_close/1
+    nothing_sent_after_peer_close/1,
+    no_state_in_caller/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -33,7 +34,8 @@ all() ->
         owner_exit_closes,
         stuck_transport_killed_on_close,
         turn_allocation_deleted_on_close,
-        nothing_sent_after_peer_close
+        nothing_sent_after_peer_close,
+        no_state_in_caller
     ].
 
 init_per_suite(Config) ->
@@ -282,3 +284,25 @@ nothing_sent_after_peer_close(_Config) ->
     timer:sleep(6000),
     ?assertEqual(After, atomics:get(Count, 1)),
     webrtc:close(B).
+
+%% Using many peer connections from one process leaves nothing in its
+%% dictionary, and closed connections leave no transport rows behind.
+no_state_in_caller(_Config) ->
+    Dict0 = get(),
+    Pcs = [
+        begin
+            {ok, Pc} = webrtc:new_peer_connection(#{loopback => true}),
+            {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+            {ok, Offer} = webrtc:create_offer(Pc, #{}),
+            ok = webrtc:set_local_description(Pc, offer, Offer),
+            [{Pc, _}] = ets:lookup(webrtc_transports, Pc),
+            %% Not connected: the transport answers, nothing is cached.
+            {error, _} = webrtc:send_rtp(Pc, <<"0">>, <<"x">>, #{timestamp => 1}),
+            ok = webrtc:close(Pc),
+            {error, closed} = webrtc:send_rtp(Pc, <<"0">>, <<"x">>, #{timestamp => 1}),
+            Pc
+        end
+     || _ <- lists:seq(1, 100)
+    ],
+    ?assertEqual(Dict0, get()),
+    ?assertEqual([], [P || P <- Pcs, ets:lookup(webrtc_transports, P) =/= []]).

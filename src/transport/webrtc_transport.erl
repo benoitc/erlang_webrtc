@@ -305,6 +305,7 @@ eoc(true, Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I);
 eoc(false, _Now, I) -> {I, []}.
 
 terminate(_Reason, St0) ->
+    ets:delete_object(webrtc_transports, {St0#st.pc, self()}),
     ok = webrtc_mdns_client:stop(St0#st.mdns),
     %% close_notify first (it needs the selected pair), then the ICE
     %% agent: it deletes TURN allocations with a zero lifetime Refresh

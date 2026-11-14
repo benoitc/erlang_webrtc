@@ -188,6 +188,7 @@ handle_info({webrtc_transport, T, Event}, #st{transport = T} = St) ->
 handle_info({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
     {stop, normal, close_now(St)};
 handle_info({'EXIT', T, Reason}, #st{transport = T} = St) ->
+    ets:delete(webrtc_transports, self()),
     notify({connection_state, failed}, St),
     {stop, {transport_exit, Reason}, St#st{transport = undefined}};
 handle_info(_Other, St) ->
@@ -280,6 +281,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
         }
     ),
     {ok, T} = webrtc_transport:start_link(TOpts),
+    true = ets:insert(webrtc_transports, {self(), T}),
     ok = webrtc_transport:gather(T),
     flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role}));
 ensure_transport(_Type, St) ->
@@ -501,6 +503,7 @@ bundle_tag(St) ->
 close_now(#st{transport = undefined} = St) ->
     St;
 close_now(#st{transport = T} = St) ->
+    ets:delete(webrtc_transports, self()),
     ok = stop_transport(T),
     notify({connection_state, closed}, St),
     St#st{transport = undefined, jsep = webrtc_jsep:close(St#st.jsep), connection = closed}.

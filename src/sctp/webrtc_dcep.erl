@@ -176,8 +176,11 @@ decode(<<?MSG_OPEN, Type, Prio:16, Param:32, LL:16, PL:16, Rest/binary>>) when
     end;
 decode(<<?MSG_OPEN, _/binary>>) ->
     {error, bad_length};
-decode(<<?MSG_ACK, _/binary>>) ->
-    {error, bad_length};
+decode(<<?MSG_ACK, _Padding/binary>>) ->
+    %% RFC 8832 §5.2 defines ACK as the type byte alone. Pion pads it to
+    %% four bytes and libwebrtc only looks at the first byte, so trailing
+    %% bytes are ignored.
+    {ok, ack};
 decode(<<T, _/binary>>) ->
     {error, {unknown_message_type, T}};
 decode(<<>>) ->

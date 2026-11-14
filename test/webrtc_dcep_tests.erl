@@ -30,7 +30,9 @@ open_vector_test() ->
 ack_test() ->
     ?assertEqual(<<2>>, ?D:encode(ack)),
     ?assertEqual({ok, ack}, ?D:decode(<<2>>)),
-    ?assertEqual({error, bad_length}, ?D:decode(<<2, 0>>)).
+    %% Interop: Pion sends the ACK padded to four bytes.
+    ?assertEqual({ok, ack}, ?D:decode(<<2, 0>>)),
+    ?assertEqual({ok, ack}, ?D:decode(<<2, 0, 0, 0>>)).
 
 all_channel_types_test() ->
     Rels = [reliable, {max_retransmits, 0}, {max_packet_life_time, 150}],

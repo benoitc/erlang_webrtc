@@ -153,6 +153,13 @@ handle_call(get_stats, _From, St) ->
             T -> webrtc_transport:stats(T)
         end,
     {reply, #{connection_state => St#st.connection, ice_state => St#st.ice_state, transport => Transport}, St};
+handle_call({controlling_process, Pid}, _From, St) ->
+    demonitor(St#st.app_mon, [flush]),
+    case St#st.transport of
+        undefined -> ok;
+        T -> ok = webrtc_transport:set_app(T, Pid)
+    end,
+    {reply, ok, St#st{app = Pid, app_mon = monitor(process, Pid)}};
 handle_call(close, _From, St) ->
     {stop, normal, ok, close_now(St)}.
 

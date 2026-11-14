@@ -2,7 +2,7 @@
 %% Starts an adapter as a port, sends commands, waits for events.
 -module(webrtc_interop_peer).
 
--export([start/2, cmd/2, wait/3, wait_event/3, events/1, stop/1, find/1, pump/4, probe/2]).
+-export([start/2, cmd/2, wait/3, wait_event/3, events/1, stop/1, find/1, pump/4, probe/2, forget/2]).
 
 -record(peer, {port, name, buf = <<>>, events = [], log, forwarded = 0}).
 
@@ -159,3 +159,8 @@ probe(Name, LogDir) ->
 
 short(B) when is_binary(B) -> string:slice(B, 0, 200);
 short(T) -> io_lib:format("~p", [T]).
+
+%% @doc Remove one event from the recorded history so later waits do not
+%% match it again.
+forget(#peer{events = Es} = P, Ev) ->
+    P#peer{events = lists:delete(Ev, Es)}.

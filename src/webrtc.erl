@@ -53,7 +53,8 @@
     signaling_state/1,
     connection_state/1,
     get_stats/1,
-    close/1
+    close/1,
+    controlling_process/2
 ]).
 
 -export_type([pc/0, sdp_type/0]).
@@ -216,3 +217,9 @@ run_transport(Pc, T, F) ->
             erase({?MODULE, transport, Pc}),
             {error, closed}
     end.
+
+%% @doc Make `Pid' the owner: it receives every event from now on, and
+%% the peer connection closes when it exits.
+-spec controlling_process(pc(), pid()) -> ok | {error, term()}.
+controlling_process(Pc, Pid) when is_pid(Pid) ->
+    call(Pc, {controlling_process, Pid}).

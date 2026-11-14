@@ -322,8 +322,13 @@ func onTrack(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 			emit(map[string]any{"event": "rtp", "kind": kind, "count": count, "bytes": bytes})
 		}
 		if local != nil {
-			echo := &rtp.Packet{Header: rtp.Header{Marker: pkt.Marker, Timestamp: pkt.Timestamp,
-				SequenceNumber: pkt.SequenceNumber}, Payload: pkt.Payload}
+			// Keep version, marker, timestamp and sequence; the track
+			// rewrites SSRC and payload type. Header extensions are
+			// dropped: their ids belong to the other direction.
+			h := pkt.Header
+			h.Extension = false
+			h.Extensions = nil
+			echo := &rtp.Packet{Header: h, Payload: pkt.Payload}
 			if err := local.WriteRTP(echo); err != nil {
 				fail(err)
 			}

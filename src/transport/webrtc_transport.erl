@@ -35,7 +35,8 @@
     open_channel/3,
     send_data/4,
     close_channel/2,
-    stats/1
+    stats/1,
+    set_app/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -90,6 +91,7 @@ open_channel(T, Label, Opts) -> gen_server:call(T, {open_channel, Label, Opts}).
 send_data(T, Id, Type, Data) -> gen_server:call(T, {send_data, Id, Type, Data}).
 close_channel(T, Id) -> gen_server:call(T, {close_channel, Id}).
 stats(T) -> gen_server:call(T, stats).
+set_app(T, Pid) -> gen_server:call(T, {set_app, Pid}).
 
 %%====================================================================
 %% gen_server
@@ -198,6 +200,8 @@ handle_call({close_channel, Id}, _From, #st{dcep = D} = St) when D =/= undefined
     end;
 handle_call({close_channel, _}, _From, St) ->
     {reply, {error, not_connected}, St};
+handle_call({set_app, Pid}, _From, St) ->
+    {reply, ok, St#st{app = Pid}};
 handle_call(stats, _From, St) ->
     Stats = #{
         ice => webrtc_ice_agent:stats(St#st.ice),

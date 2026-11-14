@@ -1,5 +1,6 @@
 %% PropEr properties for the SCTP codec (webrtc_sctp_chunk,
-%% webrtc_sctp_param, webrtc_sctp_crc32c).
+%% webrtc_sctp_param, webrtc_sctp_crc32c) and the association engine
+%% (webrtc_sctp_assoc over the in-memory network of webrtc_sctp_net).
 %%
 %% Generators are plain functions named gen_* so other properties in this
 %% file can reuse them.
@@ -12,7 +13,9 @@
     prop_chunk_roundtrip/0,
     prop_tlv_roundtrip/0,
     prop_packet_roundtrip/0,
-    prop_decode_never_crashes/0
+    prop_decode_never_crashes/0,
+    prop_reliable_delivery/0,
+    prop_engine_never_crashes/0
 ]).
 
 -export([
@@ -110,6 +113,137 @@ prop_decode_never_crashes() ->
             ?WHENFAIL(io:format("input ~p~n", [Bin]), decode_is_safe(Bin))
         )
     ).
+
+%%====================================================================
+%% Association engine
+%%====================================================================
+
+%% Whatever the loss, duplication and reordering of the link, every
+%% reliable message arrives exactly once: ordered ones in order per
+%% stream, unordered ones as a set.
+prop_reliable_delivery() ->
+    numtests(
+        40,
+        ?FORALL(
+            {Link, IData, Msgs},
+            {gen_link(), boolean(), gen_messages()},
+            ?WHENFAIL(
+                io:format("link ~p idata ~p msgs ~p~n", [Link, IData, [{S, O, byte_size(D)} || {S, O, D} <- Msgs]]),
+                deliver_all(Link, IData, Msgs)
+            )
+        )
+    ).
+
+gen_link() ->
+    ?LET(
+        {Seed, Loss, Dup, Reorder, Jitter},
+        {pos_integer(), choose(0, 35), choose(0, 10), choose(0, 30), choose(0, 30)},
+        #{seed => Seed, loss => Loss / 100, dup => Dup / 100, reorder => Reorder / 100, jitter => Jitter}
+    ).
+
+gen_messages() ->
+    ?LET(
+        L,
+        list({choose(0, 3), boolean(), choose(1, 6000)}),
+        [{Sid, Ordered, msg_bytes(I, Size)} || {I, {Sid, Ordered, Size}} <- lists:enumerate(lists:sublist(L, 30))]
+    ).
+
+msg_bytes(I, Size) ->
+    binary:part(binary:copy(<<I:32>>, Size div 4 + 1), 0, Size).
+
+deliver_all(Link, IData, Msgs) ->
+    Opts = #{
+        heartbeat_interval => infinity,
+        interleaving => IData,
+        max_retransmissions => 1000,
+        max_init_retransmissions => 1000
+    },
+    A = webrtc_sctp_assoc:new(Opts#{random_seed => 1}),
+    B = webrtc_sctp_assoc:new(Opts#{random_seed => 2}),
+    N0 = webrtc_sctp_net:new(webrtc_sctp_assoc, {A, B}, Link#{mtu => 1200}),
+    N1 = webrtc_sctp_net:call(a, fun(E, Now) -> webrtc_sctp_assoc:connect(Now, E) end, N0),
+    N2 = webrtc_sctp_net:call(b, fun(E, Now) -> webrtc_sctp_assoc:connect(Now, E) end, N1),
+    N3 = lists:foldl(
+        fun({Sid, Ordered, D}, Acc) ->
+            webrtc_sctp_net:call(
+                a,
+                fun(E, Now) -> webrtc_sctp_assoc:send(Sid, 53, D, #{ordered => Ordered}, Now, E) end,
+                Acc
+            )
+        end,
+        N2,
+        Msgs
+    ),
+    Count = length(Msgs),
+    {_, N4} = webrtc_sctp_net:run_until(
+        fun(X) -> length(webrtc_sctp_net:messages(b, X)) >= Count end, 3600000, N3
+    ),
+    Got = webrtc_sctp_net:messages(b, N4),
+    lists:all(
+        fun(Sid) ->
+            Ord = [D || {S, true, D} <- Msgs, S =:= Sid],
+            Unord = [D || {S, false, D} <- Msgs, S =:= Sid],
+            GotSid = [D || {S, _, D} <- Got, S =:= Sid],
+            [D || D <- GotSid, lists:member(D, Ord)] =:= Ord andalso
+                lists:sort([D || D <- GotSid, lists:member(D, Unord)]) =:= lists:sort(Unord) andalso
+                length(GotSid) =:= length(Ord) + length(Unord)
+        end,
+        [0, 1, 2, 3]
+    ) andalso webrtc_sctp_net:stat(mtu_violations, N4) =:= 0.
+
+%% Random chunks with a valid verification tag and checksum never crash
+%% an established association.
+prop_engine_never_crashes() ->
+    numtests(
+        300,
+        ?FORALL(
+            Chunks,
+            non_empty(list(gen_chunk())),
+            begin
+                {B, Vtag, Now} = established_engine(),
+                Pkt = webrtc_sctp_chunk:encode(#sctp_packet{vtag = Vtag, chunks = Chunks}),
+                try webrtc_sctp_assoc:handle_packet(Pkt, Now, B) of
+                    {B1, Acts} when is_list(Acts) ->
+                        T = webrtc_sctp_assoc:next_timeout(B1),
+                        {_, _} = webrtc_sctp_assoc:handle_timeout(max_time(T, Now), B1),
+                        true
+                catch
+                    Class:Reason:Stack ->
+                        io:format("~p:~p~n~p~n", [Class, Reason, Stack]),
+                        false
+                end
+            end
+        )
+    ).
+
+max_time(infinity, Now) -> Now + 1000;
+max_time(T, _Now) -> T.
+
+%% One established pair, cached in the process dictionary.
+established_engine() ->
+    case get(prop_established) of
+        undefined ->
+            Opts = #{heartbeat_interval => infinity, interleaving => true},
+            A = webrtc_sctp_assoc:new(Opts#{random_seed => 1}),
+            B = webrtc_sctp_assoc:new(Opts#{random_seed => 2}),
+            Tab = ets:new(cap, [public]),
+            Filter = fun(a, Bin, _) -> ets:insert(Tab, {vtag, Bin}), keep; (_, _, _) -> keep end,
+            N0 = webrtc_sctp_net:new(webrtc_sctp_assoc, {A, B}, #{filter => Filter}),
+            N1 = webrtc_sctp_net:call(a, fun(E, Now) -> webrtc_sctp_assoc:connect(Now, E) end, N0),
+            N2 = webrtc_sctp_net:run(1000, N1),
+            N3 = webrtc_sctp_net:call(
+                a, fun(E, Now) -> webrtc_sctp_assoc:send(1, 53, <<"x">>, #{}, Now, E) end, N2
+            ),
+            N4 = webrtc_sctp_net:run(1000, N3),
+            [{vtag, Bin}] = ets:lookup(Tab, vtag),
+            ets:delete(Tab),
+            {ok, #sctp_packet{vtag = Vtag}} = webrtc_sctp_chunk:decode(Bin),
+            R = {webrtc_sctp_net:engine(b, N4), Vtag, webrtc_sctp_net:now(N4)},
+            put(prop_established, R),
+            R;
+        R ->
+            R
+    end.
 
 decode_is_safe(Bin) ->
     try

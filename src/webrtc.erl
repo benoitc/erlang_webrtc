@@ -16,13 +16,26 @@
 %% <li>`{track, Mid, audio | video}': the remote side sends media on
 %%     this transceiver.</li>
 %% <li>`{rtp, Mid, #rtp{}}': an RTP packet (see `webrtc_rtp.hrl').</li>
+%% <li>`{rtp, Mid, Rid, #rtp{}}': an RTP packet of the simulcast layer
+%%     `Rid' (RFC 8853) of a transceiver that receives several layers.
+%%     Retransmissions arrive already decapsulated on their layer.</li>
 %% <li>`{keyframe_request, Mid}': the remote side asked for a keyframe.</li>
+%% <li>`{keyframe_request, Mid, Rid}': the same, for one simulcast layer
+%%     we send.</li>
 %% <li>`{rtcp, Mid, Packet}': congestion feedback (REMB, TWCC).</li>
 %% <li>`{datachannel_open, Id, Label, Protocol, Opts}'</li>
 %% <li>`{channel_message, Id, text | binary, Data}'</li>
 %% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
 %% <li>`{dtls_error, Reason}'</li>
 %% </ul>
+%%
+%% Simulcast: a transceiver added with `send_encodings' offers one layer
+%% per encoding; send on a layer with the `rid' option of `send_rtp/4'
+%% and `send_rtp_packet/4'. When the remote side offers simulcast, the
+%% answer accepts its layers and each one is delivered with its rid. The
+%% negotiated layers are in `transceivers/1' (`send_encodings') and in
+%% the `{rtp, Mid, Rid, _}' events. A layer that the answer removed is
+%% not sent: `send_rtp' returns `{error, not_sending}' for it.
 %%
 %% Signaling is the application's business: exchange the SDP returned by
 %% `create_offer/2' and `create_answer/2' and the candidates of
@@ -45,7 +58,9 @@
     restart_ice/1,
     send_rtp/4,
     send_rtp_packet/3,
+    send_rtp_packet/4,
     request_keyframe/2,
+    request_keyframe/3,
     send_data/4,
     close_data_channel/2,
     local_description/1,
@@ -88,8 +103,12 @@ new_peer_connection(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 
 %% @doc Add a transceiver. `Opts': `direction' (default `sendrecv'),
-%% `stream_id', `track_id'.
--spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()}.
+%% `stream_id', `track_id' and `send_encodings', the simulcast layers to
+%% send (RFC 8853), most preferred first: a list of `#{rid => Rid,
+%% restrictions => [{Name, Value}]}' where `restrictions' are RFC 8851
+%% §5 restrictions such as `{<<"max-width">>, <<"640">>}'. Returns
+%% `{error, invalid_encodings}' for duplicate or malformed rids.
+-spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).
 
@@ -143,7 +162,8 @@ restart_ice(Pc) ->
     call(Pc, restart_ice).
 
 %% @doc Send an RTP payload on a transceiver. `Opts': `timestamp',
-%% `marker', `codec' (name) or `pt'.
+%% `marker', `codec' (name) or `pt', and `rid' to send on one simulcast
+%% layer of the transceiver.
 -spec send_rtp(pc(), binary(), binary(), map()) -> ok | {error, term()}.
 send_rtp(Pc, Mid, Payload, Opts) ->
     transport(Pc, fun(T) -> webrtc_transport:send_rtp(T, Mid, Payload, Opts) end).
@@ -152,11 +172,30 @@ send_rtp(Pc, Mid, Payload, Opts) ->
 %% sequence number are replaced by the transceiver's.
 -spec send_rtp_packet(pc(), binary(), tuple()) -> ok | {error, term()}.
 send_rtp_packet(Pc, Mid, Pkt) ->
-    transport(Pc, fun(T) -> webrtc_transport:send_rtp_packet(T, Mid, Pkt) end).
+    send_rtp_packet(Pc, Mid, Pkt, #{}).
 
+%% @doc Forward an RTP packet. `Opts': `rid' to send it on one simulcast
+%% layer, with that layer's SSRC and sequence numbers.
+-spec send_rtp_packet(pc(), binary(), tuple(), map()) -> ok | {error, term()}.
+send_rtp_packet(Pc, Mid, Pkt, Opts) ->
+    Key = layer(Mid, Opts),
+    transport(Pc, fun(T) -> webrtc_transport:send_rtp_packet(T, Key, Pkt) end).
+
+%% @doc Ask the remote sender of a transceiver for a keyframe (PLI on
+%% every stream it sends).
 -spec request_keyframe(pc(), binary()) -> ok | {error, term()}.
 request_keyframe(Pc, Mid) ->
-    transport(Pc, fun(T) -> webrtc_transport:request_keyframe(T, Mid) end).
+    request_keyframe(Pc, Mid, #{}).
+
+%% @doc `Opts': `rid' to ask for a keyframe on one simulcast layer only.
+%% Returns `ok' and sends nothing while the SSRC of that layer is unknown.
+-spec request_keyframe(pc(), binary(), map()) -> ok | {error, term()}.
+request_keyframe(Pc, Mid, Opts) ->
+    Key = layer(Mid, Opts),
+    transport(Pc, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
+
+layer(Mid, #{rid := Rid}) when is_binary(Rid) -> {Mid, Rid};
+layer(Mid, _) -> Mid.
 
 -spec send_data(pc(), non_neg_integer(), text | binary, iodata()) -> ok | {error, term()}.
 send_data(Pc, Id, Type, Data) ->

@@ -15,7 +15,51 @@
 
 -export([parse/2, encode/1, name/1]).
 
--export_type([fingerprint/0, setup/0, rtcp/0, sctpmap/0, identity/0]).
+-export_type([attribute/0, fingerprint/0, setup/0, rtcp/0, sctpmap/0, identity/0]).
+
+-type attribute() ::
+    {rtpmap, webrtc_sdp_rtp:rtpmap()}
+    | {fmtp, webrtc_sdp_rtp:fmtp()}
+    | {rtcp_fb, webrtc_sdp_rtp:rtcp_fb()}
+    | {extmap, webrtc_sdp_rtp:extmap()}
+    | {msid, webrtc_sdp_rtp:msid()}
+    | {msid_semantic, webrtc_sdp_rtp:msid_semantic()}
+    | {ssrc, webrtc_sdp_rtp:ssrc()}
+    | {ssrc_group, webrtc_sdp_rtp:ssrc_group()}
+    | {rid, webrtc_sdp_rid:rid()}
+    | {simulcast, webrtc_sdp_rid:simulcast()}
+    | {mid, binary()}
+    | {group, #{semantics := binary(), mids := [binary()]}}
+    | {ice_ufrag, binary()}
+    | {ice_pwd, binary()}
+    | {ice_options, [binary(), ...]}
+    | {candidate, #sdp_candidate{}}
+    | {fingerprint, fingerprint()}
+    | {setup, setup()}
+    | {tls_id, binary()}
+    | {connection, new | existing}
+    | {sctp_port, inet:port_number()}
+    | {max_message_size, non_neg_integer()}
+    | {sctpmap, sctpmap()}
+    | {rtcp, rtcp()}
+    | {ptime | maxptime | framerate, number()}
+    | {identity, identity()}
+    | {label, binary()}
+    | {content, [binary(), ...]}
+    | {direction, webrtc_sdp_rtp:direction()}
+    | {
+        extmap_allow_mixed
+        | bundle_only
+        | ice_lite
+        | ice_mismatch
+        | end_of_candidates
+        | rtcp_mux
+        | rtcp_mux_only
+        | rtcp_rsize,
+        true
+    }
+    %% any other attribute, value `undefined' when there is no colon
+    | {binary(), binary() | undefined}.
 
 -type fingerprint() :: #{hash := hash(), value := binary()}.
 -type hash() :: sha | sha224 | sha256 | sha384 | sha512 | md5 | md2 | binary().
@@ -81,7 +125,7 @@ name(Key) -> binary:replace(atom_to_binary(Key), <<"_">>, <<"-">>, [global]).
 
 %% @doc Parse one attribute. `Value' is the text after the first colon,
 %% or `undefined' when there is no colon.
--spec parse(binary(), binary() | undefined) -> {ok, webrtc_sdp:attribute()} | error.
+-spec parse(binary(), binary() | undefined) -> {ok, attribute()} | error.
 parse(Name, Value) ->
     case {flag(Name), direction(Name), value(Name)} of
         {Key, _, _} when Key =/= undefined ->
@@ -326,7 +370,7 @@ nibble(_) -> error.
 %%====================================================================
 
 %% @doc Encode one attribute as the text after `a='.
--spec encode(webrtc_sdp:attribute()) -> iodata().
+-spec encode(attribute()) -> iodata().
 encode({direction, D}) when D =:= sendrecv; D =:= sendonly; D =:= recvonly; D =:= inactive ->
     atom_to_binary(D);
 encode({Name, undefined}) when is_binary(Name) ->

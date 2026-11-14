@@ -373,31 +373,28 @@ malformed_test_() ->
 
 cand(V) -> <<"a=candidate:", V/binary>>.
 
-%% Every prefix cut at a line boundary or in the middle of a line returns
-%% a result.
+%% Every prefix of every sample, cut at any byte, returns a result. A cut
+%% at a line boundary after the first t= line leaves a complete
+%% description, which must parse.
 truncation_test_() ->
     [
-        {atom_to_list(Name), fun() -> truncations(Bin) end}
+        {atom_to_list(Name), {timeout, 60, fun() -> truncations(Bin) end}}
      || {Name, Bin} <- ?S:all()
     ].
 
 truncations(Bin) ->
-    Ends = [P || {P, _} <- binary:matches(Bin, <<"\n">>)],
-    Starts = [0 | [P + 1 || P <- Ends]],
-    Cuts = lists:usort(
-        Starts ++ [P + 1 || P <- Ends] ++ [P - 1 || P <- Ends] ++
-            [(S + E) div 2 || {S, E} <- lists:zip(lists:droplast(Starts), Ends)] ++
-            [S + 2 || S <- Starts]
-    ),
+    {T, _} = binary:match(Bin, <<"\r\nt=">>),
+    Complete = [P + 1 || {P, _} <- binary:matches(Bin, <<"\n">>), P > T + 2],
     lists:foreach(
-        fun(Cut) when Cut =< byte_size(Bin) ->
+        fun(Cut) ->
             case webrtc_sdp:parse(binary:part(Bin, 0, Cut)) of
-                {ok, #sdp{}} -> ok;
-                {error, {L, _}} when is_integer(L), L >= 1 -> ok
-            end;
-           (_) -> ok
+                {ok, #sdp{}} ->
+                    ok;
+                {error, {L, _}} when is_integer(L), L >= 1 ->
+                    ?assertNot(lists:member(Cut, Complete))
+            end
         end,
-        Cuts
+        lists:seq(0, byte_size(Bin))
     ).
 
 %%--------------------------------------------------------------------

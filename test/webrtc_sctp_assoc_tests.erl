@@ -260,6 +260,34 @@ pr_max_retransmits_test() ->
     ?assertEqual(0, ?A:buffered_amount(1, ?NET:engine(a, N5))),
     ?assertEqual(0, stat(a, outstanding_chunks, N5)).
 
+%% RFC 3758 A5, C3: a lost FORWARD TSN is sent again even when the SACKs
+%% that follow find nothing in flight; otherwise the ordered messages
+%% behind the abandoned one stay in the receive buffer for ever.
+pr_forward_tsn_lost_test() ->
+    put(fwd_dropped, false),
+    Filter = fun
+        (a, Bin, _Now) ->
+            {ok, #sctp_packet{chunks = Cs}} = webrtc_sctp_chunk:decode(Bin),
+            Lost = [x || #sctp_data{data = <<"lost">>} <- Cs],
+            Fwd = [x || C <- Cs, element(1, C) =:= forward_tsn orelse element(1, C) =:= i_forward_tsn],
+            case {Lost, Fwd, get(fwd_dropped)} of
+                {[_ | _], _, _} -> drop;
+                {_, [_ | _], false} -> put(fwd_dropped, true), drop;
+                _ -> keep
+            end;
+        (_, _, _) ->
+            keep
+    end,
+    N0 = established(#{}, #{}, #{filter => Filter}),
+    Msgs = [<<"lost">> | [payload(I, 100) || I <- lists:seq(1, 6)]],
+    N1 = lists:foldl(fun(M, Acc) -> send(a, 1, M, #{max_retransmits => 0}, Acc) end, N0, Msgs),
+    N2 = ?NET:run(?MINUTE, N1),
+    ?assert(get(fwd_dropped)),
+    ?assertEqual(tl(Msgs), [D || {1, _, D} <- received(b, N2)]),
+    ?assert(stat(a, forward_tsn_sent, N2) >= 2),
+    ?assertEqual(0, stat(a, outstanding_chunks, N2)),
+    ?assertEqual(1048576, stat(b, a_rwnd, N2)).
+
 pr_ordered_max_retransmits_test() ->
     N0 = established(#{}, #{}, #{loss => 0.25, seed => 22}),
     Msgs = [payload(I, 3000) || I <- lists:seq(1, 60)],

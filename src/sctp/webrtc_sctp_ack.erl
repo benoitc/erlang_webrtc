@@ -267,10 +267,18 @@ fast_mark(Tsns, #snd{out = Out0} = S0) ->
     lists:foldl(fun(_, Acc) -> bump(fast_retransmits, Acc) end, S4, Tsns).
 
 %% RFC 3758 C3 with the duplicate limiting of the F2 implementation
-%% note: repeat an unchanged FORWARD TSN at most once per RTT.
+%% note: repeat an unchanged FORWARD TSN at most once per RTT. Until the
+%% peer acknowledges it, T3-rtx keeps running even with nothing in
+%% flight (A5): a lost FORWARD TSN that the limit held back is then sent
+%% again on expiry.
 pr_after_sack(_Now, #snd{pr = false} = S) ->
     S;
-pr_after_sack(Now, #snd{adv = Adv, cum = Cum} = S) when Adv > Cum ->
+pr_after_sack(Now, #snd{adv = Adv, cum = Cum} = S0) when Adv > Cum ->
+    S =
+        case S0#snd.t3 of
+            undefined -> S0#snd{t3 = Now + S0#snd.rto};
+            _ -> S0
+        end,
     case S#snd.fwd_last of
         {Adv, At} when Now - At < S#snd.rto -> S;
         _ -> S#snd{fwd_pending = true}

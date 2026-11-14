@@ -19,7 +19,9 @@
     ice_restart/1,
     fingerprint_mismatch_fails/1,
     close_notifies_peer/1,
-    concurrent_peer_connections/1
+    concurrent_peer_connections/1,
+    simulcast_layers/1,
+    simulcast_sfu_forward/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -38,7 +40,9 @@ all() ->
         ice_restart,
         fingerprint_mismatch_fails,
         close_notifies_peer,
-        concurrent_peer_connections
+        concurrent_peer_connections,
+        simulcast_layers,
+        simulcast_sfu_forward
     ].
 
 init_per_suite(Config) ->
@@ -307,4 +311,71 @@ concurrent_peer_connections(_Config) ->
         Pairs
     ),
     [begin webrtc:close(A), webrtc:close(B) end || {A, B} <- Pairs],
+    ok.
+
+%%--------------------------------------------------------------------
+%% Simulcast (RFC 8853) with rid header extensions (RFC 8852)
+%%--------------------------------------------------------------------
+
+-define(RIDS, [<<"q">>, <<"h">>, <<"f">>]).
+
+simulcast_sender(Pc) ->
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{
+        direction => sendonly,
+        send_encodings => [#{rid => R} || R <- ?RIDS]
+    }),
+    ok.
+
+layer_rtp(Pc, Mid, Rid, Payload) ->
+    {ok, {rtp, Mid, Rid, #rtp{} = P}} =
+        ?S:wait(Pc, fun({rtp, M, R, #rtp{payload = Pl}}) -> {M, R, Pl} =:= {Mid, Rid, Payload};
+                       (_) -> false end, 10000),
+    P.
+
+%% A sends three layers, B receives each one with its rid and asks for a
+%% keyframe on one of them.
+simulcast_layers(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = simulcast_sender(A),
+    {Offer, Answer} = ?S:connect(A, B),
+    ?assertNotEqual(nomatch, binary:match(Offer, <<"a=simulcast:send q;h;f">>)),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=simulcast:recv q;h;f">>)),
+    [#{send_encodings := Encs}] = webrtc:transceivers(A),
+    ?assertEqual(?RIDS, [R || #{rid := R} <- Encs]),
+    {ok, _} = ?S:wait(B, fun({track, <<"0">>, video}) -> true; (_) -> false end, 5000),
+    [ok = webrtc:send_rtp(A, <<"0">>, <<R/binary, N>>, #{rid => R, timestamp => N * 3000, marker => true})
+     || N <- lists:seq(1, 20), R <- ?RIDS],
+    Pkts = [layer_rtp(B, <<"0">>, R, <<R/binary, 20>>) || R <- ?RIDS],
+    ?assertEqual(3, length(lists:usort([S || #rtp{ssrc = S} <- Pkts]))),
+    ?assertEqual({error, not_sending}, webrtc:send_rtp(A, <<"0">>, <<"x">>, #{})),
+    ok = webrtc:request_keyframe(B, <<"0">>, #{rid => <<"h">>}),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>, <<"h">>} end, 5000),
+    ok = webrtc:request_keyframe(B, <<"0">>),
+    [{ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>, R} end, 5000) || R <- ?RIDS],
+    #{transport := #{media := #{receivers := Rcv}}} = webrtc:get_stats(B),
+    ?assertEqual(lists:sort(?RIDS), lists:sort([R || #{rid := R} <- maps:values(Rcv)])),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% SFU: the peer connection B of the SFU receives the layers of A, and
+%% the SFU forwards one layer to C through its peer connection D as a
+%% plain stream; a keyframe request of C is relayed to that layer.
+simulcast_sfu_forward(_Config) ->
+    [A, B, C, D] = [pc() || _ <- lists:seq(1, 4)],
+    ok = simulcast_sender(A),
+    ?S:connect(A, B),
+    {ok, _} = webrtc:add_transceiver(D, video, #{direction => sendonly}),
+    ?S:connect(D, C),
+    [ok = webrtc:send_rtp(A, <<"0">>, <<R/binary, N>>, #{rid => R, timestamp => N * 3000})
+     || N <- lists:seq(1, 5), R <- ?RIDS],
+    Pkt = layer_rtp(B, <<"0">>, <<"h">>, <<"h", 5>>),
+    ok = webrtc:send_rtp_packet(D, <<"0">>, Pkt),
+    {ok, {rtp, <<"0">>, #rtp{payload = <<"h", 5>>}}} =
+        ?S:wait(C, fun({rtp, <<"0">>, #rtp{payload = P}}) -> P =:= <<"h", 5>>; (_) -> false end, 10000),
+    ok = webrtc:request_keyframe(C, <<"0">>),
+    {ok, _} = ?S:wait(D, fun(E) -> E =:= {keyframe_request, <<"0">>} end, 5000),
+    ok = webrtc:request_keyframe(B, <<"0">>, #{rid => <<"h">>}),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>, <<"h">>} end, 5000),
+    [webrtc:close(P) || P <- [A, B, C, D]],
     ok.

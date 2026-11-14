@@ -774,3 +774,142 @@ bad_options_test() ->
     ?assertError({badarg, mtu}, ?A:new(#{mtu => 10})),
     ?assertError({badarg, sack_delay}, ?A:new(#{sack_delay => 600})),
     ?assertError({badarg, heartbeat_interval}, ?A:new(#{heartbeat_interval => -1})).
+
+%%====================================================================
+%% SACK timing, invalid streams, chunk type mismatches
+%%====================================================================
+
+%% One DATA packet is acknowledged after SACK.Delay; a second packet
+%% triggers an immediate SACK (RFC 9260 §6.2).
+delayed_sack_test() ->
+    Tab = ets:new(cap, [ordered_set, public]),
+    Filter = fun
+        (b, Bin, Now) ->
+            {ok, #sctp_packet{chunks = Cs}} = webrtc_sctp_chunk:decode(Bin),
+            [ets:insert(Tab, {Now, sack}) || #sctp_sack{} <- Cs],
+            keep;
+        (_, _, _) ->
+            keep
+    end,
+    N0 = ?NET:set(filter, Filter, ?NET:run(1000, established(#{}, #{}, #{delay => 10}))),
+    T0 = ?NET:now(N0),
+    N1 = ?NET:run(1000, send(a, 0, <<"one">>, #{}, N0)),
+    ?assertEqual([{T0 + 10 + 200, sack}], ets:tab2list(Tab)),
+    ets:delete_all_objects(Tab),
+    T2 = ?NET:now(N1),
+    %% Two packets: the second one is acknowledged at once.
+    N2 = send(a, 0, payload(1, 1100), #{}, send(a, 0, payload(2, 1100), #{}, N1)),
+    _ = ?NET:run(1000, N2),
+    ?assertEqual([{T2 + 10, sack}], ets:tab2list(Tab)),
+    ets:delete(Tab).
+
+invalid_stream_test() ->
+    N0 = established(#{}, #{inbound_streams => 10}, #{}),
+    ?assertEqual({error, invalid_stream}, ?A:send(10, 53, <<"x">>, #{}, 0, ?NET:engine(a, N0))),
+    %% next_tsn/2 works on a copy of the network: the message peer_vtag/1
+    %% sends takes that TSN, the injected chunk the one after it.
+    Tsn = next_tsn(a, N0),
+    {V, N} = peer_vtag(N0),
+    {_, Out, _} = inject(V, [#sctp_data{tsn = Tsn, sid = 10, data = <<"bad">>}], N),
+    %% The TSN is acknowledged and the stream reported (§6.5).
+    ?assertMatch([#sctp_sack{cum_tsn = Tsn}, {op_error, [{invalid_stream, 10}]}], Out).
+
+%% Next TSN `Side' would send, learnt by sending one message.
+next_tsn(Side, N) ->
+    Tab = ets:new(cap, [ordered_set, public]),
+    N1 = ?NET:set(filter, capture(Side, Tab), N),
+    Other =
+        case Side of
+            a -> b;
+            b -> a
+        end,
+    Before = length(received(Other, N1)),
+    _ = wait_messages(Other, Before + 1, send(Side, 0, <<"tsn">>, #{}, N1)),
+    [T] = [
+        T
+     || {_, Bin} <- ets:tab2list(Tab),
+        {ok, #sctp_packet{chunks = Cs}} <- [webrtc_sctp_chunk:decode(Bin)],
+        #sctp_data{tsn = T} <- Cs
+    ],
+    ets:delete(Tab),
+    (T + 1) band 16#FFFFFFFF.
+
+idata_without_negotiation_test() ->
+    {V, N} = peer_vtag(established(#{}, #{}, #{})),
+    {B1, Out, _} = inject(V, [#sctp_data{idata = true, tsn = 1, data = <<"x">>}], N),
+    ?assertMatch([{abort, false, [{protocol_violation, _}]}], Out),
+    ?assertEqual(closed, ?A:state(B1)).
+
+forward_tsn_with_idata_test() ->
+    Opts = #{interleaving => true},
+    {V, N} = peer_vtag(established(Opts, Opts, #{})),
+    {B1, Out, _} = inject(V, [{forward_tsn, 1, []}], N),
+    ?assertMatch([{abort, false, [{protocol_violation, _}]}], Out),
+    ?assertEqual(closed, ?A:state(B1)).
+
+stream_reset_interleaving_test() ->
+    Opts = #{interleaving => true},
+    N0 = established(Opts, Opts, #{}),
+    N1 = reset(a, [3], send(a, 3, <<"m0">>, #{ordered => false}, send(a, 3, <<"o0">>, #{}, N0))),
+    N2 = send(a, 3, <<"m1">>, #{ordered => false}, send(a, 3, <<"o1">>, #{}, N1)),
+    {ok, N3} = ?NET:run_until(fun(X) -> length(received(b, X)) =:= 4 end, ?MINUTE, N2),
+    ?assertEqual(
+        [
+            {message, 3, 53, <<"o0">>},
+            {message, 3, 53, <<"m0">>},
+            {stream_reset, [3]},
+            {message, 3, 53, <<"o1">>},
+            {message, 3, 53, <<"m1">>}
+        ],
+        not_connected_events(b, N3)
+    ).
+
+%%====================================================================
+%% Incoming reconfiguration requests (RFC 6525 §5.2)
+%%====================================================================
+
+%% The first request sequence number of a is its initial TSN.
+reconf_pair(OptsB) ->
+    Tab = ets:new(cap, [ordered_set, public]),
+    N0 = established(#{}, OptsB, #{filter => capture(a, Tab)}),
+    [Itsn | _] = [
+        T
+     || {_, Bin} <- ets:tab2list(Tab),
+        {ok, #sctp_packet{chunks = Cs}} <- [webrtc_sctp_chunk:decode(Bin)],
+        #sctp_init{tsn = T} <- Cs
+    ],
+    ets:delete(Tab),
+    {V, N} = peer_vtag(N0),
+    {V, Itsn, N}.
+
+reconf_out(Out) ->
+    [P || {reconfig, Ps} <- Out, P <- Ps].
+
+reconf_requests_test() ->
+    {V, Seq, N} = reconf_pair(#{inbound_streams => 100}),
+    %% SSN/TSN reset is denied, a retransmission gets the same answer.
+    {B1, Out1, _} = inject(V, [{reconfig, [{tsn_reset, Seq}]}], N),
+    ?assertEqual([{reconf_response, Seq, denied, undefined}], reconf_out(Out1)),
+    {B2, Out2, _} = inject(V, [{reconfig, [{tsn_reset, Seq}]}], ?NET:set_engine(b, B1, N)),
+    ?assertEqual([{reconf_response, Seq, denied, undefined}], reconf_out(Out2)),
+    N2 = ?NET:set_engine(b, B2, N),
+    %% Out of sequence.
+    {_, Out3, _} = inject(V, [{reconfig, [{tsn_reset, Seq + 5}]}], N2),
+    ?assertEqual([{reconf_response, Seq + 5, error_bad_sequence_number, undefined}], reconf_out(Out3)),
+    %% Add Outgoing Streams grows b's incoming streams.
+    {B4, Out4, _} = inject(V, [{reconfig, [{add_out_streams, Seq + 1, 10}]}], N2),
+    ?assertEqual([{reconf_response, Seq + 1, success_performed, undefined}], reconf_out(Out4)),
+    ?assertEqual(110, maps:get(inbound_streams, ?A:info(B4))),
+    N4 = ?NET:set_engine(b, B4, N2),
+    {B5, Out5, _} = inject(V, [{reconfig, [{add_in_streams, Seq + 2, 10}]}], N4),
+    ?assertEqual([{reconf_response, Seq + 2, denied, undefined}], reconf_out(Out5)),
+    %% Incoming SSN Reset: b answers with its own outgoing reset.
+    N5 = ?NET:set_engine(b, B5, N4),
+    {_, Out6, _} = inject(V, [{reconfig, [{in_reset, Seq + 3, [7]}]}], N5),
+    Resp = Seq + 3,
+    ?assertMatch([{out_reset, _, Resp, _, [7]}], reconf_out(Out6)).
+
+reconf_out_reset_invalid_stream_test() ->
+    {V, Seq, N} = reconf_pair(#{inbound_streams => 10}),
+    {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, 0, [50]}]}], N),
+    ?assertEqual([{reconf_response, Seq, denied, undefined}], reconf_out(Out)).

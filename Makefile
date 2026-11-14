@@ -23,15 +23,15 @@ test-e2e:
 test-interop:
 	$(REBAR) ct --dir test/interop
 
-## Impairment tests (loss, reordering, duplication, MTU) on the
-## deterministic in-memory network.
+## Seeded impairment (loss, bursts, reordering, duplication, jitter,
+## path MTU, blackhole) between real peer connections.
 test-network:
 	$(REBAR) ct --dir test/e2e --suite webrtc_impairment_SUITE
 
-## Malformed input, replay, spoofing, floods.
+## Spoofing, replay, floods, teardown, and every parser on hostile input.
 test-security:
-	$(REBAR) eunit --module=webrtc_security_tests
-	$(REBAR) proper -n 2000 --module=prop_webrtc_parsers
+	$(REBAR) ct --dir test/e2e --suite webrtc_security_SUITE
+	$(REBAR) proper -n 5000 --module=prop_webrtc_parsers
 
 test-all: test-protocol test-e2e test-interop dialyzer xref
 

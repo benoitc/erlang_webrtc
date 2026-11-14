@@ -1,0 +1,204 @@
+%% Security and robustness of a live peer connection: traffic from
+%% addresses ICE did not validate, replayed datagrams, floods, teardown
+%% during traffic and resource cleanup.
+-module(webrtc_security_SUITE).
+-include_lib("common_test/include/ct.hrl").
+-include_lib("stdlib/include/assert.hrl").
+-include("webrtc_rtp.hrl").
+
+-export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
+-export([
+    spoofed_traffic_dropped/1,
+    unauthenticated_stun_flood/1,
+    garbage_flood/1,
+    replayed_datagrams_dropped/1,
+    teardown_during_traffic/1,
+    resources_released_on_close/1,
+    owner_exit_closes/1
+]).
+
+-define(S, webrtc_test_signal).
+
+all() ->
+    [
+        spoofed_traffic_dropped,
+        unauthenticated_stun_flood,
+        garbage_flood,
+        replayed_datagrams_dropped,
+        teardown_during_traffic,
+        resources_released_on_close,
+        owner_exit_closes
+    ].
+
+init_per_suite(Config) ->
+    {ok, _} = application:ensure_all_started(webrtc),
+    Config.
+
+end_per_suite(_) -> ok.
+
+init_per_testcase(_, Config) -> ?S:flush(), Config.
+end_per_testcase(_, _) -> ?S:flush(), ok.
+
+connected_pair(Opts) ->
+    {ok, A} = webrtc:new_peer_connection(Opts#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ok = webrtc:create_data_channel(A, <<"s">>, #{}),
+    ?S:connect(A, B),
+    {ok, {datachannel_open, Id, _, _, _}} =
+        ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 10000),
+    {ok, _} = ?S:wait(B, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 10000),
+    {A, B, Id}.
+
+address(Pc) ->
+    #{transport := #{addresses := [Addr | _]}} = webrtc:get_stats(Pc),
+    Addr.
+
+rogue() ->
+    {ok, S} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}, {active, false}]),
+    S.
+
+still_works(A, B, Id) ->
+    Msg = crypto:strong_rand_bytes(16),
+    ok = webrtc:send_data(A, Id, binary, Msg),
+    {ok, _} = ?S:wait(B, fun({channel_message, _, binary, D}) -> D =:= Msg; (_) -> false end, 10000),
+    ok = webrtc:send_rtp(A, <<"0">>, Msg, #{timestamp => 1}),
+    {ok, _} = ?S:wait(B, fun({rtp, _, #rtp{payload = P}}) -> P =:= Msg; (_) -> false end, 10000),
+    ok.
+
+no_rtp_events(B) ->
+    receive
+        {webrtc, B, {rtp, _, _} = E} -> ct:fail({unexpected, E});
+        {webrtc, B, {channel_message, _, _, _} = E} -> ct:fail({unexpected, E})
+    after 500 -> ok
+    end.
+
+%% RFC 8445 §12.2, RFC 8826 §4.2: DTLS and SRTP from an address that is
+%% not a validated candidate pair are dropped before any parsing.
+spoofed_traffic_dropped(_Config) ->
+    {A, B, Id} = connected_pair(#{}),
+    {IP, Port} = address(B),
+    R = rogue(),
+    [ok = gen_udp:send(R, IP, Port, <<128, 111, N:16, 0:64, (crypto:strong_rand_bytes(40))/binary>>)
+     || N <- lists:seq(1, 500)],
+    [ok = gen_udp:send(R, IP, Port, <<23, 16#FEFD:16, 0:16, N:48, 40:16, (crypto:strong_rand_bytes(40))/binary>>)
+     || N <- lists:seq(1, 500)],
+    no_rtp_events(B),
+    #{transport := #{media := #{counters := C}}} = webrtc:get_stats(B),
+    ?assertEqual(0, maps:get(srtp_rejected, C, 0)),
+    still_works(A, B, Id),
+    gen_udp:close(R),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% Binding requests with wrong credentials are answered with errors or
+%% dropped; they create no state and do not disturb the session.
+unauthenticated_stun_flood(_Config) ->
+    {A, B, Id} = connected_pair(#{}),
+    {IP, Port} = address(B),
+    R = rogue(),
+    T = webrtc_transport_of(B),
+    Before = proc_memory(T),
+    lists:foreach(
+        fun(_) ->
+            Req = webrtc_stun:request(binding, [{username, <<"nobody:here">>}, {priority, 1}, {ice_controlling, 1}]),
+            Bin = webrtc_stun:encode(Req, #{integrity => {sha1, <<"wrong-password-wrong!!">>}, fingerprint => true}),
+            ok = gen_udp:send(R, IP, Port, Bin)
+        end,
+        lists:seq(1, 5000)
+    ),
+    timer:sleep(500),
+    After = proc_memory(T),
+    ct:log("transport memory before ~p after ~p", [Before, After]),
+    ?assert(After < Before + 2000000),
+    still_works(A, B, Id),
+    gen_udp:close(R),
+    webrtc:close(A),
+    webrtc:close(B).
+
+garbage_flood(_Config) ->
+    {A, B, Id} = connected_pair(#{}),
+    {IP, Port} = address(B),
+    R = rogue(),
+    rand:seed(exsss, {11, 12, 13}),
+    [ok = gen_udp:send(R, IP, Port, rand:bytes(rand:uniform(1400))) || _ <- lists:seq(1, 10000)],
+    timer:sleep(500),
+    ?assert(is_process_alive(B)),
+    still_works(A, B, Id),
+    gen_udp:close(R),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% Every datagram A sends is replayed 300 ms later. DTLS (RFC 6347
+%% §4.1.2.6), SRTP (RFC 3711 §3.3.2) and SCTP TSN tracking must make
+%% each message and packet arrive exactly once.
+replayed_datagrams_dropped(_Config) ->
+    Replay = {fun(Bin, S) -> {[{0, Bin}, {300, Bin}], S} end, undefined},
+    {A, B, Id} = connected_pair(#{outbound_filter => Replay}),
+    [ok = webrtc:send_data(A, Id, binary, <<I:32>>) || I <- lists:seq(1, 50)],
+    [ok = webrtc:send_rtp(A, <<"0">>, <<I:32>>, #{timestamp => I}) || I <- lists:seq(1, 50)],
+    timer:sleep(1500),
+    {Msgs, Rtp} = drain(B, [], []),
+    ?assertEqual([<<I:32>> || I <- lists:seq(1, 50)], lists:reverse(Msgs)),
+    ?assertEqual(50, length(Rtp)),
+    ?assertEqual(50, length(lists:usort(Rtp))),
+    #{transport := #{media := #{counters := C}}} = webrtc:get_stats(B),
+    ct:log("receiver counters: ~p", [C]),
+    ?assert(maps:get(srtp_rejected, C, 0) >= 50),
+    webrtc:close(A),
+    webrtc:close(B).
+
+drain(B, Msgs, Rtp) ->
+    receive
+        {webrtc, B, {channel_message, _, binary, D}} -> drain(B, [D | Msgs], Rtp);
+        {webrtc, B, {rtp, _, #rtp{payload = P}}} -> drain(B, Msgs, [P | Rtp])
+    after 0 ->
+        {Msgs, Rtp}
+    end.
+
+teardown_during_traffic(_Config) ->
+    {A, B, Id} = connected_pair(#{}),
+    Sender = spawn(fun() -> flood(A, Id, 0) end),
+    timer:sleep(300),
+    ok = webrtc:close(B),
+    timer:sleep(300),
+    ok = webrtc:close(A),
+    exit(Sender, kill),
+    ?assertNot(is_process_alive(A)),
+    ?assertNot(is_process_alive(B)).
+
+flood(A, Id, N) ->
+    _ = webrtc:send_data(A, Id, binary, <<N:32, 0:8000>>),
+    _ = webrtc:send_rtp(A, <<"0">>, <<N:32>>, #{timestamp => N}),
+    flood(A, Id, N + 1).
+
+resources_released_on_close(_Config) ->
+    Ports0 = length(erlang:ports()),
+    Procs0 = length(processes()),
+    Pairs = [connected_pair(#{}) || _ <- lists:seq(1, 5)],
+    [begin webrtc:close(A), webrtc:close(B) end || {A, B, _} <- Pairs],
+    timer:sleep(500),
+    ?assertEqual(Ports0, length(erlang:ports())),
+    ?assert(length(processes()) =< Procs0 + 2),
+    ?assertEqual([], supervisor:which_children(webrtc_pc_sup)).
+
+owner_exit_closes(_Config) ->
+    Self = self(),
+    Owner = spawn(fun() ->
+        {ok, Pc} = webrtc:new_peer_connection(#{loopback => true}),
+        Self ! {pc, Pc},
+        receive stop -> ok end
+    end),
+    Pc = receive {pc, P} -> P end,
+    Ref = monitor(process, Pc),
+    Owner ! stop,
+    receive {'DOWN', Ref, process, Pc, _} -> ok after 5000 -> ct:fail(pc_not_closed) end.
+
+webrtc_transport_of(Pc) ->
+    {ok, T} = gen_server:call(Pc, transport_pid),
+    T.
+
+proc_memory(P) ->
+    {memory, M} = process_info(P, memory),
+    M.

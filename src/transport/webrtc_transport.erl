@@ -62,6 +62,9 @@
     early_dtls = [] :: [binary()],
     %% ICE has a valid pair with consent (connected or completed).
     ice_usable = false :: boolean(),
+    %% DTLS datagrams produced before ICE could send them (the peer's
+    %% check reached us before ours succeeded); sent once it can.
+    dtls_out = [] :: [binary()],
     media :: term(),
     data :: undefined | map(),
     dcep :: undefined | term(),
@@ -405,6 +408,7 @@ end_association(Reason, #st{dtls = D} = St0) ->
         dcep = undefined,
         connected = false,
         early_dtls = [],
+        dtls_out = [],
         media = webrtc_media:clear_srtp(St2#st.media)
     }.
 
@@ -515,13 +519,13 @@ ice_action({event, {data, Via, Peer, Bin}}, St) ->
     end;
 ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
     to_pc(E, St),
-    start_dtls_if_ready(St#st{ice_usable = true});
+    start_dtls_if_ready(flush_dtls(St#st{ice_usable = true}));
 ice_action({event, {connection_state, _} = E}, St) ->
     to_pc(E, St),
     St#st{ice_usable = false};
 ice_action({event, {selected_pair, L, R}}, St) ->
     to_pc({selected_pair, L, R}, St),
-    start_dtls_if_ready(St);
+    start_dtls_if_ready(flush_dtls(St));
 ice_action({event, {local_candidate, C}}, St) ->
     local_candidate(C, St);
 ice_action({event, {consent_lost, _, _} = E}, St) ->
@@ -562,13 +566,31 @@ transmit(Acts, St) ->
     lists:foldl(fun({send, B}, S) -> send_out(B, S) end, St, [A || {send, _} = A <- Acts]).
 
 transmit_dtls(Acts, St) ->
-    transmit(Acts, St).
+    lists:foldl(fun({send, B}, S) -> dtls_send(B, S) end, St, [A || {send, _} = A <- Acts]).
+
+%% A DTLS server never retransmits on its own: a reply ICE cannot send
+%% yet is kept (bounded) instead of waiting for the client's next
+%% retransmission.
+dtls_send(Bin, St) ->
+    case webrtc_ice_agent:send(Bin, now_ms(), St#st.ice) of
+        {ok, I1, Acts} ->
+            ice_actions(Acts, St#st{ice = I1});
+        {error, no_valid_pair} when length(St#st.dtls_out) < ?MAX_EARLY_DTLS ->
+            St#st{dtls_out = St#st.dtls_out ++ [Bin]};
+        {error, _} ->
+            St
+    end.
+
+flush_dtls(#st{dtls_out = []} = St) ->
+    St;
+flush_dtls(#st{dtls_out = Out} = St) ->
+    lists:foldl(fun dtls_send/2, St#st{dtls_out = []}, Out).
 
 dtls_actions(Acts, St) ->
     lists:foldl(fun dtls_action/2, St, Acts).
 
 dtls_action({send, Bin}, St) ->
-    send_out(Bin, St);
+    dtls_send(Bin, St);
 dtls_action({event, {connected, Info}}, St) ->
     St1 = setup_srtp(Info, St#st{connected = true}),
     to_pc({dtls_connected, Info}, St1),

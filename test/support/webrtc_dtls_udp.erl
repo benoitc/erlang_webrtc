@@ -10,7 +10,9 @@ open() ->
 
 %% Drive the engine until Stop(Events) is true or Timeout ms pass.
 %% Peer is {IP, Port} or undefined (learned from the first datagram).
+%% Option `out' rewrites each outgoing datagram (an attacker on path).
 run(Sock, Peer, St0, Opts) ->
+    put(webrtc_dtls_udp_out, maps:get(out, Opts, fun(D) -> D end)),
     Stop = maps:get(stop, Opts),
     Deadline = now_ms() + maps:get(timeout, Opts, 10000),
     {St1, A} =
@@ -52,7 +54,12 @@ send(Sock, Peer, Actions) ->
 exec([], _Sock, Peer, Ev) ->
     {Peer, Ev};
 exec([{send, D} | Rest], Sock, {IP, Port} = Peer, Ev) ->
-    ok = gen_udp:send(Sock, IP, Port, D),
+    Out =
+        case get(webrtc_dtls_udp_out) of
+            undefined -> D;
+            F -> F(D)
+        end,
+    ok = gen_udp:send(Sock, IP, Port, Out),
     exec(Rest, Sock, Peer, Ev);
 exec([{event, E} | Rest], Sock, Peer, Ev) ->
     exec(Rest, Sock, Peer, Ev ++ [E]).

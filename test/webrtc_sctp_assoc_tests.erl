@@ -936,3 +936,18 @@ reconf_out_reset_invalid_stream_test() ->
     {V, Seq, N} = reconf_pair(#{inbound_streams => 10}),
     {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, 0, [50]}]}], N),
     ?assertEqual([{reconf_response, Seq, denied, undefined}], reconf_out(Out)).
+
+%% A request deferred on a TSN not received yet is answered "In
+%% progress"; a second request meanwhile is refused (RFC 6525 §5.1.1).
+reconf_deferred_requests_test() ->
+    {V, Seq, N} = reconf_pair(#{}),
+    Ahead = (next_tsn(a, N) + 100) band 16#FFFFFFFF,
+    {B1, Out1, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Ahead, [1]}]}], N),
+    ?assertEqual([{reconf_response, Seq, in_progress, undefined}], reconf_out(Out1)),
+    N1 = ?NET:set_engine(b, B1, N),
+    {_, Out2, _} = inject(V, [{reconfig, [{out_reset, Seq + 1, 0, Ahead, [2]}]}], N1),
+    ?assertEqual(
+        [{reconf_response, Seq + 1, error_request_in_progress, undefined}], reconf_out(Out2)
+    ),
+    {_, Out3, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Ahead, [1]}]}], N1),
+    ?assertEqual([{reconf_response, Seq, in_progress, undefined}], reconf_out(Out3)).

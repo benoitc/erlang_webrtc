@@ -108,6 +108,12 @@ is_request({reconf_response, _, _, _}) -> false;
 is_request({unknown_param, _, _}) -> false;
 is_request(_) -> true.
 
+param({out_reset, Seq, _, _, _}, _Now, #assoc{rcf = Rcf, rcv = #rcv{deferred = [_ | _]}} = A) when
+    Seq =:= Rcf#rcf.peer_seq band ?U32
+->
+    %% A new request while an earlier one is still deferred: the peer
+    %% has more than one request in flight (§5.1.1). Do not queue it.
+    {A, resp(Seq, error_request_in_progress)};
 param({out_reset, Seq, _RespSeq, LastTsn, Sids}, _Now, A) ->
     request_seq(Seq, A, fun(Acc) ->
         Rcv = Acc#assoc.rcv,

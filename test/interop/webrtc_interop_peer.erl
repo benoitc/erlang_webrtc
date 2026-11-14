@@ -8,7 +8,7 @@
 
 %% @doc Locate an adapter executable. Returns `{ok, Cmd}' or
 %% `{skip, Reason}' so suites report missing peers as skipped.
--spec find(pion | aiortc | chromium | firefox | webkit) -> {ok, string()} | {skip, string()}.
+-spec find(pion | aiortc | chromium | chromium_mdns | firefox | webkit) -> {ok, string()} | {skip, string()}.
 find(pion) ->
     Bin = filename:join([root(), "interop", "pion", "bin", "pion-peer"]),
     case filelib:is_regular(Bin) of
@@ -21,6 +21,12 @@ find(aiortc) ->
     case filelib:is_regular(Py) of
         true -> {ok, Py ++ " -I " ++ Script};
         false -> {skip, "aiortc venv missing: run make -C interop aiortc"}
+    end;
+%% Chromium hiding its host addresses behind mDNS names (its default).
+find(chromium_mdns) ->
+    case find(chromium) of
+        {ok, Cmd} -> {ok, Cmd ++ " --mdns"};
+        Skip -> Skip
     end;
 find(Browser) when Browser =:= chromium; Browser =:= firefox; Browser =:= webkit ->
     Dir = filename:join([root(), "interop", "browser"]),

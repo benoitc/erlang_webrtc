@@ -6,6 +6,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 -include("webrtc_rtp.hrl").
+-include("webrtc_ice.hrl").
 
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1, init_per_group/2, end_per_group/2,
          init_per_testcase/2, end_per_testcase/2]).
@@ -20,7 +21,9 @@
     erlang_renegotiates_adds_audio/1,
     erlang_ice_restart/1,
     peer_ice_restart/1,
-    erlang_ice_lite/1
+    erlang_ice_lite/1,
+    peer_offers_mdns_candidates/1,
+    erlang_offers_mdns_candidates/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -40,9 +43,11 @@ cases() ->
         erlang_ice_lite
     ].
 
-all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}].
+all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns}].
 
-groups() -> [{G, [], cases()} || G <- [pion, aiortc, chromium, firefox]].
+groups() ->
+    [{G, [], cases()} || G <- [pion, aiortc, chromium, firefox]] ++
+        [{chromium_mdns, [], [peer_offers_mdns_candidates, erlang_offers_mdns_candidates]}].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -52,6 +57,18 @@ init_per_suite(Config) ->
 
 end_per_suite(_) -> ok.
 
+%% Chromium with its default mDNS host candidates: resolving them needs
+%% IPv4 multicast on the test host.
+init_per_group(chromium_mdns, Config) ->
+    case webrtc_test_mdns:multicast_works() of
+        ok ->
+            case ?P:probe(chromium_mdns, ?config(priv_dir, Config)) of
+                ok -> [{peer, chromium_mdns} | Config];
+                {skip, R} -> {skip, R}
+            end;
+        {skip, R} ->
+            {skip, R}
+    end;
 init_per_group(Peer, Config) ->
     case ?P:probe(Peer, ?config(priv_dir, Config)) of
         ok -> [{peer, Peer} | Config];
@@ -62,6 +79,7 @@ end_per_group(_, _) -> ok.
 
 init_per_testcase(_, Config) ->
     flush(),
+    erase(peer_candidates),
     Config.
 
 end_per_testcase(_, Config) ->
@@ -142,6 +160,7 @@ forward_peer(Pc, P0, Theirs) ->
                         (_) -> false
                      end, 50) of
         {ok, P1, #{<<"event">> := <<"local_candidate">>, <<"candidate">> := C} = Ev} ->
+            put(peer_candidates, [C || C =/= <<>>] ++ peer_candidates()),
             ok = case C of
                      <<>> -> webrtc:add_ice_candidate(Pc, end_of_candidates);
                      _ -> webrtc:add_ice_candidate(Pc, C)
@@ -153,6 +172,12 @@ forward_peer(Pc, P0, Theirs) ->
             ct:fail({peer_error, M});
         {error, P1, timeout} ->
             {P1, Theirs}
+    end.
+
+peer_candidates() ->
+    case get(peer_candidates) of
+        undefined -> [];
+        L -> L
     end.
 
 %% wait/3 searches the history; drop handled events from it.
@@ -408,3 +433,63 @@ erlang_ice_lite(Config) ->
     {Id, _} = channel_open(Pc, <<"lite">>),
     {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"lite">>}),
     put(peer, echo_check(Pc, P2, Id, <<"lite">>)).
+
+%% Chromium hides its host addresses behind <uuid>.local names
+%% (draft-ietf-mmusic-mdns-ice-candidates); Erlang resolves them with
+%% multicast DNS and connects.
+peer_offers_mdns_candidates(Config) ->
+    {Pc, P0} = start(Config),
+    P1 = peer_offer(Pc, P0, #{channels => [#{label => <<"mdns">>}]}),
+    %% Chromium (controlling) may complete ICE through the peer-reflexive
+    %% candidate its own checks create before the names resolve; once
+    %% complete, our agent does not check the late pairs (RFC 8445 §8.3).
+    mdns_only(Pc, resolved),
+    {Id, _} = channel_open(Pc, <<"mdns">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"mdns">>}),
+    P3 = ?P:cmd(P2, #{cmd => send, label => <<"mdns">>, data => <<"from chromium">>}),
+    {channel_message, Id, text, _} = erlang_message(Pc, <<"from chromium">>),
+    ok = webrtc:send_data(Pc, Id, text, <<"from erlang">>),
+    {ok, P4, _} = ?P:wait_event(P3, <<"message">>, #{<<"data">> => <<"from erlang">>}),
+    put(peer, P4).
+
+erlang_offers_mdns_candidates(Config) ->
+    {Pc, P0} = start(Config),
+    ok = webrtc:create_data_channel(Pc, <<"mdns">>, #{}),
+    P1 = erlang_offer(Pc, P0, #{}),
+    mdns_only(Pc, answered),
+    {Id, _} = channel_open(Pc, <<"mdns">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"mdns">>}),
+    ok = webrtc:send_data(Pc, Id, text, <<"ping">>),
+    {ok, P3, _} = ?P:wait_event(P2, <<"message">>, #{<<"data">> => <<"ping">>}),
+    _ = erlang_message(Pc, <<"echo:ping">>),
+    put(peer, P3).
+
+%% Every host candidate Chromium signaled was an mDNS name, and the
+%% names resolved: there are pairs with a remote host candidate (only
+%% created from a resolved name; one learned from Chromium's checks
+%% would be peer-reflexive). With `answered', our checks to one of them
+%% got a response.
+mdns_only(Pc, Need) ->
+    Cands = peer_candidates(),
+    ct:log("chromium candidates: ~p", [Cands]),
+    Host = [C || C <- Cands, binary:match(C, <<" typ host">>) =/= nomatch],
+    ?assertNotEqual([], Host),
+    [?assertNotEqual(nomatch, binary:match(C, <<".local ">>)) || C <- Host],
+    resolved_pair(Pc, Need, 50).
+
+resolved_pair(Pc, Need, Tries) ->
+    #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
+    Resolved = lists:usort([
+        R#ice_cand.address
+     || #{remote := #ice_cand{type = host} = R, responses_received := N} <- Pairs, N > 0 orelse Need =:= resolved
+    ]),
+    case Resolved of
+        [_ | _] ->
+            ct:log("pairs to resolved host candidates (~p): ~p", [Need, Resolved]);
+        [] when Tries > 0 ->
+            timer:sleep(100),
+            resolved_pair(Pc, Need, Tries - 1);
+        [] ->
+            ct:fail({no_resolved_pair, [{T#ice_cand.type, T#ice_cand.address, St, N} ||
+                #{remote := T, state := St, responses_received := N} <- Pairs]})
+    end.

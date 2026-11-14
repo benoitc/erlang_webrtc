@@ -32,6 +32,7 @@
     send_rtp/4,
     send_rtp_packet/3,
     request_keyframe/2,
+    set_congestion_control/2,
     open_channel/3,
     send_data/4,
     close_channel/2,
@@ -91,6 +92,7 @@ restart_ice(T, U, P) -> gen_server:call(T, {restart_ice, U, P}).
 send_rtp(T, Mid, Payload, Opts) -> gen_server:call(T, {send_rtp, Mid, Payload, Opts}).
 send_rtp_packet(T, Mid, Pkt) -> gen_server:call(T, {send_rtp_packet, Mid, Pkt}).
 request_keyframe(T, Mid) -> gen_server:call(T, {request_keyframe, Mid}).
+set_congestion_control(T, Opts) -> gen_server:call(T, {set_congestion_control, Opts}).
 
 open_channel(T, Label, Opts) -> gen_server:call(T, {open_channel, Label, Opts}).
 send_data(T, Id, Type, Data) -> gen_server:call(T, {send_data, Id, Type, Data}).
@@ -205,6 +207,10 @@ handle_call({send_rtp_packet, Mid, Pkt}, _From, St) ->
 handle_call({request_keyframe, Mid}, _From, St) ->
     {Acts, M} = webrtc_media:request_keyframe(Mid, now_ms(), St#st.media),
     St1 = transmit(Acts, St#st{media = M}),
+    {reply, ok, arm(St1)};
+handle_call({set_congestion_control, Opts}, _From, St) ->
+    {Acts, M} = webrtc_media:set_congestion_control(Opts, now_ms(), St#st.media),
+    St1 = media_actions(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
 handle_call({open_channel, Label, Opts}, From, #st{dcep = undefined} = St) ->
     {noreply, St#st{pending_channels = St#st.pending_channels ++ [{From, Label, Opts}]}};

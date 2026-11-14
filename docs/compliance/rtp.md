@@ -1,6 +1,6 @@
 # RTP and RTCP (RFC 3550, RFC 8834)
 
-This page tracks the RTP and RTCP requirements implemented under `src/rtp`: the RTP and RTCP codecs, header extensions, feedback messages, receiver statistics, RTCP timing, retransmission and the payload helpers. Read it when you need to know whether a packet type or rule is supported before relying on it. Scheduling decisions (when to send a report, which feedback to merge) belong to the transport process and are marked as not implemented here until that process exists. Test names refer to `test/<module>_tests.erl` and to the properties in `test/prop_webrtc_rtp.erl`.
+This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `src/cc`: the RTP and RTCP codecs, header extensions, feedback messages, receiver statistics, RTCP timing, retransmission, the payload helpers, and congestion control (bandwidth estimation, pacing, circuit breakers). Read it when you need to know whether a packet type or rule is supported before relying on it. Scheduling decisions (when to send a report, which feedback to merge) belong to the transport process and are marked as not implemented here until that process exists. Test names refer to `test/<module>_tests.erl` and to the properties in `test/prop_webrtc_rtp.erl` and `test/prop_webrtc_cc.erl`.
 
 ## RFC 3550: RTP data packets
 
@@ -173,10 +173,64 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp`: the 
 | TWCC-6 | draft-holmer-01 §3.1.5 | Receive deltas in 250 us: 8-bit unsigned small, 16-bit signed large | webrtc_rtcp_twcc | mixed_test, prop_twcc_roundtrip | Unit tested |
 | TWCC-7 | draft-holmer-01 §3.1.5 | A delta that does not fit 16 bits starts a new feedback message | webrtc_rtcp_twcc | from_arrivals_split_test, prop_twcc_arrivals | Unit tested |
 | TWCC-8 | libwebrtc | Padding with zero bytes or with the P bit | webrtc_rtcp_twcc | mixed_test, padding_bit_test | Unit tested |
+| CC-7 | RFC 8888 §3, §4 | Generate CCFB for received packets and use received CCFB as estimator input | | | Not implemented: codec only; the estimator uses transport-wide feedback, which every browser sends |
+| TWCC-9 | draft-holmer-01 §2 | Every RTP packet of the transport (media and retransmissions, all transceivers) carries the next transport-wide sequence number when the peer accepted the extension | webrtc_cc, webrtc_media | webrtc_media_cc_tests:transport_wide_sequence_test, webrtc_cc_tests:twcc_seq_test | Unit tested |
+| TWCC-10 | draft-holmer-01 §3 | Receiver: feedback every 100 ms (`twcc_interval`) and on demand; numbers lost between two messages are reported; a late packet is reported in the next message with the range repeated from a bounded history; bounded pending arrivals | webrtc_twcc_receiver | webrtc_twcc_tests:interval_test, loss_between_feedbacks_test, late_packet_test, bounded_pending_test, gap_is_not_loss_test, prop_webrtc_cc:prop_twcc_feedback_roundtrip | Unit tested |
+| TWCC-11 | draft-holmer-01 §3 | Sender: feedback mapped back to send time, arrival time and size; repeated reports ignored, lost then received reported again; bounded history (8192 packets, 10 s) | webrtc_twcc_sender | round_trip_test, wraparound_test, duplicate_feedback_test, unknown_and_old_test, age_limit_test | Unit tested |
+| TWCC-12 | draft-holmer-01 §3 | Feedback between two peers over UDP drives the sender's estimate | webrtc_media, webrtc_cc | webrtc_media_cc_tests:feedback_round_trip_test, webrtc_cc_SUITE | E2E tested |
 | REMB-1 | draft-alvestrand-rmcat-remb-03 §2.2 | PSFB FMT 15 "REMB": SSRC count, 6-bit exponent, 18-bit mantissa, SSRC list | webrtc_rtcp_fb | remb_test, rr_remb_test | Unit tested |
+| REMB-2 | draft-alvestrand-rmcat-remb-03 §2 | A received REMB bounds the estimate; without transport-wide feedback it is the estimate | webrtc_gcc | webrtc_gcc_tests:remb_test, webrtc_media_cc_tests:remb_test | Unit tested |
 | XR-1 | RFC 3611 §4.4 | Receiver Reference Time report block | webrtc_rtcp_xr | webrtc_rtcp_xr_tests:xr_test, xr_errors_test_ | Unit tested |
 | XR-2 | RFC 3611 §4.5 | DLRR report block with sub-blocks | webrtc_rtcp_xr | xr_test, xr_errors_test_ | Unit tested |
 | XR-3 | RFC 3611 §3 | Other block types kept with their type-specific byte | webrtc_rtcp_xr | xr_unknown_block_test | Unit tested |
+
+## Congestion control (RFC 8836, draft-ietf-rmcat-gcc-02)
+
+The estimator is Google Congestion Control on the sender side, fed by transport-wide feedback (`webrtc_gcc`, `webrtc_gcc_delay`, `webrtc_gcc_aimd`). "sim" means the seeded bottleneck simulation of `test/webrtc_cc_sim.erl` and `test/webrtc_cc_link.erl` (one or two flows, 20 ms propagation delay each way, drop-tail queue of 300 ms), run by `webrtc_gcc_tests`.
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| GCC-1 | gcc-02 §5.2 | Pre-filtering: packets sent within burst_time (5 ms) form a group; a burst arriving after an outage is merged; out of order packets ignored | webrtc_gcc_delay | webrtc_gcc_tests:reordering_and_burst_test | Unit tested |
+| GCC-2 | gcc-02 §5.3 | Arrival-time filter estimating m(i) from the inter-group delay variation | webrtc_gcc_delay | constant_delay_is_normal_test, growing_queue_is_overuse_test, draining_queue_is_underuse_test | Unit tested: trendline estimator of libwebrtc (window 20, smoothing 0.9, gain 4), which the draft allows ("any adaptive filter"); the Kalman filter of the draft is not implemented |
+| GCC-3 | gcc-02 §5.4 | Over-use after overuse_time_th (10 ms) above the adaptive threshold and m(i) not decreasing; under-use below minus the threshold; threshold not updated when the estimate exceeds it by more than 15, clamped to [6, 600], starting at 12.5 | webrtc_gcc_delay | growing_queue_is_overuse_test, draining_queue_is_underuse_test | Unit tested: K_u = 0.0087 and K_d = 0.039 from libwebrtc's trendline detector, not the draft values (0.01, 0.00018) tuned for the Kalman filter output |
+| GCC-4 | gcc-02 §5.5 | Hold / Increase / Decrease transition table | webrtc_gcc_aimd | aimd_transitions_test | Unit tested |
+| GCC-5 | gcc-02 §5.5 | Multiplicative increase at most 8% per second far from convergence, additive (half a packet per RTT + 100 ms) near the average of previous decreases (EMA 0.95, three standard deviations), A_hat < 1.5 R_hat | webrtc_gcc_aimd | aimd_increase_test | Unit tested; R_hat is the acknowledged rate over 500 ms of arrivals |
+| GCC-6 | gcc-02 §5.5 | Decrease to beta R_hat, beta = 0.85 | webrtc_gcc_aimd | aimd_decrease_test | Unit tested; never above the current estimate, again only after one RTT unless R_hat fell below half the estimate (libwebrtc) |
+| GCC-7 | gcc-02 §6 | Loss-based controller: below 2% x 1.05, 2% to 10% held, above 10% x (1 - 0.5 p); target = min(delay-based, loss-based) | webrtc_gcc | loss_decrease_test, moderate_loss_holds_test, loss_report_test, sim random_loss_test_ | Unit tested; the ratio is taken over at least 20 packets or one second, only packets sent after the last decrease count, decreases at most once per 300 ms + RTT; RTCP receiver reports are used while no transport-wide feedback arrived |
+| GCC-8 | gcc-02 §5.5 | Bounded memory, deterministic with injected time | webrtc_gcc, webrtc_cc | sim deterministic_test_ | Unit tested |
+| R8836-1 | RFC 8836 §2 (1) | Low delay: queuing delay kept low once converged | webrtc_gcc | sim converges_500k_test_, converges_2m_test_, converges_10m_test_ | Simulated: average target 0.95, 0.94 and 0.91 of the capacity at 500 kbps, 2 Mbps and 10 Mbps, average bottleneck queue 22 to 28 ms |
+| R8836-2 | RFC 8836 §2 (1c, 1d) | React quickly to a capacity reduction | webrtc_gcc | sim capacity_drop_test_, webrtc_cc_SUITE:estimate_follows_capacity_drop | Simulated and E2E tested: 2 Mbps to 500 kbps, the target is below 600 kbps within 2 s and the queue drains within 4 s |
+| R8836-3 | RFC 8836 §2 (2) | Fair to other instances of itself | webrtc_gcc | sim fairness_test_ | Simulated: two flows on 2 Mbps, the second starting 5 s later, share within a factor of 1.3 after a minute (test bound 1.5), using 0.94 of the link together |
+| R8836-4 | RFC 8836 §2 (3) | Do not starve competing TCP flows, avoid being starved | | | Not tested: the simulator has no TCP cross traffic |
+| R8836-5 | RFC 8836 §2 (4) | Adapt quickly at the start of a flow | webrtc_gcc_aimd | sim converges_10m_test_ | Partial: until the first decrease the multiplicative increase uses `startup_gain` (1.5 per second; RFC 8836 §2 (4a) allows a faster startup); no bandwidth probing, so reaching 10 Mbps from 300 kbps takes about 9 s |
+| R8836-6 | RFC 8836 §2 (5) | Stable when streams pause or are rate limited | webrtc_gcc_aimd | aimd_increase_test | Unit tested: the estimate does not grow beyond 1.5 R_hat + 10 kbps |
+| R8836-7 | RFC 8836 §2 (6) | One estimate for all streams of the transport | webrtc_cc | webrtc_media_cc_tests:transport_wide_sequence_test | Implemented: one estimate per BUNDLE transport; the split between streams is left to the application |
+| R8836-8 | RFC 8836 §2 (8) | Feedback over RTCP with AVPF | webrtc_media | webrtc_media_cc_tests:feedback_round_trip_test | Unit tested |
+| R8836-9 | RFC 8836 §2 (9) | Use DSCP markings | | | Not implemented |
+| R8836-10 | RFC 8836 §2 (10) | React to a lack of feedback | webrtc_gcc | feedback_timeout_test | Unit tested: 20% cut per `feedback_timeout` (1.5 s) while sending without feedback |
+| R8836-11 | RFC 8836 §2 (11) | Stable with AQM | | | Not tested (drop-tail only) |
+| NADA-1 | RFC 8698 | NADA congestion control | | | Not implemented |
+
+## Pacing
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| PACE-1 | libwebrtc, RFC 8836 §2 (1f) | Leaky bucket at `pacing_factor` (2.5) x target, burst bounded to `burst_ms` (10 ms, at least one packet); never more than rate x interval + burst + one packet | webrtc_pacer | webrtc_pacer_tests:timing_accuracy_test, next_timeout_test, idle_burst_is_bounded_test, prop_webrtc_cc:prop_pacer_conservation | Unit tested |
+| PACE-2 | libwebrtc | Audio before retransmissions before video, each in order | webrtc_pacer | priority_test, prop_pacer_accounting | Unit tested |
+| PACE-3 | | Bounded queue (1000 packets): the oldest video packet is dropped first, drops counted per class; no packet lost or duplicated otherwise | webrtc_pacer | bounded_queue_drops_oldest_video_test, bounded_queue_without_video_test, prop_pacer_accounting | Unit tested |
+| PACE-4 | libwebrtc | Queuing delay bounded by `max_queue_ms` (1000 ms) by sending faster | webrtc_pacer | queue_delay_bound_test | Unit tested |
+| PACE-5 | | Pacing applies once feedback backs the estimate; it can be turned off at run time (`webrtc:set_congestion_control/2`) | webrtc_cc | webrtc_cc_tests:unpaced_without_feedback_test, paced_with_estimate_test, pacing_off_test, webrtc_media_cc_tests:pacing_test, webrtc_cc_SUITE:pacing_can_be_disabled | E2E tested |
+| PACE-6 | libwebrtc | Retransmissions limited to the target bitrate over one second | webrtc_cc | rtx_limit_test | Unit tested |
+
+## RFC 8083: RTP circuit breakers
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| CB-1 | 4.1 | RTCP timeout: sending without any report on the stream for 3 x Td, Td with Tmin = 5 s (15 s) | webrtc_circuit_breaker | webrtc_circuit_breaker_tests:rtcp_timeout_test, reports_prevent_rtcp_timeout_test, idle_stream_test, webrtc_media_cc_tests:rtcp_timeout_test, reports_keep_breaker_quiet_test | Unit tested |
+| CB-2 | 4.2 | Media timeout: MEDIA_TIMEOUT consecutive reports with a non-increasing extended highest sequence number while sending, k = 5 | webrtc_circuit_breaker | media_timeout_test, media_progress_resets_test | Unit tested; Tf (frame interval) is not known to this layer and is left out of MEDIA_TIMEOUT |
+| CB-3 | 4.3 | Congestion: sending rate above 10 x the simplified TCP throughput over CB_INTERVAL reports, loss fraction weighted by the reporting intervals | webrtc_circuit_breaker | congestion_test, congestion_needs_rtt_test | Unit tested; the 10 G Tf term of CB_INTERVAL is left out |
+| CB-4 | 4.4 | ECN circuit breaker | | | Not implemented |
+| CB-5 | 4.5 | Cease transmission when a breaker triggers | webrtc_media | | Not implemented: the breaker is reported to the application as `{circuit_breaker, Mid, Reason}`; the stack does not stop sending by itself |
 
 ## Payload formats
 
@@ -199,6 +253,9 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp`: the 
 | AV1-1 | AV1 RTP v1.0.0 §4.4 | Aggregation header; key frame by N = 1 | webrtc_rtp_av1 | webrtc_rtp_av1_tests:av1_test_ | Unit tested |
 
 ## Known limitations
+
+- Congestion control clocks are integer milliseconds: arrival times in transport-wide feedback are multiples of 1 ms although the format carries 250 us.
+- There is no bandwidth probing (padding or RTX probes); the start-up ramp relies on the faster multiplicative increase before the first decrease.
 
 - `webrtc_rtp:encode/1` does not check that the payload type avoids 64..95 (MUX-2); the SDP layer must enforce it.
 - The RTCP and AVPF scheduling state machines (RTCP-20, AVPF-13, RSIZE-3) are not implemented; `webrtc_rtcp_interval` provides the pure computations they need.

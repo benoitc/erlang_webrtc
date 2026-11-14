@@ -111,6 +111,10 @@ rtp_forwarding(N) ->
     [{ok, _} = webrtc:add_transceiver(P, video, #{}) || P <- [A, R1, R2, C]],
     webrtc_test_signal:connect(A, R1, 30000),
     webrtc_test_signal:connect(R2, C, 30000),
+    %% Measure forwarding, not pacing: the sender pushes packets as fast
+    %% as it can, which no bandwidth estimate allows.
+    ok = webrtc:set_congestion_control(A, #{pacing => false}),
+    ok = webrtc:set_congestion_control(R2, #{pacing => false}),
     Self = self(),
     Fwd = spawn_link(fun() -> forward(R1, R2, Self, 0, N) end),
     ok = webrtc:controlling_process(R1, Fwd),

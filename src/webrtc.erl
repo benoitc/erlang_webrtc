@@ -23,6 +23,13 @@
 %% <li>`{keyframe_request, Mid, Rid}': the same, for one simulcast layer
 %%     we send.</li>
 %% <li>`{rtcp, Mid, Packet}': congestion feedback (REMB, TWCC).</li>
+%% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
+%%     the target bitrate for all media sent on the connection; adapt
+%%     the encoders to it.</li>
+%% <li>`{circuit_breaker, Mid, Reason}': an RTP circuit breaker of
+%%     RFC 8083 triggered for the stream (`rtcp_timeout',
+%%     `media_timeout' or `congestion'); the application should stop
+%%     sending on it or reduce its rate a lot.</li>
 %% <li>`{datachannel_open, Id, Label, Protocol, Opts}'</li>
 %% <li>`{channel_message, Id, text | binary, Data}'</li>
 %% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
@@ -61,6 +68,7 @@
     send_rtp_packet/4,
     request_keyframe/2,
     request_keyframe/3,
+    set_congestion_control/2,
     send_data/4,
     close_data_channel/2,
     local_description/1,
@@ -207,6 +215,15 @@ request_keyframe(Pc, Mid, Opts) ->
 
 layer(Mid, #{rid := Rid}) when is_binary(Rid) -> {Mid, Rid};
 layer(Mid, _) -> Mid.
+
+%% @doc Configure congestion control of the connection's media, once
+%% the transport exists (after the first description is set). `Opts':
+%% `pacing' (boolean, default true; false sends every packet at once),
+%% `pacing_factor' (default 2.5), `min_bitrate' and `max_bitrate'
+%% (bits per second).
+-spec set_congestion_control(pc(), map()) -> ok | {error, term()}.
+set_congestion_control(Pc, Opts) when is_map(Opts) ->
+    transport(Pc, fun(T) -> webrtc_transport:set_congestion_control(T, Opts) end).
 
 -spec send_data(pc(), non_neg_integer(), text | binary, iodata()) -> ok | {error, term()}.
 send_data(Pc, Id, Type, Data) ->

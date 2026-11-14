@@ -173,7 +173,13 @@ handle_call({add_remote_candidate, Cand}, _From, St) ->
 handle_call(end_of_candidates, _From, St) ->
     run(St, fun(Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I) end, ok);
 handle_call({restart_ice, U, P}, _From, St) ->
-    run(St, fun(Now, I) -> webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, Now, I) end, ok);
+    {I1, Acts} = webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, now_ms(), St#st.ice),
+    St1 = ice_actions(Acts, St#st{ice = I1}),
+    %% The candidates are kept across the restart but belong to the new
+    %% ICE generation: signal them again (RFC 8445 §9, RFC 8838 §4.4).
+    _ = [to_pc({local_candidate, C}, St1) || C <- webrtc_ice_agent:local_candidates(I1)],
+    to_pc({gathering_state, complete}, St1),
+    {reply, ok, arm(St1)};
 handle_call({configure, Neg}, _From, St) ->
     St1 = configure_engines(Neg, St),
     {reply, ok, arm(St1)};

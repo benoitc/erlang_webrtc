@@ -170,6 +170,8 @@ async def main():
             if not await handle(json.loads(line)):
                 break
         except Exception as e:  # report and keep serving
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             emit(event="error", message=f"{type(e).__name__}: {e}")
 
 

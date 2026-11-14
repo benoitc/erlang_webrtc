@@ -41,6 +41,10 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Erlang sends Opus RTP (peer echoes or decodes) | Pass (echo verified) | Pass (decoded) | Pass (decoded) | Not run (1) |
 | Peer sends its own audio and video, Erlang forwards every packet back, peer decodes 10+ video frames | Skipped (2) | Pass | Pass | Not run (1) |
 | Peer closes, Erlang reports the connection closed | Pass | Pass | Pass | Not run (1) |
+| Erlang renegotiates: adds an audio section, data channel survives | Pass | Pass | Pass | Not run (1) |
+| ICE restart started by Erlang, DTLS and SCTP survive | Pass | Pass | Pass | Not run (1) |
+| ICE restart started by the peer | Pass | Pass | Pass | Not run (1) |
+| Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Not run (1) |
 
 1. Firefox cannot launch inside the sandbox of the development machine; the suite reports it as skipped. It runs in the CI interop job.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
@@ -51,4 +55,6 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 |---|---|---|
 | Pion | Sends DATA_CHANNEL_ACK padded to 4 bytes (`02 00 00 00`). We rejected it and reset the stream. | RFC 8832 §5.2 defines the message by its type byte; libwebrtc reads only that byte. Trailing bytes are now ignored (`webrtc_dcep_tests:ack_test`). |
 | OTP ssl | No RFC 7627 extended master secret. | Kept required by default; the OTP DTLS tests opt out explicitly. |
+| aiortc 1.16.0 | Answering a re-offer raises `ValueError` in `and_direction` when a local transceiver created before the first negotiation is still unassociated (`_offerDirection` is `None`). | aiortc bug; our re-offer is valid (Pion and Chromium accept it). The renegotiation case gives aiortc no local track. |
+| Chromium | Discards remote candidates of the previous ICE generation on restart. | Our transport now signals its candidates again after `restart_ice` (RFC 8445 §9); this was a bug on our side, hidden by Pion keeping old candidates. |
 | Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |

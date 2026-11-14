@@ -16,7 +16,11 @@
     binary_and_large_messages/1,
     erlang_sends_media/1,
     peer_sends_media/1,
-    peer_closes/1
+    peer_closes/1,
+    erlang_renegotiates_adds_audio/1,
+    erlang_ice_restart/1,
+    peer_ice_restart/1,
+    erlang_ice_lite/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -29,7 +33,11 @@ cases() ->
         binary_and_large_messages,
         erlang_sends_media,
         peer_sends_media,
-        peer_closes
+        peer_closes,
+        erlang_renegotiates_adds_audio,
+        erlang_ice_restart,
+        peer_ice_restart,
+        erlang_ice_lite
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}].
@@ -94,21 +102,21 @@ erlang_offer(Pc, P0, Init) ->
     {ok, Offer} = webrtc:create_offer(Pc, #{}),
     ok = webrtc:set_local_description(Pc, offer, Offer),
     P2 = ?P:cmd(P1, #{cmd => remote_description, type => offer, sdp => Offer}),
-    {ok, P3, #{<<"sdp">> := Answer}} = ?P:wait_event(P2, <<"local_description">>, #{}),
+    {ok, P3, #{<<"sdp">> := Answer} = Ev} = ?P:wait_event(P2, <<"local_description">>, #{}),
     ct:log("offer:~n~s~nanswer:~n~s", [Offer, Answer]),
     ok = webrtc:set_remote_description(Pc, answer, Answer),
-    connected(Pc, P3).
+    connected(Pc, consume(P3, Ev)).
 
 %% The peer offers, Erlang answers.
 peer_offer(Pc, P0, Init) ->
     P1 = ?P:cmd(P0, Init#{cmd => init}),
     P2 = ?P:cmd(P1, #{cmd => create_offer}),
-    {ok, P3, #{<<"sdp">> := Offer}} = ?P:wait_event(P2, <<"local_description">>, #{}),
+    {ok, P3, #{<<"sdp">> := Offer} = Ev} = ?P:wait_event(P2, <<"local_description">>, #{}),
     ok = webrtc:set_remote_description(Pc, offer, Offer),
     {ok, Answer} = webrtc:create_answer(Pc, #{}),
     ok = webrtc:set_local_description(Pc, answer, Answer),
     ct:log("offer:~n~s~nanswer:~n~s", [Offer, Answer]),
-    P4 = ?P:cmd(P3, #{cmd => remote_description, type => answer, sdp => Answer}),
+    P4 = ?P:cmd(consume(P3, Ev), #{cmd => remote_description, type => answer, sdp => Answer}),
     connected(Pc, P4).
 
 %% Trickle candidates both ways until both sides are connected.
@@ -305,3 +313,98 @@ peer_closes(Config) ->
                                                       orelse S =:= disconnected;
                            (_) -> false end),
     ct:log("state after peer close: ~p", [S]).
+
+%%--------------------------------------------------------------------
+%% Renegotiation, ICE restart, ICE-Lite
+%%--------------------------------------------------------------------
+
+%% A subsequent Erlang offer, answered by the peer; candidates are
+%% relayed for a moment since the connection is already up.
+erlang_reoffer(Pc, P0) ->
+    {ok, Offer} = webrtc:create_offer(Pc, #{}),
+    ok = webrtc:set_local_description(Pc, offer, Offer),
+    P1 = ?P:cmd(P0, #{cmd => remote_description, type => offer, sdp => Offer}),
+    {ok, P2, #{<<"sdp">> := Answer} = Ev} = ?P:wait_event(P1, <<"local_description">>, #{}),
+    ct:log("re-offer:~n~s~nanswer:~n~s", [Offer, Answer]),
+    ok = webrtc:set_remote_description(Pc, answer, Answer),
+    relay_for(Pc, consume(P2, Ev), 3000).
+
+relay_for(Pc, P, Ms) ->
+    Deadline = erlang:monotonic_time(millisecond) + Ms,
+    relay_until(Pc, P, Deadline).
+
+relay_until(Pc, P0, Deadline) ->
+    case erlang:monotonic_time(millisecond) > Deadline of
+        true ->
+            P0;
+        false ->
+            {P1, _} = forward_peer(Pc, P0, true),
+            _ = forward_erlang(Pc, P1, true),
+            relay_until(Pc, P1, Deadline)
+    end.
+
+echo_check(Pc, P0, Id, Text) ->
+    ok = webrtc:send_data(Pc, Id, text, Text),
+    {ok, P1, Ev} = ?P:wait_event(P0, <<"message">>, #{<<"data">> => Text}),
+    _ = erlang_message(Pc, <<"echo:", Text/binary>>),
+    consume(P1, Ev).
+
+erlang_renegotiates_adds_audio(Config) ->
+    {Pc, P0} = start(Config),
+    ok = webrtc:create_data_channel(Pc, <<"r">>, #{}),
+    %% Pion needs a local track to echo. Decoding peers only receive:
+    %% aiortc 1.16 crashes answering a re-offer while a local transceiver
+    %% from before the first negotiation is still unassociated.
+    Init = case ?config(peer, Config) of
+        pion -> #{media => [<<"audio">>]};
+        _ -> #{}
+    end,
+    P1 = erlang_offer(Pc, P0, Init),
+    {Id, _} = channel_open(Pc, <<"r">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"r">>}),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    P3 = erlang_reoffer(Pc, P2),
+    [ok = webrtc:send_rtp(Pc, <<"1">>, <<16#F8, 16#FF, 16#FE>>, #{timestamp => N * 960})
+     || N <- lists:seq(1, 50)],
+    {ok, P4, _} = ?P:wait_event(P3, <<"rtp">>, #{<<"kind">> => <<"audio">>}),
+    %% The data channel survived the renegotiation.
+    put(peer, echo_check(Pc, P4, Id, <<"after renegotiation">>)).
+
+erlang_ice_restart(Config) ->
+    {Pc, P0} = start(Config),
+    ok = webrtc:create_data_channel(Pc, <<"i">>, #{}),
+    P1 = erlang_offer(Pc, P0, #{}),
+    {Id, _} = channel_open(Pc, <<"i">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"i">>}),
+    ok = webrtc:restart_ice(Pc),
+    P3 = erlang_reoffer(Pc, P2),
+    put(peer, echo_check(Pc, P3, Id, <<"after erlang restart">>)).
+
+peer_ice_restart(Config) ->
+    {Pc, P0} = start(Config),
+    P1 = peer_offer(Pc, P0, #{channels => [#{label => <<"j">>}]}),
+    {Id, _} = channel_open(Pc, <<"j">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"j">>}),
+    P3 = ?P:cmd(P2, #{cmd => create_offer, ice_restart => true}),
+    {ok, P4, #{<<"sdp">> := Offer} = Ev} = ?P:wait_event(P3, <<"local_description">>, #{}),
+    ok = webrtc:set_remote_description(Pc, offer, Offer),
+    {ok, Answer} = webrtc:create_answer(Pc, #{}),
+    ok = webrtc:set_local_description(Pc, answer, Answer),
+    P5 = ?P:cmd(consume(P4, Ev), #{cmd => remote_description, type => answer, sdp => Answer}),
+    P6 = relay_for(Pc, P5, 3000),
+    put(peer, echo_check(Pc, P6, Id, <<"after peer restart">>)).
+
+%% Erlang as an ICE-Lite agent (RFC 8445 §2.5) answering a full agent.
+erlang_ice_lite(Config) ->
+    Peer = ?config(peer, Config),
+    {ok, P} = ?P:start(Peer, ?config(priv_dir, Config)),
+    put(peer, P),
+    Opts = case Peer of pion -> #{loopback => true}; _ -> #{} end,
+    {ok, Pc} = webrtc:new_peer_connection(Opts#{ice_lite => true}),
+    put(pc, Pc),
+    P1 = peer_offer(Pc, P, #{channels => [#{label => <<"lite">>}]}),
+    {ok, Answer} = {ok, webrtc:local_description(Pc)},
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=ice-lite">>)),
+    {Id, _} = channel_open(Pc, <<"lite">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"lite">>}),
+    put(peer, echo_check(Pc, P2, Id, <<"lite">>)).

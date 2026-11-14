@@ -118,7 +118,10 @@ async function main() {
   const page = await context.newPage();
   page.on('console', (m) => process.stderr.write(`[page] ${m.text()}\n`));
   await page.exposeFunction('emit', (ev) => emit(ev));
-  await page.goto('about:blank');
+  // A localhost origin is a secure context, required for getUserMedia.
+  await page.route('http://localhost/**', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>peer</title>' }));
+  await page.goto('http://localhost/');
   await page.evaluate(pageScript);
   emit({ event: 'ready', implementation: kind, version: browser.version() });
 
@@ -180,5 +183,6 @@ async function main() {
 
 main().catch((e) => {
   emit({ event: 'error', message: e.message });
-  process.exit(1);
+  // Do not wait for a browser that failed to launch.
+  setTimeout(() => process.exit(1), 100);
 });

@@ -2,7 +2,7 @@
 %% Starts an adapter as a port, sends commands, waits for events.
 -module(webrtc_interop_peer).
 
--export([start/2, cmd/2, wait/3, wait_event/3, events/1, stop/1, find/1, pump/4]).
+-export([start/2, cmd/2, wait/3, wait_event/3, events/1, stop/1, find/1, pump/4, probe/2]).
 
 -record(peer, {port, name, buf = <<>>, events = [], log, forwarded = 0}).
 
@@ -139,3 +139,23 @@ forward(#peer{forwarded = N} = From, To) ->
                  mid => maps:get(<<"mid">>, C)})
     end, To, New),
     {From#peer{forwarded = length(Cands)}, To1}.
+
+%% @doc Check that an adapter is installed and starts. Suites call this
+%% in init_per_group so an unavailable peer is reported as skipped with
+%% the reason, never counted as passed.
+-spec probe(atom(), file:filename()) -> ok | {skip, string()}.
+probe(Name, LogDir) ->
+    case find(Name) of
+        {skip, _} = Skip ->
+            Skip;
+        {ok, _} ->
+            try start(Name, filename:join(LogDir, "probe")) of
+                {ok, P} -> stop(P), ok
+            catch
+                error:{peer_start_failed, _, Why} ->
+                    {skip, lists:flatten(io_lib:format("~p failed to start: ~ts", [Name, short(Why)]))}
+            end
+    end.
+
+short(B) when is_binary(B) -> string:slice(B, 0, 200);
+short(T) -> io_lib:format("~p", [T]).

@@ -17,8 +17,8 @@ groups() ->
     [{chromium, [], Cases}, {firefox, [], Cases}].
 
 init_per_group(B, Config) ->
-    case webrtc_interop_peer:find(B) of
-        {ok, _} -> [{browser, B} | Config];
+    case webrtc_interop_peer:probe(B, ?config(priv_dir, Config)) of
+        ok -> [{browser, B} | Config];
         {skip, R} -> {skip, R}
     end.
 
@@ -103,7 +103,10 @@ browser_to_pion_media(Config) ->
     {ok, A} = webrtc_interop_peer:start(?config(browser, Config), filename:join(Dir, "a")),
     {ok, B} = webrtc_interop_peer:start(pion, filename:join(Dir, "b")),
     Media = #{media => [<<"audio">>, <<"video">>]},
-    {A1, B1} = connect(A, B, Media, Media),
+    {A1, B0} = connect(A, B, Media, Media),
+    %% Pion received the browser's video...
+    {ok, B1, _} = webrtc_interop_peer:wait_event(B0, <<"rtp">>, #{<<"kind">> => <<"video">>}),
+    %% ...and the browser decoded the echo.
     {ok, A2, _} = webrtc_interop_peer:wait(A1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>,
                                                      <<"count">> := N}) -> N >= 10;
                                                   (_) -> false end, 20000),

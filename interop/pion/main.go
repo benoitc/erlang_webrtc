@@ -10,8 +10,10 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/pion/ice/v4"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
 )
@@ -49,7 +51,37 @@ var (
 	chMu     sync.Mutex
 	channels = map[string]*webrtc.DataChannel{}
 	tracks   = map[string]*webrtc.TrackLocalStaticRTP{}
+	media    []string
 )
+
+// addTracks attaches local tracks once the role is known: before the
+// offer when offering, after the remote offer when answering, so the
+// tracks bind to the offered transceivers.
+func addTracks() error {
+	for _, kind := range media {
+		if _, ok := tracks[kind]; ok {
+			continue
+		}
+		var cap webrtc.RTPCodecCapability
+		switch kind {
+		case "audio":
+			cap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
+		case "video":
+			cap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}
+		default:
+			return fmt.Errorf("unknown media %q", kind)
+		}
+		t, err := webrtc.NewTrackLocalStaticRTP(cap, kind, "pion")
+		if err != nil {
+			return err
+		}
+		if _, err := pc.AddTrack(t); err != nil {
+			return err
+		}
+		tracks[kind] = t
+	}
+	return nil
+}
 
 func emit(ev map[string]any) {
 	outMu.Lock()
@@ -88,6 +120,9 @@ func handle(c command) error {
 	case "init":
 		return initPC(c)
 	case "create_offer":
+		if err := addTracks(); err != nil {
+			return err
+		}
 		offer, err := pc.CreateOffer(&webrtc.OfferOptions{ICERestart: c.IceRestart})
 		if err != nil {
 			return err
@@ -102,6 +137,9 @@ func handle(c command) error {
 			return err
 		}
 		if desc.Type == webrtc.SDPTypeOffer {
+			if err := addTracks(); err != nil {
+				return err
+			}
 			answer, err := pc.CreateAnswer(nil)
 			if err != nil {
 				return err
@@ -193,25 +231,7 @@ func initPC(c command) error {
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) { watchChannel(dc) })
 	pc.OnTrack(onTrack)
-	for _, kind := range c.Media {
-		var cap webrtc.RTPCodecCapability
-		switch kind {
-		case "audio":
-			cap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}
-		case "video":
-			cap = webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}
-		default:
-			return fmt.Errorf("unknown media %q", kind)
-		}
-		t, err := webrtc.NewTrackLocalStaticRTP(cap, kind, "pion")
-		if err != nil {
-			return err
-		}
-		if _, err := pc.AddTrack(t); err != nil {
-			return err
-		}
-		tracks[kind] = t
-	}
+	media = c.Media
 	for _, spec := range c.Channels {
 		if err := createChannel(spec); err != nil {
 			return err
@@ -276,6 +296,20 @@ func onTrack(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 	emit(map[string]any{"event": "track", "kind": kind, "ssrc": uint32(remote.SSRC()),
 		"codec": remote.Codec().MimeType})
 	local := tracks[kind]
+	if remote.Kind() == webrtc.RTPCodecTypeVideo {
+		// The echo goes to a receiver whose keyframe requests are not
+		// forwarded to the sender, so ask for keyframes regularly.
+		go func() {
+			t := time.NewTicker(500 * time.Millisecond)
+			defer t.Stop()
+			for range t.C {
+				pli := []rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(remote.SSRC())}}
+				if err := pc.WriteRTCP(pli); err != nil {
+					return
+				}
+			}
+		}()
+	}
 	count, bytes := 0, 0
 	for {
 		pkt, _, err := remote.ReadRTP()

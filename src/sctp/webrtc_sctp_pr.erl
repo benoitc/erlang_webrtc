@@ -10,7 +10,6 @@
 
 -export([abandon/3, advance_adv/1, forward_tsn/2]).
 
-
 %% @doc Abandon every fragment of message `Msg' (rule A3), including
 %% fragments not yet sent, then advance the Advanced.Peer.Ack.Point.
 -spec abandon(non_neg_integer(), integer(), #snd{}) -> #snd{}.
@@ -69,8 +68,10 @@ drop_unsent(Msg, Sid, S) ->
 
 reactivate(Sid, Str, S) ->
     case queue:is_empty(Str#ostream.queue) of
-        true -> put_stream(Sid, Str#ostream{active = false}, S);
-        false -> put_stream(Sid, Str#ostream{active = true}, S#snd{active = queue:in(Sid, S#snd.active)})
+        true ->
+            put_stream(Sid, Str#ostream{active = false}, S);
+        false ->
+            put_stream(Sid, Str#ostream{active = true}, S#snd{active = queue:in(Sid, S#snd.active)})
     end.
 
 %% @doc Rule C2: move the Advanced.Peer.Ack.Point over abandoned (and
@@ -104,7 +105,8 @@ forward_tsn(Now, #snd{adv = Adv, cum = Cum, out = Out, idata = IData} = S) ->
     Chunk =
         case IData of
             false ->
-                {forward_tsn, ?TSN(Adv), lists:sort([{Sid, Ssn} || {Sid, Ssn} <- maps:to_list(Entries)])};
+                {forward_tsn, ?TSN(Adv),
+                    lists:sort([{Sid, Ssn} || {Sid, Ssn} <- maps:to_list(Entries)])};
             true ->
                 {i_forward_tsn, ?TSN(Adv),
                     lists:sort([{Sid, U, Mid} || {{Sid, U}, Mid} <- maps:to_list(Entries)])}
@@ -122,7 +124,11 @@ fwd_entries(U, Adv, _Out, _IData, Acc) when U > Adv ->
 fwd_entries(U, Adv, Out, IData, Acc) ->
     Acc1 =
         case Out of
-            #{U := #oc{state = abandoned, chunk = #sctp_data{sid = Sid, mid = Mid, unordered = Un}}} ->
+            #{
+                U := #oc{
+                    state = abandoned, chunk = #sctp_data{sid = Sid, mid = Mid, unordered = Un}
+                }
+            } ->
                 case IData of
                     false when Un -> Acc;
                     false -> max_entry(Sid, Mid, 16, Acc);

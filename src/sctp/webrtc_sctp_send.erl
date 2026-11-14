@@ -358,8 +358,11 @@ send_new(Now, Limit, S0, Acc, Evs) ->
             case S#snd.zwp of
                 undefined ->
                     Ival = max(S#snd.rto, S#snd.zwp_interval),
-                    {S#snd{zwp = Now + Ival, zwp_interval = Ival}, lists:reverse(Acc),
-                        lists:reverse(Evs1)};
+                    {
+                        S#snd{zwp = Now + Ival, zwp_interval = Ival},
+                        lists:reverse(Acc),
+                        lists:reverse(Evs1)
+                    };
                 At when Now >= At ->
                     {S1, Chunk, Evs2} = commit(Now, Sid, S#snd{zwp = undefined}, Evs1),
                     Ival = min(2 * S1#snd.zwp_interval, S1#snd.rto_max),
@@ -420,11 +423,16 @@ commit(Now, Sid, #snd{idata = IData, next_tsn = U, active = Act} = S, Evs) ->
     E = Off + Len =:= Total,
     {Mid, Str1} =
         case {B, Unord, IData} of
-            {false, _, _} -> {M#omsg.mid, Str};
-            {true, false, false} -> {Str#ostream.ssn band 16#FFFF, Str#ostream{ssn = Str#ostream.ssn + 1}};
-            {true, false, true} -> {Str#ostream.ssn band ?U32, Str#ostream{ssn = Str#ostream.ssn + 1}};
-            {true, true, false} -> {0, Str};
-            {true, true, true} -> {Str#ostream.umid band ?U32, Str#ostream{umid = Str#ostream.umid + 1}}
+            {false, _, _} ->
+                {M#omsg.mid, Str};
+            {true, false, false} ->
+                {Str#ostream.ssn band 16#FFFF, Str#ostream{ssn = Str#ostream.ssn + 1}};
+            {true, false, true} ->
+                {Str#ostream.ssn band ?U32, Str#ostream{ssn = Str#ostream.ssn + 1}};
+            {true, true, false} ->
+                {0, Str};
+            {true, true, true} ->
+                {Str#ostream.umid band ?U32, Str#ostream{umid = Str#ostream.umid + 1}}
         end,
     Fsn =
         case B of
@@ -543,8 +551,10 @@ activate(Sid, Str, #snd{current = Sid} = S) ->
     put_stream(Sid, Str, S);
 activate(Sid, Str, S) ->
     case queue:is_empty(Str#ostream.queue) of
-        true -> put_stream(Sid, Str, S);
-        false -> put_stream(Sid, Str#ostream{active = true}, S#snd{active = queue:in(Sid, S#snd.active)})
+        true ->
+            put_stream(Sid, Str, S);
+        false ->
+            put_stream(Sid, Str#ostream{active = true}, S#snd{active = queue:in(Sid, S#snd.active)})
     end.
 
 dec_bytes(Sid, N, S, Evs) ->

@@ -42,11 +42,12 @@ make(F, Secret) ->
         0,
         lists:zip(lists:seq(0, length(?FEATURES) - 1), ?FEATURES)
     ),
-    Body = <<?VERSION:8, (maps:get(my_tag, F)):32, (maps:get(peer_tag, F)):32,
-        (maps:get(my_itsn, F)):32, (maps:get(peer_itsn, F)):32, (maps:get(peer_rwnd, F)):32,
-        (maps:get(peer_os, F)):16, (maps:get(peer_mis, F)):16, (maps:get(local_tie, F)):32,
-        (maps:get(peer_tie, F)):32, (maps:get(created, F)):64/signed, (maps:get(life, F)):32,
-        Flags:8>>,
+    Body =
+        <<?VERSION:8, (maps:get(my_tag, F)):32, (maps:get(peer_tag, F)):32,
+            (maps:get(my_itsn, F)):32, (maps:get(peer_itsn, F)):32, (maps:get(peer_rwnd, F)):32,
+            (maps:get(peer_os, F)):16, (maps:get(peer_mis, F)):16, (maps:get(local_tie, F)):32,
+            (maps:get(peer_tie, F)):32, (maps:get(created, F)):64/signed, (maps:get(life, F)):32,
+            Flags:8>>,
     <<Body/binary, (mac(Secret, Body))/binary>>.
 
 -spec open(binary(), binary()) -> {ok, fields()} | {error, bad_cookie}.
@@ -61,8 +62,8 @@ open(_, _) ->
     {error, bad_cookie}.
 
 parse(
-    <<?VERSION:8, MyTag:32, PeerTag:32, MyItsn:32, PeerItsn:32, Rwnd:32, OS:16, MIS:16,
-        LTie:32, PTie:32, Created:64/signed, Life:32, Flags:8>>
+    <<?VERSION:8, MyTag:32, PeerTag:32, MyItsn:32, PeerItsn:32, Rwnd:32, OS:16, MIS:16, LTie:32,
+        PTie:32, Created:64/signed, Life:32, Flags:8>>
 ) ->
     Features = maps:from_list([
         {Name, Flags band (1 bsl Bit) =/= 0}

@@ -32,7 +32,13 @@ established(OptsA, OptsB, NetOpts) ->
 both_connected(N) -> connected(a, N) andalso connected(b, N).
 
 connected(Side, N) ->
-    lists:any(fun({connected, _}) -> true; (_) -> false end, ?NET:events(Side, N)).
+    lists:any(
+        fun
+            ({connected, _}) -> true;
+            (_) -> false
+        end,
+        ?NET:events(Side, N)
+    ).
 
 send(Side, Sid, Data, Opts, N) ->
     send(Side, Sid, 53, Data, Opts, N).
@@ -70,8 +76,13 @@ handshake_test() ->
     ?assertEqual(established, ?A:state(?NET:engine(b, N))),
     [{connected, Info}] = ?NET:events(a, N),
     ?assertMatch(
-        #{partial_reliability := true, stream_reconfig := true, message_interleaving := false,
-            outbound_streams := 65535, inbound_streams := 65535},
+        #{
+            partial_reliability := true,
+            stream_reconfig := true,
+            message_interleaving := false,
+            outbound_streams := 65535,
+            inbound_streams := 65535
+        },
         Info
     ),
     ?assertEqual(0, ?NET:stat(mtu_violations, N)).
@@ -625,7 +636,15 @@ zero_checksum_test() ->
         {kind(hd(P#sctp_packet.chunks)), P#sctp_packet.checksum}
      || {_, B} <- ets:tab2list(Tab), {ok, P} <- [webrtc_sctp_chunk:decode(B)]
     ],
-    ?assert(lists:all(fun({sctp_init, C}) -> C =/= 0; (_) -> true end, Sums)),
+    ?assert(
+        lists:all(
+            fun
+                ({sctp_init, C}) -> C =/= 0;
+                (_) -> true
+            end,
+            Sums
+        )
+    ),
     ?assert(lists:member({sctp_data, 0}, Sums)),
     ?assertEqual([{0, 53, <<"zero">>}], received(b, N1)),
     ets:delete(Tab).
@@ -716,7 +735,9 @@ sack_unsent_tsn_test() ->
     {V, N} = peer_vtag(N1),
     %% Acknowledging the TSN already sent is fine, the next one is not.
     {_, [], _} = inject(V, [#sctp_sack{cum_tsn = Tsn, a_rwnd = 100000}], N),
-    {B1, Out, _} = inject(V, [#sctp_sack{cum_tsn = (Tsn + 1) band 16#FFFFFFFF, a_rwnd = 100000}], N),
+    {B1, Out, _} = inject(
+        V, [#sctp_sack{cum_tsn = (Tsn + 1) band 16#FFFFFFFF, a_rwnd = 100000}], N
+    ),
     ?assertMatch([{abort, false, [{protocol_violation, _}]}], Out),
     ?assertEqual(closed, ?A:state(B1)).
 
@@ -895,7 +916,9 @@ reconf_requests_test() ->
     N2 = ?NET:set_engine(b, B2, N),
     %% Out of sequence.
     {_, Out3, _} = inject(V, [{reconfig, [{tsn_reset, Seq + 5}]}], N2),
-    ?assertEqual([{reconf_response, Seq + 5, error_bad_sequence_number, undefined}], reconf_out(Out3)),
+    ?assertEqual(
+        [{reconf_response, Seq + 5, error_bad_sequence_number, undefined}], reconf_out(Out3)
+    ),
     %% Add Outgoing Streams grows b's incoming streams.
     {B4, Out4, _} = inject(V, [{reconfig, [{add_out_streams, Seq + 1, 10}]}], N2),
     ?assertEqual([{reconf_response, Seq + 1, success_performed, undefined}], reconf_out(Out4)),

@@ -69,7 +69,9 @@ local_params(#cfg{interleaving = IL, zero_checksum = Z}) ->
 %% Parameters of a received INIT or INIT ACK, following the rules for
 %% unrecognized parameters (§3.2.1).
 peer_params(Params) ->
-    peer_params(Params, #{ext => [], fwd => false, zero => false, unrec => [], cookie => undefined, prsv => 0}).
+    peer_params(Params, #{
+        ext => [], fwd => false, zero => false, unrec => [], cookie => undefined, prsv => 0
+    }).
 
 peer_params([], Acc) ->
     finish_params(Acc);
@@ -89,8 +91,10 @@ peer_params([P | Rest], Acc) ->
             {Action, Report} = webrtc_sctp_param:unrecognized_param_action(T),
             Acc1 =
                 case Report of
-                    true -> Acc#{unrec := maps:get(unrec, Acc) ++ [webrtc_sctp_param:encode_param(P)]};
-                    false -> Acc
+                    true ->
+                        Acc#{unrec := maps:get(unrec, Acc) ++ [webrtc_sctp_param:encode_param(P)]};
+                    false ->
+                        Acc
                 end,
             case Action of
                 stop -> finish_params(Acc1);
@@ -382,7 +386,8 @@ handle_stale_cookie(Usec, Now, #assoc{state = cookie_echoed, cfg = C} = A) ->
             Init0 = A#assoc.init,
             Params = [
                 P
-             || P <- Init0#sctp_init.params, not is_tuple(P) orelse element(1, P) =/= cookie_preservative
+             || P <- Init0#sctp_init.params,
+                not is_tuple(P) orelse element(1, P) =/= cookie_preservative
             ],
             Init = Init0#sctp_init{params = Params ++ [{cookie_preservative, Inc}]},
             Rto = C#cfg.rto_initial,
@@ -408,10 +413,16 @@ t1_expired(Now, #assoc{t1 = {Kind, D, Rto, N}, cfg = C} = A) when Now >= D ->
             webrtc_sctp_out:terminate(handshake_timeout, A);
         false ->
             Rto1 = min(2 * Rto, C#cfg.rto_max),
-            A1 = webrtc_sctp_out:bump(init_retransmissions, A#assoc{t1 = {Kind, Now + Rto1, Rto1, N + 1}}),
+            A1 = webrtc_sctp_out:bump(init_retransmissions, A#assoc{
+                t1 = {Kind, Now + Rto1, Rto1, N + 1}
+            }),
             case Kind of
-                init -> webrtc_sctp_out:raw(0, [A#assoc.init], crc32c, A1);
-                cookie -> webrtc_sctp_out:raw(A#assoc.peer_vtag, [{cookie_echo, A#assoc.cookie}], crc32c, A1)
+                init ->
+                    webrtc_sctp_out:raw(0, [A#assoc.init], crc32c, A1);
+                cookie ->
+                    webrtc_sctp_out:raw(
+                        A#assoc.peer_vtag, [{cookie_echo, A#assoc.cookie}], crc32c, A1
+                    )
             end
     end;
 t1_expired(_Now, A) ->

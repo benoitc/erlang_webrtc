@@ -128,7 +128,9 @@ prop_reliable_delivery() ->
             {Link, IData, Msgs},
             {gen_link(), boolean(), gen_messages()},
             ?WHENFAIL(
-                io:format("link ~p idata ~p msgs ~p~n", [Link, IData, [{S, O, byte_size(D)} || {S, O, D} <- Msgs]]),
+                io:format("link ~p idata ~p msgs ~p~n", [
+                    Link, IData, [{S, O, byte_size(D)} || {S, O, D} <- Msgs]
+                ]),
                 deliver_all(Link, IData, Msgs)
             )
         )
@@ -138,14 +140,23 @@ gen_link() ->
     ?LET(
         {Seed, Loss, Dup, Reorder, Jitter},
         {pos_integer(), choose(0, 35), choose(0, 10), choose(0, 30), choose(0, 30)},
-        #{seed => Seed, loss => Loss / 100, dup => Dup / 100, reorder => Reorder / 100, jitter => Jitter}
+        #{
+            seed => Seed,
+            loss => Loss / 100,
+            dup => Dup / 100,
+            reorder => Reorder / 100,
+            jitter => Jitter
+        }
     ).
 
 gen_messages() ->
     ?LET(
         L,
         list({choose(0, 3), boolean(), choose(1, 6000)}),
-        [{Sid, Ordered, msg_bytes(I, Size)} || {I, {Sid, Ordered, Size}} <- lists:enumerate(lists:sublist(L, 30))]
+        [
+            {Sid, Ordered, msg_bytes(I, Size)}
+         || {I, {Sid, Ordered, Size}} <- lists:enumerate(lists:sublist(L, 30))
+        ]
     ).
 
 msg_bytes(I, Size) ->
@@ -167,7 +178,9 @@ deliver_all(Link, IData, Msgs) ->
         fun({Sid, Ordered, D}, Acc) ->
             webrtc_sctp_net:call(
                 a,
-                fun(E, Now) -> webrtc_sctp_assoc:send(Sid, 53, D, #{ordered => Ordered}, Now, E) end,
+                fun(E, Now) ->
+                    webrtc_sctp_assoc:send(Sid, 53, D, #{ordered => Ordered}, Now, E)
+                end,
                 Acc
             )
         end,
@@ -227,7 +240,13 @@ established_engine() ->
             A = webrtc_sctp_assoc:new(Opts#{random_seed => 1}),
             B = webrtc_sctp_assoc:new(Opts#{random_seed => 2}),
             Tab = ets:new(cap, [public]),
-            Filter = fun(a, Bin, _) -> ets:insert(Tab, {vtag, Bin}), keep; (_, _, _) -> keep end,
+            Filter = fun
+                (a, Bin, _) ->
+                    ets:insert(Tab, {vtag, Bin}),
+                    keep;
+                (_, _, _) ->
+                    keep
+            end,
             N0 = webrtc_sctp_net:new(webrtc_sctp_assoc, {A, B}, #{filter => Filter}),
             N1 = webrtc_sctp_net:call(a, fun(E, Now) -> webrtc_sctp_assoc:connect(Now, E) end, N0),
             N2 = webrtc_sctp_net:run(1000, N1),

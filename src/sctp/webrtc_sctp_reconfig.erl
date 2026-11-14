@@ -32,7 +32,10 @@ request(_Sids, _Now, #assoc{rcf = #rcf{enabled = false}}) ->
     {error, not_supported};
 request(Sids, _Now, #assoc{rcf = Rcf, snd = Snd} = A) ->
     OS = Snd#snd.os,
-    case Sids =/= [] andalso lists:all(fun(S) -> is_integer(S) andalso S >= 0 andalso S < OS end, Sids) of
+    case
+        Sids =/= [] andalso
+            lists:all(fun(S) -> is_integer(S) andalso S >= 0 andalso S < OS end, Sids)
+    of
         false ->
             {error, invalid_stream};
         true ->
@@ -141,7 +144,10 @@ param({add_out_streams, Seq, N}, _Now, A) ->
     request_seq(Seq, A, fun(#assoc{rcv = Rcv} = Acc) ->
         case Rcv#rcv.mis + N =< 65535 of
             true ->
-                {Acc#assoc{rcv = webrtc_sctp_recv:add_streams(N, Rcv)}, resp(Seq, success_performed)};
+                {
+                    Acc#assoc{rcv = webrtc_sctp_recv:add_streams(N, Rcv)},
+                    resp(Seq, success_performed)
+                };
             false ->
                 {Acc, resp(Seq, denied)}
         end

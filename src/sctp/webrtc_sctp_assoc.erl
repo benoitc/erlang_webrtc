@@ -127,7 +127,9 @@ cfg(O) ->
         max_init_retrans = opt(max_init_retransmissions, O, 8, fun nonneg/1),
         cookie_life = opt(cookie_lifetime, O, 60000, fun pos/1),
         hb_interval = opt(heartbeat_interval, O, 30000, fun(V) -> V =:= infinity orelse pos(V) end),
-        sack_delay = opt(sack_delay, O, 200, fun(V) -> is_integer(V) andalso V >= 0 andalso V =< 500 end),
+        sack_delay = opt(sack_delay, O, 200, fun(V) ->
+            is_integer(V) andalso V >= 0 andalso V =< 500
+        end),
         sack_freq = opt(sack_frequency, O, 2, fun pos/1),
         interleaving = opt(interleaving, O, false, fun is_boolean/1),
         zero_checksum = opt(zero_checksum, O, false, fun is_boolean/1),
@@ -163,13 +165,22 @@ connect(Now, A) ->
 -spec send(0..65535, 0..16#FFFFFFFF, binary(), send_opts(), integer(), assoc()) ->
     {ok, assoc(), [action()]} | {error, atom()}.
 send(Sid, Ppid, Data, Opts, Now, #assoc{} = A) when
-    is_integer(Sid), Sid >= 0, Sid =< 65535, is_integer(Ppid), Ppid >= 0, Ppid =< ?U32,
+    is_integer(Sid),
+    Sid >= 0,
+    Sid =< 65535,
+    is_integer(Ppid),
+    Ppid >= 0,
+    Ppid =< ?U32,
     is_binary(Data)
 ->
     case A#assoc.state of
         closed when A#assoc.terminated -> {error, closed};
-        St when St =:= shutdown_pending; St =:= shutdown_sent; St =:= shutdown_received;
-                St =:= shutdown_ack_sent ->
+        St when
+            St =:= shutdown_pending;
+            St =:= shutdown_sent;
+            St =:= shutdown_received;
+            St =:= shutdown_ack_sent
+        ->
             {error, shutting_down};
         _ ->
             case webrtc_sctp_send:enqueue(Sid, Ppid, Data, Opts, Now, A#assoc.snd) of
@@ -370,7 +381,9 @@ heartbeat(Now, #assoc{hb_at = At, state = St, cfg = C, snd = Snd} = A) when
                     Nonce = <<N1:32, N2:32>>,
                     Info = <<Nonce/binary, Now:64/signed>>,
                     A4 = A3#assoc{hb_out = {Nonce, Now}, hb_at = Now + Rto + Ival},
-                    webrtc_sctp_out:bump(heartbeats_sent, webrtc_sctp_out:ctrl({heartbeat, Info}, A4))
+                    webrtc_sctp_out:bump(
+                        heartbeats_sent, webrtc_sctp_out:ctrl({heartbeat, Info}, A4)
+                    )
             end
     end;
 heartbeat(_Now, A) ->
@@ -460,9 +473,12 @@ chunk(#sctp_data{} = D, _P, _Now, #assoc{state = St, rcv = Rcv} = A) when ?DATA_
     end;
 chunk(#sctp_sack{} = S, _P, Now, #assoc{state = St, snd = Snd} = A) when ?DATA_STATES(St) ->
     case webrtc_sctp_ack:handle_sack(S, Now, Snd) of
-        {ok, Snd1, true} -> {continue, A#assoc{snd = Snd1, error_count = 0}};
-        {ok, Snd1, false} -> {continue, A#assoc{snd = Snd1}};
-        {error, protocol_violation} -> {stop, protocol_abort({protocol_violation, <<"SACK of unsent TSN">>}, A)}
+        {ok, Snd1, true} ->
+            {continue, A#assoc{snd = Snd1, error_count = 0}};
+        {ok, Snd1, false} ->
+            {continue, A#assoc{snd = Snd1}};
+        {error, protocol_violation} ->
+            {stop, protocol_abort({protocol_violation, <<"SACK of unsent TSN">>}, A)}
     end;
 chunk(#sctp_init{ack = true} = Ack, _P, Now, A) ->
     webrtc_sctp_handshake:handle_init_ack(Ack, Now, A);
@@ -470,7 +486,9 @@ chunk({heartbeat, Info}, _P, _Now, #assoc{state = St} = A) when
     St =/= closed, St =/= cookie_wait
 ->
     {continue, webrtc_sctp_out:ctrl({heartbeat_ack, Info}, A)};
-chunk({heartbeat_ack, <<Nonce:8/binary, Sent:64/signed>>}, _P, Now, #assoc{hb_out = {Nonce, _}} = A) ->
+chunk(
+    {heartbeat_ack, <<Nonce:8/binary, Sent:64/signed>>}, _P, Now, #assoc{hb_out = {Nonce, _}} = A
+) ->
     Snd = webrtc_sctp_ack:rtt_sample(Now - Sent, A#assoc.snd),
     {continue, A#assoc{snd = Snd, hb_out = undefined, error_count = 0}};
 chunk({abort, T, Causes}, #sctp_packet{vtag = Vtag}, _Now, A) ->
@@ -495,7 +513,9 @@ chunk(shutdown_ack, #sctp_packet{vtag = Vtag}, _Now, #assoc{state = St} = A) ->
         true ->
             {continue, A}
     end;
-chunk({shutdown_complete, T}, #sctp_packet{vtag = Vtag}, _Now, #assoc{state = shutdown_ack_sent} = A) ->
+chunk(
+    {shutdown_complete, T}, #sctp_packet{vtag = Vtag}, _Now, #assoc{state = shutdown_ack_sent} = A
+) ->
     Valid =
         case T of
             false -> Vtag =:= A#assoc.my_vtag;
@@ -518,8 +538,10 @@ chunk({Fwd, _, _} = F, _P, _Now, #assoc{state = St, rcv = Rcv} = A) when
     (Fwd =:= forward_tsn orelse Fwd =:= i_forward_tsn), ?DATA_STATES(St)
 ->
     case webrtc_sctp_recv:handle_forward_tsn(F, Rcv) of
-        {ok, Rcv1, Evs} -> {continue, lists:foldl(fun webrtc_sctp_out:event/2, A#assoc{rcv = Rcv1}, Evs)};
-        {abort, Cause} -> {stop, protocol_abort(Cause, A)}
+        {ok, Rcv1, Evs} ->
+            {continue, lists:foldl(fun webrtc_sctp_out:event/2, A#assoc{rcv = Rcv1}, Evs)};
+        {abort, Cause} ->
+            {stop, protocol_abort(Cause, A)}
     end;
 chunk({reconfig, Params}, _P, Now, #assoc{state = St} = A) when ?DATA_STATES(St) ->
     {continue, webrtc_sctp_reconfig:handle(Params, Now, A)};
@@ -527,8 +549,12 @@ chunk({unknown_chunk, Type, _, _} = C, _P, _Now, A) ->
     {Action, Report} = webrtc_sctp_chunk:unrecognized_chunk_action(Type),
     A1 =
         case Report of
-            true -> webrtc_sctp_out:ctrl({op_error, [{unrecognized_chunk, webrtc_sctp_chunk:encode_chunk(C)}]}, A);
-            false -> A
+            true ->
+                webrtc_sctp_out:ctrl(
+                    {op_error, [{unrecognized_chunk, webrtc_sctp_chunk:encode_chunk(C)}]}, A
+                );
+            false ->
+                A
         end,
     case Action of
         stop -> {stop, A1};
@@ -568,7 +594,9 @@ done_packet(Now, #assoc{state = St, rcv = Rcv0} = A0) when St =/= closed ->
         case St =:= shutdown_sent andalso Rcv0#rcv.got_data of
             true ->
                 Rto = (A0#assoc.snd)#snd.rto,
-                A0x = A0#assoc{rcv = Rcv0#rcv{sack_now = true}, t2 = {Now + Rto, Rto}, error_count = 0},
+                A0x = A0#assoc{
+                    rcv = Rcv0#rcv{sack_now = true}, t2 = {Now + Rto, Rto}, error_count = 0
+                },
                 webrtc_sctp_out:ctrl({shutdown, webrtc_sctp_recv:cum_tsn(Rcv0)}, A0x);
             false ->
                 A0

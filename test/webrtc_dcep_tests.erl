@@ -56,7 +56,10 @@ open(O, R) ->
 
 codec_errors_test() ->
     Bin = ?D:encode(open(true, reliable)),
-    [?assertMatch({error, _}, ?D:decode(binary:part(Bin, 0, N))) || N <- lists:seq(0, byte_size(Bin) - 1)],
+    [
+        ?assertMatch({error, _}, ?D:decode(binary:part(Bin, 0, N)))
+     || N <- lists:seq(0, byte_size(Bin) - 1)
+    ],
     ?assertMatch({error, _}, ?D:decode(<<Bin/binary, 0>>)),
     ?assertEqual({error, {bad_channel_type, 16#03}}, ?D:decode(<<3, 3, 0:16, 0:32, 0:16, 0:16>>)),
     ?assertEqual({error, bad_utf8}, ?D:decode(<<3, 0, 0:16, 0:32, 1:16, 0:16, 255>>)),
@@ -86,7 +89,14 @@ pair(ExtraA, ExtraB, NetOpts) ->
     {ok, N} = ?NET:run_until(fun(X) -> up(a, X) andalso up(b, X) end, ?MINUTE, N2),
     N.
 
-up(Side, N) -> lists:any(fun({connected, _}) -> true; (_) -> false end, ?NET:events(Side, N)).
+up(Side, N) ->
+    lists:any(
+        fun
+            ({connected, _}) -> true;
+            (_) -> false
+        end,
+        ?NET:events(Side, N)
+    ).
 
 open_ch(Side, Label, Opts, N) ->
     Self = self(),
@@ -113,7 +123,12 @@ close(Side, Id, N) ->
     ?NET:call(Side, fun(E, Now) -> ?D:close_channel(Id, Now, E) end, N).
 
 evs(Side, N) ->
-    [E || E <- ?NET:events(Side, N), element(1, E) =/= connected, element(1, E) =/= buffered_amount_low].
+    [
+        E
+     || E <- ?NET:events(Side, N),
+        element(1, E) =/= connected,
+        element(1, E) =/= buffered_amount_low
+    ].
 
 msgs(Side, N) ->
     [{Id, T, D} || {channel_message, Id, T, D} <- ?NET:events(Side, N)].
@@ -130,7 +145,11 @@ open_ack_test() ->
     ?assertEqual(0, Id),
     N2 = wait(fun(X) -> evs(b, X) =/= [] end, N1),
     ?assertMatch(
-        [{channel_open, 0, <<"chat">>, <<"json">>, #{initiator := remote, ordered := true, negotiated := false}}],
+        [
+            {channel_open, 0, <<"chat">>, <<"json">>, #{
+                initiator := remote, ordered := true, negotiated := false
+            }}
+        ],
         evs(b, N2)
     ),
     ?assertMatch([{channel_open, 0, <<"chat">>, <<"json">>, #{initiator := local}}], evs(a, N2)),
@@ -158,7 +177,9 @@ id_parity_test() ->
     {J0, N3} = open_ch(b, <<"b0">>, #{}, N2),
     {J1, N4} = open_ch(b, <<"b1">>, #{}, N3),
     ?assertEqual({0, 2, 1, 3}, {I0, I1, J0, J1}),
-    ?assertEqual({error, wrong_parity}, ?D:open_channel(<<"x">>, #{id => 7}, 0, ?NET:engine(a, N4))),
+    ?assertEqual(
+        {error, wrong_parity}, ?D:open_channel(<<"x">>, #{id => 7}, 0, ?NET:engine(a, N4))
+    ),
     ?assertEqual({error, id_in_use}, ?D:open_channel(<<"x">>, #{id => 2}, 0, ?NET:engine(a, N4))),
     ?assertMatch({ok, 8, _, _}, ?D:open_channel(<<"x">>, #{id => 8}, 0, ?NET:engine(a, N4))),
     N5 = wait(fun(X) -> length(evs(a, X)) =:= 4 andalso length(evs(b, X)) =:= 4 end, N4),
@@ -168,7 +189,9 @@ negotiated_test() ->
     N0 = pair(),
     {5, N1} = open_ch(a, <<"neg">>, #{negotiated => true, id => 5, ordered => false}, N0),
     {5, N2} = open_ch(b, <<"neg">>, #{negotiated => true, id => 5, ordered => false}, N1),
-    ?assertMatch([{channel_open, 5, <<"neg">>, <<>>, #{negotiated := true, ordered := false}}], evs(a, N2)),
+    ?assertMatch(
+        [{channel_open, 5, <<"neg">>, <<>>, #{negotiated := true, ordered := false}}], evs(a, N2)
+    ),
     ?assertMatch([{channel_open, 5, <<"neg">>, <<>>, #{negotiated := true}}], evs(b, N2)),
     N3 = send(b, 5, text, <<"x">>, send(a, 5, text, <<"y">>, N2)),
     N4 = wait(fun(X) -> msgs(a, X) =/= [] andalso msgs(b, X) =/= [] end, N3),
@@ -204,17 +227,30 @@ close_test() ->
     N2 = send(a, Id, text, <<"last">>, N1),
     N3 = close(a, Id, N2),
     ?assertEqual({error, not_open}, ?D:send(Id, text, <<"x">>, 0, ?NET:engine(a, N3))),
-    N4 = wait(fun(X) -> (has(a, {channel_closed, Id}))(X) andalso (has(b, {channel_closed, Id}))(X) end, N3),
+    N4 = wait(
+        fun(X) -> (has(a, {channel_closed, Id}))(X) andalso (has(b, {channel_closed, Id}))(X) end,
+        N3
+    ),
     %% Data sent before the close is delivered first.
-    ?assertEqual([{channel_open, Id, <<"c">>, <<>>}, {channel_message, Id, text, <<"last">>}, {channel_closed, Id}],
-        [strip(E) || E <- evs(b, N4)]),
+    ?assertEqual(
+        [
+            {channel_open, Id, <<"c">>, <<>>},
+            {channel_message, Id, text, <<"last">>},
+            {channel_closed, Id}
+        ],
+        [strip(E) || E <- evs(b, N4)]
+    ),
     ?assertEqual(#{}, ?D:channels(?NET:engine(a, N4))),
     ?assertEqual(#{}, ?D:channels(?NET:engine(b, N4))),
     %% The id can be used again.
     {Id2, N5} = open_ch(a, <<"again">>, #{}, N4),
     ?assertEqual(Id, Id2),
-    N6 = wait(fun(X) -> length([x || {channel_open, _, <<"again">>, _, _} <- evs(b, X)]) =:= 1 end, N5),
-    N7 = wait(fun(X) -> msgs(b, X) =/= [{Id, text, <<"last">>}] end, send(a, Id, text, <<"new">>, N6)),
+    N6 = wait(
+        fun(X) -> length([x || {channel_open, _, <<"again">>, _, _} <- evs(b, X)]) =:= 1 end, N5
+    ),
+    N7 = wait(
+        fun(X) -> msgs(b, X) =/= [{Id, text, <<"last">>}] end, send(a, Id, text, <<"new">>, N6)
+    ),
     ?assertEqual([{Id, text, <<"last">>}, {Id, text, <<"new">>}], msgs(b, N7)).
 
 %% RFC 8832 §6: before the peer answered, user data is sent ordered even
@@ -251,7 +287,10 @@ remote_close_test() ->
     {Id, N1} = open_ch(a, <<"r">>, #{}, N0),
     N2 = wait(fun(X) -> evs(b, X) =/= [] end, N1),
     N3 = close(b, Id, N2),
-    N4 = wait(fun(X) -> (has(a, {channel_closed, Id}))(X) andalso (has(b, {channel_closed, Id}))(X) end, N3),
+    N4 = wait(
+        fun(X) -> (has(a, {channel_closed, Id}))(X) andalso (has(b, {channel_closed, Id}))(X) end,
+        N3
+    ),
     ?assertEqual(#{}, ?D:channels(?NET:engine(a, N4))).
 
 close_lossy_test() ->
@@ -272,13 +311,17 @@ partial_reliability_channel_test() ->
     N2 = wait(fun(X) -> evs(b, X) =/= [] end, N1),
     ?assertMatch([{channel_open, Id, _, _, #{ordered := false, max_retransmits := 0}}], evs(b, N2)),
     Msg = fun(I) -> binary:copy(<<I:32>>, 250) end,
-    N3 = lists:foldl(fun(I, Acc) -> send(a, Id, binary, Msg(I), Acc) end, ?NET:run(1000, N2), lists:seq(1, 100)),
+    N3 = lists:foldl(
+        fun(I, Acc) -> send(a, Id, binary, Msg(I), Acc) end, ?NET:run(1000, N2), lists:seq(1, 100)
+    ),
     N4 = ?NET:run(?MINUTE, N3),
     Got = msgs(b, N4),
     ?assert(length(Got) < 100),
     ?assert(length(Got) > 0),
     ?assertEqual([], Got -- [{Id, binary, Msg(I)} || I <- lists:seq(1, 100)]),
-    {_, T} = ?D:open_channel(<<"t">>, #{max_retransmits => 1, max_packet_life_time => 1}, 0, ?NET:engine(a, N4)),
+    {_, T} = ?D:open_channel(
+        <<"t">>, #{max_retransmits => 1, max_packet_life_time => 1}, 0, ?NET:engine(a, N4)
+    ),
     ?assertEqual(badarg, T).
 
 shutdown_closes_channels_test() ->
@@ -287,14 +330,20 @@ shutdown_closes_channels_test() ->
     N2 = wait(fun(X) -> evs(b, X) =/= [] end, N1),
     S = ?D:sctp(?NET:engine(a, N2)),
     ?assertEqual(established, ?S:state(S)),
-    N3 = ?NET:call(a, fun(E, Now) ->
-        {S1, Acts} = ?S:abort(Now, ?D:sctp(E)),
-        _ = S1,
-        %% Deliver the ABORT to b only; a is discarded.
-        {E, [A || {send, _} = A <- Acts]}
-    end, N2),
+    N3 = ?NET:call(
+        a,
+        fun(E, Now) ->
+            {S1, Acts} = ?S:abort(Now, ?D:sctp(E)),
+            _ = S1,
+            %% Deliver the ABORT to b only; a is discarded.
+            {E, [A || {send, _} = A <- Acts]}
+        end,
+        N2
+    ),
     N4 = ?NET:run(1000, N3),
-    ?assertMatch([{channel_open, Id, _, _, _}, {channel_closed, Id}, {closed, {peer_abort, []}}], evs(b, N4)).
+    ?assertMatch(
+        [{channel_open, Id, _, _, _}, {channel_closed, Id}, {closed, {peer_abort, []}}], evs(b, N4)
+    ).
 
 %%====================================================================
 %% Against a raw SCTP peer
@@ -312,7 +361,9 @@ raw_send(Sid, Ppid, Data, N) ->
     ?NET:call(a, fun(E, Now) -> ?S:send(Sid, Ppid, Data, #{}, Now, E) end, N).
 
 open_label(Label) ->
-    {open, #{ordered => true, reliability => reliable, priority => 0, label => Label, protocol => <<>>}}.
+    {open, #{
+        ordered => true, reliability => reliable, priority => 0, label => Label, protocol => <<>>
+    }}.
 
 legacy_partial_ppid_test() ->
     N0 = raw_pair(),
@@ -323,7 +374,10 @@ legacy_partial_ppid_test() ->
     N5 = raw_send(0, 52, <<1, 2>>, N4),
     N6 = raw_send(0, 53, <<3>>, N5),
     N7 = wait(
-        fun(X) -> length(msgs(b, X)) =:= 2 andalso lists:keymember(message, 1, ?NET:events(a, X)) end, N6
+        fun(X) ->
+            length(msgs(b, X)) =:= 2 andalso lists:keymember(message, 1, ?NET:events(a, X))
+        end,
+        N6
     ),
     ?assertEqual([{0, text, <<"hello world">>}, {0, binary, <<1, 2, 3>>}], msgs(b, N7)),
     %% The ACK went back on the same stream with PPID 50.

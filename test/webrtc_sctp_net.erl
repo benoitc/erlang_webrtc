@@ -36,7 +36,8 @@
     delay = 10 :: non_neg_integer(),
     jitter = 0 :: non_neg_integer(),
     mtu = infinity :: pos_integer() | infinity,
-    filter = undefined :: undefined | fun((a | b, binary(), integer()) -> keep | drop | {replace, binary()}),
+    filter = undefined ::
+        undefined | fun((a | b, binary(), integer()) -> keep | drop | {replace, binary()}),
     ev = #{a => [], b => []} :: #{a | b => [term()]},
     stats = #{} :: #{atom() => non_neg_integer()}
 }).
@@ -223,7 +224,8 @@ chance(P, #net{rand = R} = N) ->
     {X, R1} = rand:uniform_s(R),
     {X < P, N#net{rand = R1}}.
 
-uniform(0, N) -> {0, N};
+uniform(0, N) ->
+    {0, N};
 uniform(Max, #net{rand = R} = N) ->
     {X, R1} = rand:uniform_s(Max + 1, R),
     {X - 1, N#net{rand = R1}}.

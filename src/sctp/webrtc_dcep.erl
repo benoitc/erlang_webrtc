@@ -73,7 +73,8 @@
 -type message() ::
     {open, #{
         ordered := boolean(),
-        reliability := reliable | {max_retransmits, 0..16#FFFFFFFF} | {max_packet_life_time, 0..16#FFFFFFFF},
+        reliability :=
+            reliable | {max_retransmits, 0..16#FFFFFFFF} | {max_packet_life_time, 0..16#FFFFFFFF},
         priority := 0..65535,
         label := binary(),
         protocol := binary()
@@ -94,7 +95,8 @@
     label = <<>> :: binary(),
     protocol = <<>> :: binary(),
     ordered = true :: boolean(),
-    reliability = reliable :: reliable | {max_retransmits | max_packet_life_time, non_neg_integer()},
+    reliability = reliable ::
+        reliable | {max_retransmits | max_packet_life_time, non_neg_integer()},
     priority = 256 :: 0..65535,
     negotiated = false :: boolean(),
     initiator = local :: local | remote,
@@ -126,7 +128,9 @@
 -spec encode(message()) -> binary().
 encode(ack) ->
     <<?MSG_ACK>>;
-encode({open, #{ordered := Ordered, reliability := Rel, priority := Prio, label := L, protocol := P}}) ->
+encode(
+    {open, #{ordered := Ordered, reliability := Rel, priority := Prio, label := L, protocol := P}}
+) ->
     {Type, Param} =
         case Rel of
             reliable -> {?RELIABLE, 0};
@@ -138,7 +142,8 @@ encode({open, #{ordered := Ordered, reliability := Rel, priority := Prio, label 
             true -> Type;
             false -> Type bor ?UNORDERED_BIT
         end,
-    <<?MSG_OPEN, Type1, Prio:16, Param:32, (byte_size(L)):16, (byte_size(P)):16, L/binary, P/binary>>.
+    <<?MSG_OPEN, Type1, Prio:16, Param:32, (byte_size(L)):16, (byte_size(P)):16, L/binary,
+        P/binary>>.
 
 -spec decode(binary()) -> {ok, message()} | {error, term()}.
 decode(<<?MSG_ACK>>) ->
@@ -242,11 +247,20 @@ open_channel(_, _, _, _) ->
 
 channel_from_opts(Label, Opts, #dc{channels = Chs} = D) ->
     Rel =
-        case {maps:get(max_retransmits, Opts, undefined), maps:get(max_packet_life_time, Opts, undefined)} of
-            {undefined, undefined} -> {ok, reliable};
-            {N, undefined} when is_integer(N), N >= 0, N =< 16#FFFFFFFF -> {ok, {max_retransmits, N}};
-            {undefined, T} when is_integer(T), T >= 0, T =< 16#FFFFFFFF -> {ok, {max_packet_life_time, T}};
-            _ -> {error, badarg}
+        case
+            {
+                maps:get(max_retransmits, Opts, undefined),
+                maps:get(max_packet_life_time, Opts, undefined)
+            }
+        of
+            {undefined, undefined} ->
+                {ok, reliable};
+            {N, undefined} when is_integer(N), N >= 0, N =< 16#FFFFFFFF ->
+                {ok, {max_retransmits, N}};
+            {undefined, T} when is_integer(T), T >= 0, T =< 16#FFFFFFFF ->
+                {ok, {max_packet_life_time, T}};
+            _ ->
+                {error, badarg}
         end,
     Negotiated = maps:get(negotiated, Opts, false),
     Proto = maps:get(protocol, Opts, <<>>),
@@ -258,8 +272,10 @@ channel_from_opts(Label, Opts, #dc{channels = Chs} = D) ->
             byte_size(Label) =< 65535 andalso byte_size(Proto) =< 65535,
     Id =
         case {Negotiated, maps:get(id, Opts, undefined)} of
-            {true, undefined} -> {error, missing_id};
-            {_, undefined} -> free_id(D);
+            {true, undefined} ->
+                {error, missing_id};
+            {_, undefined} ->
+                free_id(D);
             {_, I} when is_integer(I), I >= 0, I =< ?MAX_ID ->
                 case maps:is_key(I, Chs) of
                     true -> {error, id_in_use};
@@ -389,7 +405,9 @@ set_buffered_amount_low_threshold(Id, Low, #dc{sctp = S} = D) ->
 channels(#dc{channels = Chs}) ->
     maps:map(
         fun(_, Ch) ->
-            (event_opts(Ch))#{label => Ch#ch.label, protocol => Ch#ch.protocol, state => Ch#ch.state}
+            (event_opts(Ch))#{
+                label => Ch#ch.label, protocol => Ch#ch.protocol, state => Ch#ch.state
+            }
         end,
         Chs
     ).
@@ -528,10 +546,14 @@ dcep_message(Id, {error, _}, Now, #dc{channels = Chs} = D) ->
 user_message(Ch, Ppid, Data, Now, D) ->
     Id = Ch#ch.id,
     case Ppid of
-        ?PPID_STRING -> deliver(Ch, text, Data, D);
-        ?PPID_BINARY -> deliver(Ch, binary, Data, D);
-        ?PPID_STRING_EMPTY -> deliver(Ch, text, <<>>, D);
-        ?PPID_BINARY_EMPTY -> deliver(Ch, binary, <<>>, D);
+        ?PPID_STRING ->
+            deliver(Ch, text, Data, D);
+        ?PPID_BINARY ->
+            deliver(Ch, binary, Data, D);
+        ?PPID_STRING_EMPTY ->
+            deliver(Ch, text, <<>>, D);
+        ?PPID_BINARY_EMPTY ->
+            deliver(Ch, binary, <<>>, D);
         P when P =:= ?PPID_STRING_PARTIAL; P =:= ?PPID_BINARY_PARTIAL ->
             %% Deprecated PPID based fragmentation, accepted on receive.
             Bytes = Ch#ch.partial_bytes + byte_size(Data),

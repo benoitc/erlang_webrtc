@@ -145,8 +145,14 @@ advance(#rcv{seen = Seen, cum = Cum} = R) ->
 %% {Sid, false, SSN} by TSN; unordered DATA one bucket per stream by TSN
 %% where a message is a run of consecutive TSNs from B to E.
 deliver(_U, #sctp_data{beginning = true, ending = true} = C, R) ->
-    complete(C#sctp_data.sid, C#sctp_data.unordered, C#sctp_data.mid, C#sctp_data.ppid,
-        C#sctp_data.data, R);
+    complete(
+        C#sctp_data.sid,
+        C#sctp_data.unordered,
+        C#sctp_data.mid,
+        C#sctp_data.ppid,
+        C#sctp_data.data,
+        R
+    );
 deliver(U, #sctp_data{idata = false, unordered = true, sid = Sid} = C, R) ->
     Key = {Sid, true, bucket},
     Ra0 = maps:get(Key, R#rcv.ra, #ra{}),
@@ -182,7 +188,8 @@ deliver(U, #sctp_data{sid = Sid, unordered = Un, mid = Mid} = C, R) ->
             if
                 Ra#ra.bytes > R#rcv.max_msg ->
                     {abort, {protocol_violation, <<"message exceeds max-message-size">>}};
-                Ra#ra.first =/= undefined, Ra#ra.last =/= undefined,
+                Ra#ra.first =/= undefined,
+                Ra#ra.last =/= undefined,
                 map_size(Ra#ra.frags) =:= Ra#ra.last - Ra#ra.first + 1 ->
                     {Ppid, Data, _} = take_run(Ra#ra.first, Ra#ra.last, Ra#ra.frags),
                     R2 = R1#rcv{

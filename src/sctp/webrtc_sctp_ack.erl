@@ -87,7 +87,8 @@ process(Cum, Arwnd, Gaps0, Now, S0) ->
                 S9#snd{t3 = undefined};
             _ when Advanced -> S9#snd{t3 = Now + S9#snd.rto};
             _ when S9#snd.t3 =:= undefined -> S9#snd{t3 = Now + S9#snd.rto};
-            _ -> S9
+            _ ->
+                S9
         end,
     S11 =
         case map_size(S10#snd.out) of
@@ -170,7 +171,9 @@ renege(Gaps, Now, #snd{out = Out} = S) ->
                         Acc;
                     false ->
                         Acc#snd{
-                            out = (Acc#snd.out)#{U := Oc#oc{state = inflight, missing = Oc#oc.missing + 1}},
+                            out = (Acc#snd.out)#{
+                                U := Oc#oc{state = inflight, missing = Oc#oc.missing + 1}
+                            },
                             flight = Acc#snd.flight + Oc#oc.size,
                             flight_len = Acc#snd.flight_len + Oc#oc.len,
                             t3 =

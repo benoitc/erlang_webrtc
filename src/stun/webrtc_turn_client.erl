@@ -96,7 +96,6 @@
 -define(CHAN_LIFETIME, 600000).
 -define(CHAN_REFRESH, 540000).
 -define(MAX_STALE, 3).
--define(NONCE_COOKIE, "obMatJos2").
 
 -record(perm, {
     state = pending :: pending | installed,
@@ -306,7 +305,8 @@ wrap(Peer, Data, #turn{chans = Ch}) ->
 %%====================================================================
 
 request(Kind, Attrs, Now, #turn{server = S} = C) ->
-    Msg = webrtc_stun:request(method(Kind), Attrs ++ auth_attrs(C)),
+    Msg = webrtc_stun:request(method(Kind), Attrs ++ webrtc_turn_auth:attrs(
+        C#turn.username, C#turn.realm, C#turn.nonce, C#turn.pw_algs, C#turn.pw_alg)),
     Opts = #{integrity => C#turn.integrity, fingerprint => true},
     Bin = webrtc_stun:encode(Msg, maps:filter(fun(_, V) -> V =/= undefined end, Opts)),
     {Tx, Acts} = webrtc_stun_tx:send(
@@ -318,15 +318,6 @@ method(allocate) -> allocate;
 method(refresh) -> refresh;
 method({permission, _}) -> create_permission;
 method({channel, _, _}) -> channel_bind.
-
-auth_attrs(#turn{realm = undefined}) ->
-    [];
-auth_attrs(#turn{username = U, realm = R, nonce = N, pw_algs = Algs, pw_alg = Alg}) ->
-    [{username, U}, {realm, R}, {nonce, N}] ++
-        case Algs of
-            undefined -> [];
-            _ -> [{password_algorithms, Algs}, {password_algorithm, Alg}]
-        end.
 
 -spec handle_packet(binary(), integer(), client()) -> {client(), [action()]}.
 handle_packet(<<B, _/binary>> = Bin, _Now, C) when B >= 64, B =< 79 ->
@@ -369,7 +360,7 @@ data_indication(M, C) ->
     end.
 
 response(Kind, Attrs, #stun{txid = TxId} = M, Bin, Now, C) ->
-    case authentic(M, Bin, C) of
+    case webrtc_turn_auth:authentic(M, Bin, C#turn.integrity) of
         false ->
             {C, []};
         true ->
@@ -385,23 +376,6 @@ code(M) ->
     case webrtc_stun:get(error_code, M) of
         {ok, {Code, _}} -> Code;
         error -> 0
-    end.
-
-%% 401 and 438 are accepted without integrity (they carry the new
-%% realm and nonce); every other response to an authenticated request
-%% must verify. A 400 without integrity is discarded (RFC 8489 §9.2.5).
-authentic(M, Bin, #turn{integrity = I}) ->
-    Code =
-        case M#stun.class of
-            error -> code(M);
-            success -> 200
-        end,
-    HasMI = webrtc_stun:has_integrity(M),
-    if
-        Code =:= 401; Code =:= 438 -> true;
-        I =:= undefined, Code =:= 400 -> HasMI;
-        I =:= undefined -> true;
-        true -> HasMI andalso webrtc_stun:check_integrity(Bin, element(2, I)) =:= ok
     end.
 
 success(allocate, M, Now, C) ->
@@ -508,7 +482,7 @@ challenge(Kind, Attrs, M, Now, C) ->
     Algs = webrtc_stun:get(password_algorithms, M, undefined),
     case {Realm, Nonce} of
         {R, N} when is_binary(R), is_binary(N) ->
-            case pick_algorithm(N, Algs) of
+            case webrtc_turn_auth:pick_algorithm(N, Algs) of
                 {ok, Alg} ->
                     C1 = C#turn{realm = R, nonce = N, pw_algs = Algs, pw_alg = Alg},
                     request(Kind, Attrs, Now, set_key(C1));
@@ -519,41 +493,8 @@ challenge(Kind, Attrs, M, Now, C) ->
             fail(Kind, {error, 401}, C)
     end.
 
-%% RFC 8489 §9.2.1 nonce cookie: bit 0 is "password algorithms", bit 1
-%% "username anonymity" (USERHASH, not supported here).
-pick_algorithm(Nonce, Algs) ->
-    Features = nonce_features(Nonce),
-    if
-        Features band 16#800000 =/= 0, Algs =:= undefined ->
-            {error, {unsupported, missing_password_algorithms}};
-        Features band 16#400000 =/= 0 ->
-            {error, {unsupported, userhash}};
-        Algs =:= undefined ->
-            {ok, undefined};
-        true ->
-            case [A || {Name, _} = A <- Algs, Name =:= md5 orelse Name =:= sha256] of
-                [First | _] -> {ok, First};
-                [] -> {error, {unsupported, password_algorithms}}
-            end
-    end.
-
-nonce_features(<<?NONCE_COOKIE, B64:4/binary, _/binary>>) ->
-    try base64:decode(B64) of
-        <<F:24>> -> F;
-        _ -> 0
-    catch
-        error:_ -> 0
-    end;
-nonce_features(_) ->
-    0.
-
 set_key(#turn{username = U, realm = R, password = P, pw_alg = Alg} = C) ->
-    case Alg of
-        undefined ->
-            C#turn{integrity = {sha1, webrtc_stun:long_term_key(md5, U, R, P)}};
-        {Name, _} ->
-            C#turn{integrity = {sha256, webrtc_stun:long_term_key(Name, U, R, P)}}
-    end.
+    C#turn{integrity = webrtc_turn_auth:integrity(U, R, P, Alg)}.
 
 fail(allocate, Reason, C) ->
     fail_allocate(Reason, C);

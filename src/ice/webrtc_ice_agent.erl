@@ -218,7 +218,7 @@ remove_host(Sock, Now, S) ->
 set_remote_credentials(U, P, Now, #ice{remote_ufrag = undefined} = S) ->
     check_credentials(U, P),
     S1 = webrtc_ice_checklist:initial_states(S#ice{remote_ufrag = U, remote_pwd = P, started_at = Now}),
-    {S2, Acts} = webrtc_ice_conncheck:replay_early(Now, S1),
+    {S2, Acts} = webrtc_ice_responder:replay_early(Now, S1),
     finish(Now, S2, Acts);
 set_remote_credentials(U, P, Now, #ice{remote_ufrag = U, remote_pwd = P} = S) ->
     finish(Now, S, []);
@@ -252,7 +252,7 @@ add_remote_candidate(#ice_cand{component = Comp} = C0, Now, S) ->
                 error ->
                     {Id, S1} = webrtc_ice_checklist:add_remote(C, S),
                     S2 = webrtc_ice_checklist:pair_new_remote(Id, S1),
-                    {S3, Acts} = webrtc_ice_gather:permit(C, Now, S2),
+                    {S3, Acts} = webrtc_ice_relay:permit(C, Now, S2),
                     finish(Now, S3, Acts)
             end
     end.
@@ -283,7 +283,7 @@ end_of_candidates(Now, S) ->
 handle_packet(_Sock, _From, _Bin, _Now, #ice{state = closed} = S) ->
     {S, []};
 handle_packet(Sock, From, <<B, _/binary>> = Bin, Now, S) when B >= 64, B =< 79 ->
-    case webrtc_ice_gather:turn_key(Sock, From, S) of
+    case webrtc_ice_relay:turn_key(Sock, From, S) of
         {ok, Key} -> turn_in(Key, Bin, Now, S);
         error -> {?INC(dropped, S), []}
     end;
@@ -292,7 +292,7 @@ handle_packet(Sock, From, Bin, Now, S) ->
     finish(Now, S1, Acts).
 
 turn_in(Key, Bin, Now, S) ->
-    {S1, Acts, Deliver} = webrtc_ice_gather:turn_packet(Key, Bin, Now, S),
+    {S1, Acts, Deliver} = webrtc_ice_relay:turn_packet(Key, Bin, Now, S),
     {S2, Acts2} = deliver(Deliver, Now, S1),
     finish(Now, S2, Acts ++ Acts2).
 
@@ -314,7 +314,7 @@ deliver(Deliver, Now, S) ->
 stun_in(Via, From, Bin, Now, S) ->
     case webrtc_stun:decode(Bin) of
         {ok, #stun{method = binding, class = request} = M} ->
-            webrtc_ice_conncheck:handle_request(Via, From, M, Bin, Now, S);
+            webrtc_ice_responder:handle_request(Via, From, M, Bin, Now, S);
         {ok, #stun{method = binding, class = C, txid = TxId} = M} when C =:= success; C =:= error ->
             response_in(TxId, Via, From, M, Bin, Now, S);
         {ok, #stun{method = binding, class = indication}} ->
@@ -324,9 +324,9 @@ stun_in(Via, From, Bin, Now, S) ->
                 true ->
                     {?INC(dropped, S), []};
                 false ->
-                    case webrtc_ice_gather:turn_key(Via, From, S) of
+                    case webrtc_ice_relay:turn_key(Via, From, S) of
                         {ok, Key} ->
-                            {S1, Acts, Deliver} = webrtc_ice_gather:turn_packet(Key, Bin, Now, S),
+                            {S1, Acts, Deliver} = webrtc_ice_relay:turn_packet(Key, Bin, Now, S),
                             {S2, Acts2} = deliver(Deliver, Now, S1),
                             {S2, Acts ++ Acts2};
                         error ->
@@ -366,7 +366,7 @@ handle_timeout(_Now, #ice{state = closed} = S) ->
 handle_timeout(Now, S) ->
     {Tx, TxActs} = webrtc_stun_tx:handle_timeout(Now, S#ice.tx),
     {S1, A1} = lists:foldl(fun(A, Acc) -> tx_action(A, Now, Acc) end, {S#ice{tx = Tx}, []}, TxActs),
-    {S2, A2, Deliver} = webrtc_ice_gather:turn_timeout(Now, S1),
+    {S2, A2, Deliver} = webrtc_ice_relay:turn_timeout(Now, S1),
     {S3, A3} = deliver(Deliver, Now, S2),
     {S4, A4} = pace(Now, S3),
     {S5, A5} = webrtc_ice_consent:tick(Now, S4),
@@ -488,7 +488,7 @@ restart(Opts, Now, S) ->
 close(_Now, #ice{state = closed} = S) ->
     {S, []};
 close(Now, S) ->
-    {S1, Acts} = webrtc_ice_gather:close(Now, S),
+    {S1, Acts} = webrtc_ice_relay:close(Now, S),
     {S1#ice{state = closed, ta_at = infinity, recheck_at = infinity},
         Acts ++ [{event, {connection_state, closed}}]}.
 

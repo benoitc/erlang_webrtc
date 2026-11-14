@@ -345,6 +345,19 @@ dtls12_suites_test_() ->
                           {16#C02C, tls_ecdhe_ecdsa_with_aes_256_gcm_sha384},
                           {16#CCA9, tls_ecdhe_ecdsa_with_chacha20_poly1305_sha256}]].
 
+dtls12_groups_test_() ->
+    [?_test(begin
+         {Cl, Sv} = pair((v12())#{groups => [G]}, #{}),
+         #{ev := #{c := CE}} = run(Cl, Sv),
+         ?assertMatch([#{version := 'dtlsv1.2', group := G}], connected(CE))
+     end)
+     || G <- [x25519, secp256r1, secp384r1]].
+
+dtls12_srtp_profile_selection_test() ->
+    {Cl, Sv} = pair((v12())#{srtp_profiles => [1, 7]}, #{srtp_profiles => [8, 1]}),
+    #{ev := #{c := CE}} = run(Cl, Sv),
+    ?assertMatch([#{version := 'dtlsv1.2', srtp_profile := 1}], connected(CE)).
+
 dtls12_single_loss_test_() ->
     [?_test(begin
          {Cl, Sv} = pair(v12(), #{}),

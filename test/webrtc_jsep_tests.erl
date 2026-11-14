@@ -227,6 +227,68 @@ pranswer_test() ->
     {ok, A4} = webrtc_jsep:set_remote_description(answer, wire(Ans), A3),
     ?assertEqual({stable, stable}, {webrtc_jsep:signaling_state(A4), webrtc_jsep:signaling_state(B5)}).
 
+%% RFC 9429 §5.7: provisional answers can be rolled back, through either
+%% setter, and the previous negotiation applies again.
+pranswer_rollback_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    Before = {webrtc_jsep:negotiated(A1), webrtc_jsep:negotiated(B1)},
+    {ok, _, A2} = webrtc_jsep:add_transceiver(video, #{}, A1),
+    {ok, Offer, A3} = webrtc_jsep:create_offer(#{}, A2),
+    {ok, A4} = webrtc_jsep:set_local_description(offer, Offer, A3),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(Offer), B1),
+    {ok, Pr, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(pranswer, Pr, B3),
+    {ok, A5} = webrtc_jsep:set_remote_description(pranswer, wire(Pr), A4),
+    ?assertMatch(#{media := [_, _]}, webrtc_jsep:negotiated(A5)),
+    ?assertMatch([_, _], webrtc_jsep:transceivers(B4)),
+    %% Answerer: rollback from have-local-pranswer, through either setter.
+    lists:foreach(
+        fun(Set) ->
+            {ok, B5} = webrtc_jsep:Set(rollback, undefined, B4),
+            ?assertEqual(stable, webrtc_jsep:signaling_state(B5)),
+            ?assertEqual(element(2, Before), webrtc_jsep:negotiated(B5)),
+            ?assertMatch([_], webrtc_jsep:transceivers(B5)),
+            ?assertEqual(webrtc_jsep:remote_description(B1), webrtc_jsep:remote_description(B5))
+        end,
+        [set_local_description, set_remote_description]
+    ),
+    %% Offerer: rollback from have-remote-pranswer.
+    lists:foreach(
+        fun(Set) ->
+            {ok, A6} = webrtc_jsep:Set(rollback, undefined, A5),
+            ?assertEqual(stable, webrtc_jsep:signaling_state(A6)),
+            ?assertEqual(element(1, Before), webrtc_jsep:negotiated(A6)),
+            ?assertEqual(webrtc_jsep:local_description(A1), webrtc_jsep:local_description(A6)),
+            ?assertEqual(webrtc_jsep:remote_description(A1), webrtc_jsep:remote_description(A6))
+        end,
+        [set_local_description, set_remote_description]
+    ),
+    %% No rollback from stable.
+    ?assertEqual({error, invalid_state}, webrtc_jsep:set_remote_description(rollback, undefined, A1)),
+    ?assertEqual({error, invalid_state}, webrtc_jsep:set_local_description(rollback, undefined, A1)).
+
+%% A rolled back ICE restart leaves the ICE credentials as they were.
+ice_restart_rollback_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, Answer} = exchange(A0, new()),
+    A2 = webrtc_jsep:restart_ice(<<"newufrag">>, <<"newpasswordnewpassword">>, A1),
+    {ok, Offer, A3} = webrtc_jsep:create_offer(#{}, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(Offer), B1),
+    B3 = webrtc_jsep:restart_ice(<<"bnewufrg">>, <<"bnewpasswordbnewpassword">>, B2),
+    {ok, B4} = webrtc_jsep:set_remote_description(rollback, undefined, B3),
+    #{ice := Ice} = webrtc_jsep:negotiated(B4),
+    ?assertNotEqual(<<"newufrag">>, maps:get(remote_ufrag, Ice)),
+    {ok, Offer2, _} = webrtc_jsep:create_offer(#{}, B4),
+    {ok, Old} = ?M:ice_credentials(hd(Answer#sdp.media), Answer),
+    ?assertEqual({ok, Old}, ?M:ice_credentials(hd(Offer2#sdp.media), Offer2)),
+    %% The offerer's own restart survives a rollback of its offer: its
+    %% agent already uses the new credentials.
+    {ok, A4} = webrtc_jsep:set_local_description(offer, Offer, A3),
+    {ok, A5} = webrtc_jsep:set_local_description(rollback, undefined, A4),
+    {ok, Offer3, _} = webrtc_jsep:create_offer(#{}, A5),
+    ?assertMatch({ok, #{ufrag := <<"newufrag">>}}, ?M:ice_credentials(hd(Offer3#sdp.media), Offer3)).
+
 validation_test_() ->
     {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
     {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),

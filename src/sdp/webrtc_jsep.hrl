@@ -61,8 +61,8 @@
     dtls_role :: undefined | client | server,
     local_candidates = [] :: list(),
     local_eoc = false :: boolean(),
-    %% State saved when a remote offer is applied, for rollback.
-    snapshot :: undefined | tuple(),
+    %% State saved when an offer/answer exchange starts, for rollback.
+    snapshot :: undefined | map(),
     %% Our a=tls-id (RFC 8842 §5), new for every DTLS association.
     tls_id :: binary(),
     %% Remote ICE credentials of the current remote description.

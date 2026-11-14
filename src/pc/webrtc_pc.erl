@@ -31,6 +31,10 @@
     remote_ice :: undefined | {binary(), binary()},
     %% We started an ICE restart and wait for the peer's new credentials.
     local_restart = false :: boolean(),
+    %% A remote ICE restart accepted by JSEP but not applied to the
+    %% transport until the exchange ends in stable state: our new
+    %% credentials, and the local candidates to restore on rollback.
+    ice_pending :: undefined | #{ufrag := binary(), pwd := binary(), candidates := list(), gathering := atom()},
     %% Remote candidates trickled after the remote description but before
     %% our local description started the transport (bounded).
     early_candidates = [] :: [binary() | end_of_candidates]
@@ -109,7 +113,7 @@ handle_call({set_local_description, Type, Sdp}, _From, St) ->
             case webrtc_jsep:set_local_description(Type, Parsed, St#st.jsep) of
                 {ok, J} ->
                     St1 = signaling_changed(St#st{jsep = J}),
-                    St2 = ensure_transport(Type, St1),
+                    St2 = sync_ice(local, Type, ensure_transport(Type, St1)),
                     {reply, ok, after_negotiation(St2)};
                 {error, _} = E ->
                     {reply, E, St}
@@ -123,7 +127,7 @@ handle_call({set_remote_description, Type, Sdp}, _From, St) ->
             case webrtc_jsep:set_remote_description(Type, Parsed, St#st.jsep) of
                 {ok, J} ->
                     St1 = signaling_changed(St#st{jsep = J}),
-                    St2 = push_remote_ice(St1),
+                    St2 = sync_ice(remote, Type, St1),
                     {reply, ok, after_negotiation(St2)};
                 {error, _} = E ->
                     {reply, E, St}
@@ -198,10 +202,17 @@ terminate(_Reason, St) ->
 add_candidate(end_of_candidates, #st{transport = T} = St) when is_pid(T) ->
     {reply, webrtc_transport:end_of_candidates(T), St};
 add_candidate(Cand, #st{transport = T} = St) when is_pid(T) ->
-    {reply, webrtc_transport:add_remote_candidate(T, Cand), St};
-add_candidate(_Cand, #st{early_candidates = E} = St) when length(E) >= ?MAX_EARLY_CANDIDATES ->
-    {reply, {error, too_many_candidates}, St};
+    case restart_pending(St) of
+        %% Candidates of the next ICE generation wait for it.
+        true -> hold_candidate(Cand, St);
+        false -> {reply, webrtc_transport:add_remote_candidate(T, Cand), St}
+    end;
 add_candidate(Cand, St) ->
+    hold_candidate(Cand, St).
+
+hold_candidate(_Cand, #st{early_candidates = E} = St) when length(E) >= ?MAX_EARLY_CANDIDATES ->
+    {reply, {error, too_many_candidates}, St};
+hold_candidate(Cand, St) ->
     {reply, ok, St#st{early_candidates = St#st.early_candidates ++ [Cand]}}.
 
 %%====================================================================
@@ -270,67 +281,120 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     ),
     {ok, T} = webrtc_transport:start_link(TOpts),
     ok = webrtc_transport:gather(T),
-    St1 = push_remote_ice(St#st{transport = T, ice_role = Role}),
+    flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role}));
+ensure_transport(_Type, St) ->
+    St.
+
+flush_candidates(#st{transport = T, early_candidates = Early} = St) ->
     _ = [
         case C of
             end_of_candidates -> webrtc_transport:end_of_candidates(T);
             _ -> webrtc_transport:add_remote_candidate(T, C)
         end
-     || C <- St1#st.early_candidates
+     || C <- Early
     ],
-    St1#st{early_candidates = []};
-ensure_transport(_Type, St) ->
-    St.
+    St#st{early_candidates = []}.
 
-%% Give the transport the remote credentials and the candidates found in
-%% the remote description.
-push_remote_ice(#st{transport = undefined} = St) ->
+%% Keep the transport's ICE in step with the descriptions. New remote
+%% credentials mean an ICE restart (RFC 8445 §9); it reaches the
+%% transport only once the exchange is in stable state, so a rolled back
+%% offer or provisional answer leaves the live ICE generation untouched
+%% (RFC 9429 §5.7). When the peer restarts, our answer carries new
+%% credentials (RFC 9429 §5.3.1): they are chosen with the remote offer
+%% and given to the transport with our answer.
+sync_ice(_Side, rollback, #st{ice_pending = #{candidates := C, gathering := G}} = St) ->
+    St#st{ice_pending = undefined, local_candidates = C, gathering = G, early_candidates = []};
+sync_ice(_Side, rollback, St) ->
     St;
-push_remote_ice(#st{transport = T} = St) ->
+sync_ice(_Side, _Type, #st{transport = undefined} = St) ->
+    St;
+sync_ice(Side, _Type, St) ->
+    case {Side, restart_pending(St), webrtc_jsep:signaling_state(St#st.jsep)} of
+        {_, true, stable} -> flush_candidates(push_remote_ice(apply_restart(St)));
+        {remote, true, _} -> defer_restart(St);
+        {remote, false, _} -> push_remote_ice(St);
+        {local, _, _} -> St
+    end.
+
+restart_pending(#st{remote_ice = undefined}) ->
+    false;
+restart_pending(#st{remote_ice = Old} = St) ->
+    case remote_credentials(St) of
+        undefined -> false;
+        New -> New =/= Old
+    end.
+
+remote_credentials(St) ->
     case webrtc_jsep:remote_view(St#st.jsep) of
         undefined ->
-            St;
+            undefined;
         #sdp{media = Media} = R ->
             case [C || M <- Media, M#sdp_media.port =/= 0, {ok, C} <- [webrtc_sdp_media:ice_credentials(M, R)]] of
-                [#{ufrag := U, pwd := P} | _] ->
-                    St0 = maybe_remote_restart({U, P}, St),
-                    ok = webrtc_transport:set_remote_ice(T, U, P),
-                    Cands = lists:flatmap(fun webrtc_sdp_media:candidates/1, Media),
-                    Sent = case St0#st.remote_ice =:= {U, P} of
-                        true -> St0#st.remote_candidates_sent;
-                        false -> 0
-                    end,
-                    New = lists:nthtail(min(Sent, length(Cands)), Cands),
-                    %% Candidates that cannot be used are ignored (RFC 8839 §5.1).
-                    _ = [webrtc_transport:add_remote_candidate(T, C) || C <- New],
-                    case lists:any(fun webrtc_sdp_media:end_of_candidates/1, Media) of
-                        true -> ok = webrtc_transport:end_of_candidates(T);
-                        false -> ok
-                    end,
-                    St0#st{remote_candidates_sent = length(Cands), remote_ice = {U, P}};
-                [] ->
-                    St
+                [#{ufrag := U, pwd := P} | _] -> {U, P};
+                [] -> undefined
             end
     end.
 
-%% New remote ICE credentials mean an ICE restart (RFC 8445 §9). When the
-%% peer started it, restart our agent too with new credentials, which the
-%% answer carries (RFC 9429 §5.3.1).
-maybe_remote_restart(Creds, #st{remote_ice = Old} = St) when Old =:= undefined; Old =:= Creds ->
-    St;
-maybe_remote_restart(_Creds, #st{local_restart = true} = St) ->
+defer_restart(#st{ice_pending = undefined, local_restart = false} = St) ->
+    U = ice_string(8),
+    P = ice_string(24),
+    St#st{
+        jsep = webrtc_jsep:restart_ice(U, P, St#st.jsep),
+        ice_pending = #{ufrag => U, pwd => P, candidates => St#st.local_candidates, gathering => St#st.gathering},
+        local_candidates = [],
+        gathering = new
+    };
+defer_restart(St) ->
+    St.
+
+apply_restart(#st{transport = T, ice_pending = #{ufrag := U, pwd := P}} = St) ->
+    ok = webrtc_transport:restart_ice(T, U, P),
+    St#st{ice_pending = undefined};
+apply_restart(#st{local_restart = true} = St) ->
+    %% Our own restart: the transport already has our new credentials.
     St#st{local_restart = false};
-maybe_remote_restart(_Creds, #st{transport = T} = St) ->
+apply_restart(#st{transport = T} = St) ->
     U = ice_string(8),
     P = ice_string(24),
     ok = webrtc_transport:restart_ice(T, U, P),
     St#st{jsep = webrtc_jsep:restart_ice(U, P, St#st.jsep), local_candidates = [], gathering = new}.
 
-%% Once in stable state with both descriptions, configure the engines and
-%% announce remote tracks.
+%% Give the transport the remote credentials and the candidates found in
+%% the remote description.
+push_remote_ice(#st{transport = T} = St) ->
+    case remote_credentials(St) of
+        undefined ->
+            St;
+        {U, P} = Creds ->
+            #sdp{media = Media} = webrtc_jsep:remote_view(St#st.jsep),
+            ok = webrtc_transport:set_remote_ice(T, U, P),
+            Cands = lists:flatmap(fun webrtc_sdp_media:candidates/1, Media),
+            Sent =
+                case St#st.remote_ice =:= Creds of
+                    true -> St#st.remote_candidates_sent;
+                    false -> 0
+                end,
+            New = lists:nthtail(min(Sent, length(Cands)), Cands),
+            %% Candidates that cannot be used are ignored (RFC 8839 §5.1).
+            _ = [webrtc_transport:add_remote_candidate(T, C) || C <- New],
+            case lists:any(fun webrtc_sdp_media:end_of_candidates/1, Media) of
+                true -> ok = webrtc_transport:end_of_candidates(T);
+                false -> ok
+            end,
+            St#st{remote_candidates_sent = length(Cands), remote_ice = Creds}
+    end.
+
+%% With both descriptions, configure the engines and announce remote
+%% tracks: in stable state, and with a provisional answer (media may
+%% flow, RFC 9429 §4.1.10.1) unless it carries an ICE restart, which
+%% waits for the final answer.
 after_negotiation(#st{transport = T} = St) when is_pid(T) ->
-    case {webrtc_jsep:signaling_state(St#st.jsep), webrtc_jsep:negotiated(St#st.jsep)} of
-        {stable, #{} = Neg} ->
+    S = webrtc_jsep:signaling_state(St#st.jsep),
+    Ready =
+        S =:= stable orelse
+            ((S =:= have_local_pranswer orelse S =:= have_remote_pranswer) andalso not restart_pending(St)),
+    case {Ready, webrtc_jsep:negotiated(St#st.jsep)} of
+        {true, #{} = Neg} ->
             ok = webrtc_transport:configure(T, Neg),
             announce_tracks(Neg, St#st{configured = true});
         _ ->

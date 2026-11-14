@@ -138,8 +138,8 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | ID | Spec | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
 | JSEP-1 | 9429 §3.2 | Signaling state machine, invalid transitions refused | webrtc_jsep | invalid_states_test | Unit tested |
-| JSEP-2 | 9429 §4.1.10.2 | Local rollback; remote rollback removes transceivers created by the offer | webrtc_jsep | glare_rollback_test, remote_rollback_removes_created_transceivers_test | Unit tested |
-| JSEP-3 | 9429 §4.1.10 | pranswer in both directions | webrtc_jsep | pranswer_test | Unit tested |
+| JSEP-2 | 9429 §4.1.10.2, §5.7 | Rollback in every state but stable (offers and provisional answers), same effect through either setter; restores transceivers, DTLS role, tls-id and ICE credentials; remote rollback removes transceivers created by the offer; a rolled back remote ICE restart never reaches the transport | webrtc_jsep, webrtc_pc | glare_rollback_test, remote_rollback_removes_created_transceivers_test, pranswer_rollback_test, ice_restart_rollback_test, webrtc_pc_SUITE:remote_ice_restart_rolled_back | E2E tested |
+| JSEP-3 | 9429 §4.1.10.1 | pranswer in both directions; the transport is configured with the provisional answer (connection and data flow before the final answer) unless it carries an ICE restart, which waits for the final answer | webrtc_jsep, webrtc_pc | pranswer_test, webrtc_pc_SUITE:pranswer_connects | E2E tested |
 | JSEP-4 | 9429 §5.2.1 | Offer: mid per m= section, BUNDLE group, rtcp-mux, rtcp-rsize, ice-options trickle, fingerprint, setup actpass | webrtc_jsep_build | basic_test | Unit tested |
 | JSEP-5 | 9429 §5.2.2 | Subsequent offers keep m= section order and mids | webrtc_jsep_build | renegotiation_keeps_order_and_role_test | Unit tested |
 | JSEP-6 | 9429 §5.2.2 | Stopped transceiver rejected with port 0 and removed from BUNDLE | webrtc_jsep_build | stop_transceiver_test | Unit tested |

@@ -199,7 +199,7 @@ set_local_description(_, _, #jsep{signaling = closed}) ->
 set_local_description(offer, Sdp, #jsep{signaling = S} = J) when
     S =:= stable; S =:= have_local_offer
 ->
-    {ok, J#jsep{pending_local = Sdp, signaling = have_local_offer}};
+    {ok, snapshot(J#jsep{pending_local = Sdp, signaling = have_local_offer})};
 set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
     (Type =:= answer orelse Type =:= pranswer),
     (S =:= have_remote_offer orelse S =:= have_local_pranswer)
@@ -221,8 +221,8 @@ set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
                 ice_restart = false
             }}
     end;
-set_local_description(rollback, _, #jsep{signaling = have_local_offer} = J) ->
-    {ok, J#jsep{pending_local = undefined, signaling = stable}};
+set_local_description(rollback, _, J) ->
+    rollback(J);
 set_local_description(_, _, _) ->
     {error, invalid_state}.
 
@@ -235,10 +235,8 @@ set_remote_description(offer, Sdp0, #jsep{signaling = S} = J) when
     Sdp = bundle_view(Sdp0),
     maybe
         ok ?= validate(offer, Sdp, J),
-        J0 = restore(J),
-        Snap = {J0#jsep.transceivers, J0#jsep.next_id, J0#jsep.data_mid, J0#jsep.data_mline,
-                J0#jsep.dtls_role, J0#jsep.tls_id},
-        {ok, J01} ?= dtls_identity(Sdp, J0#jsep{snapshot = Snap}),
+        J0 = snapshot(restore(J)),
+        {ok, J01} ?= dtls_identity(Sdp, J0),
         J1 = associate(Sdp, J01),
         {ok, J1#jsep{
             pending_remote = Sdp,
@@ -269,24 +267,74 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
                     pending_local = undefined,
                     pending_remote = undefined,
                     pending_remote_orig = undefined,
+                    snapshot = undefined,
                     signaling = stable,
                     ice_restart = false
                 }}
         end
     end;
-set_remote_description(rollback, _, #jsep{signaling = have_remote_offer} = J) ->
-    J1 = restore(J),
-    {ok, J1#jsep{pending_remote = undefined, pending_remote_orig = undefined, signaling = stable, snapshot = undefined}};
+set_remote_description(rollback, _, J) ->
+    rollback(J);
 set_remote_description(_, _, _) ->
     {error, invalid_state}.
 
-%% Undo the transceiver changes of a previous remote offer (§4.1.10.2).
+%% RFC 9429 §5.7: a rollback is allowed in every state but stable, has
+%% the same effect through either setter, and abandons the offer/answer
+%% exchange in progress, provisional answers included.
+rollback(#jsep{signaling = S} = J) when
+    S =:= have_local_offer;
+    S =:= have_remote_offer;
+    S =:= have_local_pranswer;
+    S =:= have_remote_pranswer
+->
+    J1 = restore(J),
+    {ok, J1#jsep{
+        pending_local = undefined,
+        pending_remote = undefined,
+        pending_remote_orig = undefined,
+        snapshot = undefined,
+        signaling = stable
+    }};
+rollback(_) ->
+    {error, invalid_state}.
+
+%% The state an offer/answer exchange changes, saved when it starts (the
+%% first offer applied in stable state) so a rollback can undo it.
+snapshot(#jsep{snapshot = undefined} = J) ->
+    J#jsep{
+        snapshot = #{
+            transceivers => J#jsep.transceivers,
+            next_id => J#jsep.next_id,
+            data_mid => J#jsep.data_mid,
+            data_mline => J#jsep.data_mline,
+            dtls_role => J#jsep.dtls_role,
+            tls_id => J#jsep.tls_id,
+            remote_ice => J#jsep.remote_ice,
+            ice_ufrag => J#jsep.ice_ufrag,
+            ice_pwd => J#jsep.ice_pwd,
+            ice_restart => J#jsep.ice_restart
+        }
+    };
+snapshot(J) ->
+    J.
+
+%% Undo the changes of the exchange in progress (§4.1.10.2, §5.7).
 restore(#jsep{snapshot = undefined} = J) ->
     J;
-restore(#jsep{snapshot = {Trs, Next, DMid, DLine, Role, TlsId}} = J) ->
-    J#jsep{transceivers = Trs, next_id = Next, data_mid = DMid, data_mline = DLine, dtls_role = Role, tls_id = TlsId};
-restore(#jsep{snapshot = {Trs, Next, DMid, DLine}} = J) ->
-    J#jsep{transceivers = Trs, next_id = Next, data_mid = DMid, data_mline = DLine}.
+restore(#jsep{snapshot = Snap} = J) ->
+    J#jsep{
+        transceivers = maps:get(transceivers, Snap),
+        next_id = maps:get(next_id, Snap),
+        data_mid = maps:get(data_mid, Snap),
+        data_mline = maps:get(data_mline, Snap),
+        dtls_role = maps:get(dtls_role, Snap),
+        tls_id = maps:get(tls_id, Snap),
+        remote_ice = maps:get(remote_ice, Snap),
+        ice_ufrag = maps:get(ice_ufrag, Snap),
+        ice_pwd = maps:get(ice_pwd, Snap),
+        ice_restart = maps:get(ice_restart, Snap),
+        snapshot = undefined
+    }.
 
 -spec signaling_state(state()) -> atom().
 signaling_state(#jsep{signaling = S}) -> S.

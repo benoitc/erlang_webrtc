@@ -34,10 +34,12 @@
 %% @doc Parse a candidate. Accepts the bare attribute value, the
 %% `candidate:' form used by trickle ICE, and the full `a=candidate:' line.
 -spec parse(binary()) -> {ok, candidate()} | {error, term()}.
-parse(<<"a=", Rest/binary>>) -> parse_value(Rest);
+parse(<<"a=candidate:", Rest/binary>>) -> parse_value(Rest);
 parse(<<"candidate:", Rest/binary>>) -> parse_value(Rest);
 parse(Bin) when is_binary(Bin) -> parse_value(Bin).
 
+parse_value(<<>>) ->
+    {error, missing_fields};
 parse_value(Bin) ->
     case webrtc_sdp_lex:split_sp(Bin) of
         {ok, [F, C, T, P, A, Port, <<"typ">>, Type | Rest]} ->
@@ -205,6 +207,6 @@ extension(Name, #sdp_candidate{extensions = Exts}) ->
 %% (draft-ietf-mmusic-mdns-ice-candidates).
 -spec is_mdns(candidate()) -> boolean().
 is_mdns(#sdp_candidate{address = A}) when is_binary(A), byte_size(A) > 6 ->
-    string:lowercase(binary:part(A, byte_size(A), -6)) =:= <<".local">>;
+    webrtc_sdp_lex:lower(binary:part(A, byte_size(A), -6)) =:= <<".local">>;
 is_mdns(_) ->
     false.

@@ -20,6 +20,7 @@
     split_sp/1,
     split_first/2,
     trim_sp/1,
+    lower/1,
     parse_address/1,
     encode_address/1,
     check_text/2,
@@ -147,8 +148,23 @@ split_first(B, Sep) ->
         [A] -> {A, undefined}
     end.
 
+%% @doc Strip leading and trailing spaces and tabs. Works on bytes, so
+%% input that is not valid UTF-8 is fine.
 -spec trim_sp(binary()) -> binary().
-trim_sp(B) -> string:trim(B, both, " \t").
+trim_sp(<<C, R/binary>>) when C =:= $\s; C =:= $\t -> trim_sp(R);
+trim_sp(B) -> trim_tail(B, byte_size(B)).
+
+trim_tail(B, N) when N > 0 ->
+    case binary:at(B, N - 1) of
+        C when C =:= $\s; C =:= $\t -> trim_tail(B, N - 1);
+        _ -> binary_part(B, 0, N)
+    end;
+trim_tail(_, 0) ->
+    <<>>.
+
+%% @doc ASCII lowercase, byte by byte.
+-spec lower(binary()) -> binary().
+lower(B) -> << <<(case C of _ when C >= $A, C =< $Z -> C + 32; _ -> C end)>> || <<C>> <= B >>.
 
 %% @doc Parse a connection or candidate address: IPv4, IPv6 or FQDN
 %% (RFC 8866 `unicast-address' without `extn-addr'). The presence of a

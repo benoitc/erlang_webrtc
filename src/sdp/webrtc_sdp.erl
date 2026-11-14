@@ -52,8 +52,8 @@
     | {msid_semantic, webrtc_sdp_rtp:msid_semantic()}
     | {ssrc, webrtc_sdp_rtp:ssrc()}
     | {ssrc_group, webrtc_sdp_rtp:ssrc_group()}
-    | {rid, webrtc_sdp_rtp:rid()}
-    | {simulcast, webrtc_sdp_rtp:simulcast()}
+    | {rid, webrtc_sdp_rid:rid()}
+    | {simulcast, webrtc_sdp_rid:simulcast()}
     | {mid, binary()}
     | {group, #{semantics := binary(), mids := [binary()]}}
     | {ice_ufrag, binary()}

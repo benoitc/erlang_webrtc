@@ -144,7 +144,7 @@ parse_local(candidate, V) ->
     end;
 parse_local(fingerprint, V) ->
     case binary:split(V, <<" ">>) of
-        [H, Hex] -> fingerprint(hash(string:lowercase(H)), Hex);
+        [H, Hex] -> fingerprint(hash(webrtc_sdp_lex:lower(H)), Hex);
         _ -> error
     end;
 parse_local(setup, <<"actpass">>) ->

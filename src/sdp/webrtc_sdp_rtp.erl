@@ -1,7 +1,7 @@
 %% @doc RTP related SDP attribute values: rtpmap and fmtp (RFC 8866 §6),
 %% rtcp-fb (RFC 4585 §4.2), extmap (RFC 8285 §8), msid (RFC 8830),
-%% legacy msid-semantic, ssrc and ssrc-group (RFC 5576), rid (RFC 8851)
-%% and simulcast (RFC 8853).
+%% legacy msid-semantic, ssrc and ssrc-group (RFC 5576). rid and
+%% simulcast values are handled by `webrtc_sdp_rid'.
 %%
 %% `parse/2' takes the attribute key and the text after the colon;
 %% `encode/2' returns that text. Used by `webrtc_sdp_attr'.
@@ -19,8 +19,6 @@
     msid_semantic/0,
     ssrc/0,
     ssrc_group/0,
-    rid/0,
-    simulcast/0,
     direction/0
 ]).
 
@@ -46,15 +44,6 @@
 -type msid_semantic() :: #{semantic := binary(), ids := [binary()], raw => binary()}.
 -type ssrc() :: #{ssrc := 0..4294967295, attribute := binary(), value := binary() | undefined}.
 -type ssrc_group() :: #{semantics := binary(), ssrcs := [0..4294967295]}.
--type rid() :: #{
-    id := binary(),
-    direction := send | recv,
-    pts := [pt()],
-    params := [{binary(), binary() | undefined}]
-}.
-%% Each direction lists simulcast streams; each stream lists alternative
-%% rids as `{RidId, Paused}'.
--type simulcast() :: [{send | recv, [[{binary(), boolean()}, ...], ...]}, ...].
 
 -define(MAX_SSRC, 4294967295).
 
@@ -147,26 +136,8 @@ parse(ssrc_group, V) ->
     else
         _ -> error
     end;
-parse(rid, V) ->
-    maybe
-        {IdDir, Rest} = split_n(V, 2),
-        {ok, [Id, DirB]} ?= webrtc_sdp_lex:split_sp(IdDir),
-        true ?= webrtc_sdp_lex:is_rid_id(Id),
-        {ok, Dir} ?= rid_dir(DirB),
-        {ok, Pts, Params} ?= rid_params(Rest),
-        {ok, #{id => Id, direction => Dir, pts => Pts, params => Params}}
-    else
-        _ -> error
-    end;
-parse(simulcast, V) ->
-    case webrtc_sdp_lex:split_sp(V) of
-        {ok, [D1, L1]} ->
-            sc([{D1, L1}]);
-        {ok, [D1, L1, D2, L2]} when D1 =/= D2 ->
-            sc([{D1, L1}, {D2, L2}]);
-        _ ->
-            error
-    end.
+parse(Key, V) when Key =:= rid; Key =:= simulcast ->
+    webrtc_sdp_rid:parse(Key, V).
 
 %% Encoding name and clock rate, with optional channels.
 encoding([Name, Clock | Chans]) when length(Chans) =< 1 ->
@@ -266,85 +237,6 @@ enc_param(P) ->
         _ -> bad(fmtp_param, P)
     end.
 
-rid_dir(<<"send">>) -> {ok, send};
-rid_dir(<<"recv">>) -> {ok, recv};
-rid_dir(_) -> error.
-
-%% Split after the Nth space; the remainder may contain spaces.
-split_n(V, 2) ->
-    case binary:split(V, <<" ">>) of
-        [A, R] ->
-            case binary:split(R, <<" ">>) of
-                [B, Rest] -> {<<A/binary, " ", B/binary>>, Rest};
-                [B] -> {<<A/binary, " ", B/binary>>, undefined}
-            end;
-        [A] ->
-            {A, undefined}
-    end.
-
-rid_params(undefined) ->
-    {ok, [], []};
-rid_params(Rest) ->
-    Parts = binary:split(Rest, <<";">>, [global]),
-    case Parts of
-        [<<"pt=", Fmts/binary>> | Others] ->
-            maybe
-                {ok, Pts} ?= all_ok([pt(F) || F <- binary:split(Fmts, <<",">>, [global])]),
-                {ok, Params} ?= all_ok([rid_param(P) || P <- Others]),
-                {ok, Pts, Params}
-            end;
-        _ ->
-            case all_ok([rid_param(P) || P <- Parts]) of
-                {ok, Params} -> {ok, [], Params};
-                error -> error
-            end
-    end.
-
-%% rid-param-other = 1*(alpha-numeric / "-") ["=" param-val]
-rid_param(P) ->
-    {Name, Val} = webrtc_sdp_lex:split_first(P, <<"=">>),
-    NameOk = webrtc_sdp_lex:is_rid_id(Name) andalso binary:match(Name, <<"_">>) =:= nomatch,
-    ValOk =
-        case {Name, Val} of
-            {_, undefined} -> Name =/= <<"depend">>;
-            {<<"depend">>, _} -> lists:all(fun webrtc_sdp_lex:is_rid_id/1, binary:split(Val, <<",">>, [global]));
-            _ -> param_val(Val)
-        end,
-    case NameOk andalso ValOk of
-        true -> {ok, {Name, Val}};
-        false -> error
-    end.
-
-%% param-val = *(%x20-3A / %x3C-7E)
-param_val(<<C, R/binary>>) when C >= 16#20, C =< 16#7E, C =/= $; -> param_val(R);
-param_val(<<>>) -> true;
-param_val(_) -> false.
-
-sc(Descs) ->
-    maybe
-        {ok, Parsed} ?= all_ok([sc_desc(D, L) || {D, L} <- Descs]),
-        {ok, Parsed}
-    end.
-
-sc_desc(DirB, List) ->
-    maybe
-        {ok, Dir} ?= rid_dir(DirB),
-        {ok, Streams} ?= all_ok([sc_stream(S) || S <- binary:split(List, <<";">>, [global])]),
-        {ok, {Dir, Streams}}
-    end.
-
-sc_stream(S) ->
-    all_ok([sc_id(Id) || Id <- binary:split(S, <<",">>, [global])]).
-
-sc_id(<<"~", Id/binary>>) -> sc_rid(Id, true);
-sc_id(Id) -> sc_rid(Id, false).
-
-sc_rid(Id, Paused) ->
-    case webrtc_sdp_lex:is_rid_id(Id) of
-        true -> {ok, {Id, Paused}};
-        false -> error
-    end.
-
 all_ok(L) -> all_ok(L, []).
 all_ok([{ok, V} | R], Acc) -> all_ok(R, [V | Acc]);
 all_ok([], Acc) -> {ok, lists:reverse(Acc)};
@@ -356,7 +248,7 @@ all_ok(_, _) -> error.
 
 -spec encode(atom(), term()) -> iodata().
 encode(rtpmap, #{pt := Pt, name := Name, clock_rate := Rate} = M) ->
-    token(Name),
+    _ = token(Name),
     Ch =
         case maps:get(channels, M, undefined) of
             undefined -> [];
@@ -375,10 +267,10 @@ encode(fmtp, #{fmt := Fmt, params := Params} = M) ->
                 encode_fmtp_params(Params)
         end,
     Text =/= <<>> orelse bad(fmtp, M),
-    text(Text),
+    _ = text(Text),
     [enc_fmt(Fmt), $\s, Text];
 encode(rtcp_fb, #{pt := Pt, type := Type} = M) ->
-    token(Type),
+    _ = token(Type),
     P =
         case maps:get(param, M, undefined) of
             undefined -> [];
@@ -396,7 +288,7 @@ encode(rtcp_fb, #{pt := Pt, type := Type} = M) ->
 encode(extmap, #{id := Id, uri := Uri} = M) ->
     (is_integer(Id) andalso (Id >= 1 andalso Id =< 255 orelse Id >= 4096 andalso Id =< 4351)) orelse
         bad(extmap, M),
-    non_ws(Uri),
+    _ = non_ws(Uri),
     Dir =
         case maps:get(direction, M, undefined) of
             undefined -> [];
@@ -429,7 +321,7 @@ encode(msid_semantic, #{semantic := Sem, ids := Ids} = M) ->
             Canon
     end;
 encode(ssrc, #{ssrc := Id, attribute := Name} = M) ->
-    token(Name),
+    _ = token(Name),
     V =
         case maps:get(value, M, undefined) of
             undefined -> [];
@@ -438,50 +330,10 @@ encode(ssrc, #{ssrc := Id, attribute := Name} = M) ->
     [ssrc_id(Id), $\s, Name | V];
 encode(ssrc_group, #{semantics := Sem, ssrcs := Ssrcs}) ->
     lists:join($\s, [token(Sem) | [ssrc_id(S) || S <- Ssrcs]]);
-encode(rid, #{id := Id, direction := Dir} = M) ->
-    rid_id(Id),
-    Pts =
-        case maps:get(pts, M, []) of
-            [] -> [];
-            L -> [["pt=", lists:join($,, [enc_pt(P) || P <- L])]]
-        end,
-    Params = [enc_rid_param(P) || P <- maps:get(params, M, [])],
-    case Pts ++ Params of
-        [] -> [Id, $\s, enc_rid_dir(Dir)];
-        Restr -> [Id, $\s, enc_rid_dir(Dir), $\s, lists:join($;, Restr)]
-    end;
-encode(simulcast, [{D1, _}] = Descs) when D1 =:= send; D1 =:= recv ->
-    lists:join($\s, [enc_sc(D, S) || {D, S} <- Descs]);
-encode(simulcast, [{D1, _}, {D2, _}] = Descs) when D1 =/= D2 ->
-    lists:join($\s, [enc_sc(D, S) || {D, S} <- Descs]);
+encode(Key, V) when Key =:= rid; Key =:= simulcast ->
+    webrtc_sdp_rid:encode(Key, V);
 encode(Key, V) ->
     bad(Key, V).
-
-enc_sc(Dir, [_ | _] = Streams) ->
-    [enc_rid_dir(Dir), $\s, lists:join($;, [enc_sc_stream(S) || S <- Streams])];
-enc_sc(Dir, Streams) ->
-    bad(simulcast, {Dir, Streams}).
-
-enc_sc_stream([_ | _] = Alts) -> lists:join($,, [enc_sc_id(A) || A <- Alts]);
-enc_sc_stream(S) -> bad(simulcast, S).
-
-enc_sc_id({Id, true}) -> [$~, rid_id(Id)];
-enc_sc_id({Id, false}) -> rid_id(Id).
-
-enc_rid_param({Name, undefined} = P) ->
-    case rid_param(Name) of
-        {ok, _} -> Name;
-        error -> bad(rid, P)
-    end;
-enc_rid_param({Name, Val} = P) when is_binary(Name), is_binary(Val) ->
-    Text = <<Name/binary, "=", Val/binary>>,
-    case rid_param(Text) of
-        {ok, _} -> Text;
-        error -> bad(rid, P)
-    end.
-
-enc_rid_dir(send) -> <<"send">>;
-enc_rid_dir(recv) -> <<"recv">>.
 
 enc_dir(D) when D =:= sendrecv; D =:= sendonly; D =:= recvonly; D =:= inactive -> atom_to_binary(D).
 
@@ -496,10 +348,6 @@ ssrc_id(S) -> bad(ssrc, S).
 
 pos(N) when is_integer(N), N > 0 -> integer_to_binary(N);
 pos(N) -> bad(integer, N).
-
-rid_id(Id) ->
-    is_binary(Id) andalso webrtc_sdp_lex:is_rid_id(Id) orelse bad(rid_id, Id),
-    Id.
 
 token(B) ->
     is_binary(B) andalso webrtc_sdp_lex:is_token(B) orelse bad(token, B),

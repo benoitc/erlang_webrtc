@@ -251,7 +251,8 @@ add_remote_candidate(#ice_cand{component = Comp} = C0, Now, S) ->
         false ->
             case webrtc_ice_checklist:find_remote(Comp, webrtc_ice_candidate:transport_address(C), S) of
                 {ok, Id} ->
-                    finish(Now, upgrade_prflx(Id, C, S), []);
+                    {S1, Acts} = upgrade_prflx(Id, C, Now, S),
+                    finish(Now, S1, Acts);
                 error ->
                     {Id, S1} = webrtc_ice_checklist:add_remote(C, S),
                     S2 = webrtc_ice_checklist:pair_new_remote(Id, S1),
@@ -262,14 +263,16 @@ add_remote_candidate(#ice_cand{component = Comp} = C0, Now, S) ->
 
 %% A signaled candidate already learned as peer-reflexive takes its
 %% signaled type, priority and foundation (RFC 8445 §7.3.1.3, RFC 8838
-%% §11).
-upgrade_prflx(Id, C, S) ->
+%% §11). A peer-reflexive candidate was only paired with the local base
+%% that received the check: now it is paired with every local base, and
+%% relays permit it, as any signaled candidate.
+upgrade_prflx(Id, C, Now, S) ->
     case webrtc_ice_checklist:remote(Id, S) of
         #ice_cand{type = prflx} ->
-            S1 = S#ice{remote = (S#ice.remote)#{Id => C}},
-            webrtc_ice_checklist:recompute_priorities(S1);
+            S1 = webrtc_ice_checklist:recompute_priorities(S#ice{remote = (S#ice.remote)#{Id => C}}),
+            webrtc_ice_relay:permit(C, Now, webrtc_ice_checklist:pair_new_remote(Id, S1));
         _ ->
-            S
+            {S, []}
     end.
 
 -spec end_of_candidates(integer(), agent()) -> {agent(), [action()]}.

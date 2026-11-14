@@ -64,7 +64,9 @@
     connected = false :: boolean(),
     %% Optional outbound filter used by impairment tests:
     %% fun((Dest, Bin, FState) -> {[{DelayMs, Bin}], FState}).
-    filter :: undefined | {fun(), term()}
+    filter :: undefined | {fun(), term()},
+    %% Host name candidates (mDNS, FQDN) being resolved.
+    mdns :: webrtc_mdns_client:client()
 }).
 
 %%====================================================================
@@ -118,7 +120,11 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 cert = Cert,
                 media = webrtc_media:new(#{cname => maps:get(cname, Opts, <<"webrtc">>)}),
                 srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),
-                filter = maps:get(outbound_filter, Opts, undefined)
+                filter = maps:get(outbound_filter, Opts, undefined),
+                mdns = webrtc_mdns_client:new(
+                    (maps:get(mdns, Opts, #{}))#{hide_host => maps:get(mdns_host_candidates, Opts, false)},
+                    lists:usort([family(IP) || {_, {IP, _}} <- Sockets])
+                )
             }}
     end.
 
@@ -155,6 +161,9 @@ local_addresses(Opts) ->
             ])
     end.
 
+family(IP) when tuple_size(IP) =:= 4 -> inet;
+family(_) -> inet6.
+
 usable({169, 254, _, _}) -> false;
 usable({A, _, _, _, _, _, _, _}) when A band 16#FFC0 =:= 16#FE80 -> false;
 usable(_) -> true.
@@ -164,20 +173,26 @@ handle_call(gather, _From, St) ->
 handle_call({set_remote_ice, U, P}, _From, St) ->
     run(St, fun(Now, I) -> webrtc_ice_agent:set_remote_credentials(U, P, Now, I) end, ok);
 handle_call({add_remote_candidate, Cand}, _From, St) ->
-    Value =
-        case Cand of
-            #sdp_candidate{} -> webrtc_sdp_candidate:encode(Cand);
-            B when is_binary(B) -> B
-        end,
-    run(St, fun(Now, I) -> webrtc_ice_agent:add_remote_candidate(Value, Now, I) end, ok);
+    %% Host names are resolved first (draft-ietf-mmusic-mdns-ice-candidates).
+    case webrtc_mdns_client:remote_candidate(Cand, St#st.mdns) of
+        {add, Value, M} ->
+            run(St#st{mdns = M}, fun(Now, I) -> webrtc_ice_agent:add_remote_candidate(Value, Now, I) end, ok);
+        {pending, M} ->
+            {reply, ok, St#st{mdns = M}};
+        {error, R, M} ->
+            {reply, {error, R}, St#st{mdns = M}}
+    end;
 handle_call(end_of_candidates, _From, St) ->
-    run(St, fun(Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I) end, ok);
+    case webrtc_mdns_client:end_of_candidates(St#st.mdns) of
+        {now, M} -> run(St#st{mdns = M}, fun(Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I) end, ok);
+        {deferred, M} -> {reply, ok, St#st{mdns = M}}
+    end;
 handle_call({restart_ice, U, P}, _From, St) ->
     {I1, Acts} = webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, now_ms(), St#st.ice),
-    St1 = ice_actions(Acts, St#st{ice = I1}),
+    St0 = ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns)}),
     %% The candidates are kept across the restart but belong to the new
     %% ICE generation: signal them again (RFC 8445 §9, RFC 8838 §4.4).
-    _ = [to_pc({local_candidate, C}, St1) || C <- webrtc_ice_agent:local_candidates(I1)],
+    St1 = lists:foldl(fun local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),
     to_pc({gathering_state, complete}, St1),
     {reply, ok, arm(St1)};
 handle_call({configure, Neg}, _From, St) ->
@@ -239,10 +254,23 @@ handle_info({timeout, Ref, tick}, #st{timer = {Ref, _}} = St) ->
     {noreply, arm(St1)};
 handle_info({timeout, _Ref, tick}, St) ->
     {noreply, St};
-handle_info(_Other, St) ->
-    {noreply, St}.
+handle_info(Other, St) ->
+    %% Resolved host names: add the candidates, then a deferred
+    %% end-of-candidates.
+    case webrtc_mdns_client:handle_info(Other, St#st.mdns) of
+        {ok, Values, Eoc, M} ->
+            Add = fun(V, S) -> element(3, run(S, fun(Now, I) -> webrtc_ice_agent:add_remote_candidate(V, Now, I) end, ok)) end,
+            St1 = lists:foldl(Add, St#st{mdns = M}, Values),
+            {noreply, element(3, run(St1, fun(Now, I) -> eoc(Eoc, Now, I) end, ok))};
+        ignore ->
+            {noreply, St}
+    end.
+
+eoc(true, Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I);
+eoc(false, _Now, I) -> {I, []}.
 
 terminate(_Reason, St) ->
+    ok = webrtc_mdns_client:stop(St#st.mdns),
     case St#st.dtls of
         undefined -> ok;
         D -> _ = transmit_dtls(element(2, webrtc_dtls:close(D)), St)
@@ -256,9 +284,13 @@ terminate(_Reason, St) ->
 
 %% Run an ICE agent operation and execute its actions.
 run(St, F, Reply) ->
-    {I1, Acts} = F(now_ms(), St#st.ice),
-    St1 = ice_actions(Acts, St#st{ice = I1}),
-    {reply, Reply, arm(St1)}.
+    case F(now_ms(), St#st.ice) of
+        {error, _} = E ->
+            {reply, E, St};
+        {I1, Acts} ->
+            St1 = ice_actions(Acts, St#st{ice = I1}),
+            {reply, Reply, arm(St1)}
+    end.
 
 configure_engines(Neg, St0) ->
     #{dtls := #{role := Role, remote_fingerprints := FPs}, media := Media, data := Data} = Neg,
@@ -373,12 +405,21 @@ ice_action({event, {data, _Via, Peer, Bin}}, St) ->
 ice_action({event, {selected_pair, L, R}}, St) ->
     to_pc({selected_pair, L, R}, St),
     start_dtls_if_ready(St);
+ice_action({event, {local_candidate, C}}, St) ->
+    local_candidate(C, St);
 ice_action({event, {consent_lost, _, _} = E}, St) ->
     to_pc(E, St),
     St;
 ice_action({event, E}, St) ->
     to_pc(E, St),
     St.
+
+%% Signaled as a candidate-attribute value, with an mDNS name in place
+%% of the host address when `mdns_host_candidates' is set.
+local_candidate(C, St) ->
+    {Value, M} = webrtc_mdns_client:local_candidate(C, St#st.mdns),
+    to_pc({local_candidate, Value}, St),
+    St#st{mdns = M}.
 
 secure_relayed(_Peer, Bin, St) ->
     case webrtc_demux:classify(Bin) of

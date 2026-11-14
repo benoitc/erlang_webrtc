@@ -228,7 +228,11 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     #sdp{media = [M | _]} = Local = webrtc_jsep:local_description(St#st.jsep),
     {ok, #{ufrag := U, pwd := P}} = webrtc_sdp_media:ice_credentials(M, Local),
     TOpts = maps:merge(
-        maps:with([stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter], St#st.opts),
+        maps:with(
+            [stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter, mdns,
+                mdns_host_candidates],
+            St#st.opts
+        ),
         #{
             pc => self(),
             app => St#st.app,
@@ -265,7 +269,8 @@ push_remote_ice(#st{transport = T} = St) ->
                         false -> 0
                     end,
                     New = lists:nthtail(min(Sent, length(Cands)), Cands),
-                    _ = [ok = webrtc_transport:add_remote_candidate(T, C) || C <- New],
+                    %% Candidates that cannot be used are ignored (RFC 8839 §5.1).
+                    _ = [webrtc_transport:add_remote_candidate(T, C) || C <- New],
                     case lists:any(fun webrtc_sdp_media:end_of_candidates/1, Media) of
                         true -> ok = webrtc_transport:end_of_candidates(T);
                         false -> ok
@@ -316,8 +321,7 @@ announce_tracks(#{media := Media}, St) ->
 %% Transport events and connection state (W3C RTCPeerConnectionState)
 %%====================================================================
 
-transport_event({local_candidate, #ice_cand{} = C}, St) ->
-    Value = webrtc_ice_candidate:to_sdp(C),
+transport_event({local_candidate, Value}, St) when is_binary(Value) ->
     Mid = bundle_tag(St),
     notify({ice_candidate, Value, Mid}, St),
     {ok, SdpCand} = webrtc_sdp_candidate:parse(Value),

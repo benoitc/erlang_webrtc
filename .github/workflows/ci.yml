@@ -33,9 +33,17 @@ jobs:
           path: _build/test/logs
 
   e2e:
-    name: Erlang to Erlang over UDP
+    name: Erlang to Erlang over UDP (${{ matrix.arch }})
     needs: protocol
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
@@ -46,13 +54,21 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: e2e-logs
+          name: e2e-logs-${{ matrix.arch }}
           path: _build/test/logs
 
   interop:
-    name: Interop (OTP ssl, OpenSSL, Pion, aiortc, Chromium)
+    name: Interop (OTP ssl, OpenSSL, Pion, aiortc, browsers, ${{ matrix.arch }})
     needs: protocol
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
@@ -70,7 +86,7 @@ jobs:
           node-version: '22'
       - name: Build peer adapters
         run: make -C interop all
-      - name: Install headless Chromium
+      - name: Install headless browsers
         run: cd interop/browser && npm ci && npx playwright install --with-deps chromium firefox
       - name: Run interop suites
         run: rebar3 ct --dir test/interop
@@ -80,5 +96,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: interop-logs
+          name: interop-logs-${{ matrix.arch }}
           path: _build/test/logs

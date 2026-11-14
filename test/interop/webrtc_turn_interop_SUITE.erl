@@ -10,11 +10,13 @@
 -include("webrtc_ice.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
--export([relay_only_datachannel/1, relay_only_media/1, wrong_credentials_no_relay/1, one_side_relayed/1]).
+-export([relay_only_datachannel/1, relay_only_media/1, wrong_credentials_no_relay/1, one_side_relayed/1,
+         relayed_spoofing_dropped/1]).
 
 -define(S, webrtc_test_signal).
 
-all() -> [relay_only_datachannel, relay_only_media, wrong_credentials_no_relay, one_side_relayed].
+all() -> [relay_only_datachannel, relay_only_media, wrong_credentials_no_relay, one_side_relayed,
+          relayed_spoofing_dropped].
 
 init_per_suite(Config) ->
     Bin = filename:join([root(), "interop", "turn", "bin", "turn-server"]),
@@ -78,10 +80,30 @@ relayed_pc(Config, Password) ->
     }),
     Pc.
 
+%% Connect, logging both sides' ICE and DTLS state when it fails.
+connect(A, B) ->
+    try
+        ?S:connect(A, B, 30000)
+    catch
+        C:R:Stk ->
+            [begin
+                 ct:pal("~p stats: ~p", [N, webrtc:get_stats(P)]),
+                 {ok, T} = gen_server:call(P, transport_pid),
+                 ct:pal("~p transport state: ~P", [N, sys:get_state(T), 80])
+             end || {N, P} <- [{a, A}, {b, B}]],
+            erlang:raise(C, R, Stk)
+    end.
+
+%% Data may flow before nomination (RFC 8445 §12.1): wait for it.
 selected_types(Pc) ->
+    [{L#ice_cand.type, R#ice_cand.type} || {L, R} <- selected(Pc, 50)].
+
+selected(Pc, Tries) ->
     #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
-    [{L#ice_cand.type, R#ice_cand.type}
-     || #{selected := true, local := #ice_cand{} = L, remote := #ice_cand{} = R} <- Pairs].
+    case [{L, R} || #{selected := true, local := #ice_cand{} = L, remote := #ice_cand{} = R} <- Pairs] of
+        [] when Tries > 0 -> timer:sleep(100), selected(Pc, Tries - 1);
+        Sel -> Sel
+    end.
 
 relay_only_datachannel(Config) ->
     A = relayed_pc(Config, <<"wonderland">>),
@@ -127,7 +149,7 @@ one_side_relayed(Config) ->
     A = relayed_pc(Config, <<"wonderland">>),
     {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
     ok = webrtc:create_data_channel(A, <<"h">>, #{}),
-    ?S:connect(A, B, 30000),
+    connect(A, B),
     {ok, {datachannel_open, Id, _, _, _}} =
         ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 15000),
     ok = webrtc:send_data(A, Id, text, <<"half relayed">>),
@@ -135,5 +157,31 @@ one_side_relayed(Config) ->
     TA = selected_types(A),
     ct:log("A pairs: ~p, B pairs: ~p", [TA, selected_types(B)]),
     ?assert(lists:any(fun({L, _}) -> L =:= relay end, TA)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% TURN permissions cover a whole IP (RFC 8656 §9): another port of a
+%% permitted host reaches the relay. Only the validated pair may reach
+%% DTLS and SRTP.
+relayed_spoofing_dropped(Config) ->
+    A = relayed_pc(Config, <<"wonderland">>),
+    B = relayed_pc(Config, <<"wonderland">>),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ?S:connect(A, B, 30000),
+    [Relay | _] = [{L#ice_cand.address, L#ice_cand.port} || {#ice_cand{type = relay} = L, _} <- selected(A, 50)],
+    {ok, Rogue} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
+    {IP, Port} = Relay,
+    [ok = gen_udp:send(Rogue, IP, Port, <<128, 111, N:16, 0:64, (crypto:strong_rand_bytes(40))/binary>>)
+     || N <- lists:seq(1, 200)],
+    [ok = gen_udp:send(Rogue, IP, Port, <<23, 16#FEFD:16, 0:16, N:48, 40:16, (crypto:strong_rand_bytes(40))/binary>>)
+     || N <- lists:seq(1, 200)],
+    timer:sleep(500),
+    #{transport := #{media := #{counters := C}}} = webrtc:get_stats(A),
+    ct:log("A media counters: ~p", [C]),
+    ?assertEqual(0, maps:get(srtp_rejected, C, 0)),
+    ok = webrtc:send_rtp(B, <<"0">>, <<"real">>, #{timestamp => 1}),
+    {ok, _} = ?S:wait(A, fun({rtp, _, #rtp{payload = <<"real">>}}) -> true; (_) -> false end, 10000),
+    gen_udp:close(Rogue),
     webrtc:close(A),
     webrtc:close(B).

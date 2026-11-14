@@ -5,12 +5,12 @@
 -include("webrtc_rtp.hrl").
 -include("webrtc_rtp_rtcp.hrl").
 
-jsep() ->
-    webrtc_jsep:new(#{
+jsep(Extra) ->
+    webrtc_jsep:new(maps:merge(#{
         ice_ufrag => <<"ufrag">>,
         ice_pwd => <<"passwordpasswordpassword">>,
         fingerprints => [{sha256, crypto:strong_rand_bytes(32)}]
-    }).
+    }, Extra)).
 
 wire(Sdp) ->
     {ok, P} = webrtc_sdp:parse(webrtc_sdp:encode(Sdp)),
@@ -18,9 +18,12 @@ wire(Sdp) ->
 
 %% Negotiate audio + video both ways and return configured sessions.
 pair() ->
-    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
+    pair(#{}).
+
+pair(JsepOpts) ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep(JsepOpts)),
     {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
-    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, jsep(JsepOpts)),
     {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),
     {ok, O, A2} = webrtc_jsep:create_offer(#{}, A1),
     {ok, A3} = webrtc_jsep:set_local_description(offer, O, A2),
@@ -158,3 +161,167 @@ garbage_test() ->
     [_ = webrtc_media:handle_packet(<<128, (rand:bytes(rand:uniform(200)))/binary>>, 0, SB)
      || _ <- lists:seq(1, 2000)],
     ok.
+
+%% Without RTX a NACK is answered with the bytes of the first
+%% transmission (protecting the packet again would reuse its SRTP index).
+nack_without_rtx_test() ->
+    Vp8 = hd(webrtc_jsep_caps:default_codecs(video)),
+    {SA0, SB0, _, _} = pair(#{codecs => #{video => [Vp8]}}),
+    {Pkts, SA1} = lists:foldl(
+        fun(I, {Acc, S}) ->
+            {ok, O, S1} = webrtc_media:send(<<"1">>, <<I>>, #{timestamp => I * 3000}, 0, S),
+            {Acc ++ O, S1}
+        end,
+        {[], SA0},
+        lists:seq(1, 5)
+    ),
+    [P1, P2, Lost, P4, P5] = Pkts,
+    {SB1, A1} = deliver([P1, P2, P4, P5], SB0, 0),
+    {SB2, A2} = webrtc_media:handle_timeout(50, SB1),
+    Nacks = sends(A1) ++ sends(A2),
+    ?assert(length(Nacks) >= 1),
+    {SA2, A3} = deliver(Nacks, SA1, 60),
+    ?assertEqual([Lost], sends(A3)),
+    {_SB3, A4} = deliver(sends(A3), SB2, 70),
+    ?assertMatch([{rtp, <<"1">>, #rtp{payload = <<3>>}}], events(A4)),
+    #{counters := C} = webrtc_media:stats(SA2),
+    ?assertEqual(1, maps:get(retransmitted, C)),
+    ?assertEqual(0, maps:get(srtp_failed, C, 0)).
+
+%%--------------------------------------------------------------------
+%% Receive streams stay bounded when the peer keeps changing SSRC
+%%--------------------------------------------------------------------
+
+-define(URI_MID, <<"urn:ietf:params:rtp-hdrext:sdes:mid">>).
+
+%% B without signaled SSRCs, and A's sending key, so the test can send
+%% packets with any SSRC.
+keyed() ->
+    {_, _, _, MB} = pair(),
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    MB1 = [M#{remote_ssrcs => []} || M <- MB],
+    SB = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{}))),
+    {Tx, _} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    [#{mid := <<"0">>, recv_extensions := #{?URI_MID := MidId}, recv_codecs := [#{pt := Pt} | _]} | _] = MB1,
+    {SB, {Tx, MidId, Pt}}.
+
+from(Ssrc, Seq, {Tx, MidId, Pt}) ->
+    Pkt = #rtp{pt = Pt, seq = Seq, ts = Seq * 960, ssrc = Ssrc, ext = [{MidId, <<"0">>}], payload = <<"x">>},
+    {ok, Bin, Tx1} = webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), Tx),
+    {Bin, setelement(1, {Tx, MidId, Pt}, Tx1)}.
+
+receivers(S) -> maps:size(maps:get(receivers, webrtc_media:stats(S))).
+
+counter(K, S) -> maps:get(K, maps:get(counters, webrtc_media:stats(S)), 0).
+
+rotate(S0, Ssrcs, Now, K0) ->
+    lists:foldl(
+        fun(Ssrc, {S, K, N}) ->
+            {Bin, K1} = from(Ssrc, 1, K),
+            {S1, A} = webrtc_media:handle_packet(Bin, Now, S),
+            {S1, K1, N + length([x || {rtp, _, _} <- events(A)])}
+        end,
+        {S0, K0, 0},
+        Ssrcs
+    ).
+
+ssrc_churn_bounded_test() ->
+    {SB0, K0} = keyed(),
+    {SB1, K1, Got} = rotate(SB0, lists:seq(1, 1000), 10, K0),
+    %% One transceiver keeps at most 16 receive streams.
+    ?assertEqual(16, Got),
+    ?assertEqual(16, receivers(SB1)),
+    ?assertEqual(1000 - 16, counter(too_many_streams, SB1)),
+    %% Once the memory of forgotten SSRCs is full (1024), the state no
+    %% longer grows.
+    {SB1b, K1b, 0} = rotate(SB1, lists:seq(2000, 3000), 20, K1),
+    Size = erts_debug:flat_size(SB1b),
+    {SB2, K2, 0} = rotate(SB1b, lists:seq(4000, 6000), 30, K1b),
+    ?assert(erts_debug:flat_size(SB2) =< Size + 256),
+    %% Streams silent for 60 s are forgotten, making room again.
+    {SB3, _} = webrtc_media:handle_timeout(60010, SB2),
+    ?assertEqual(0, receivers(SB3)),
+    {SB4, _, 1} = rotate(SB3, [9999], 60020, K2),
+    ?assertEqual(1, receivers(SB4)).
+
+%% RFC 3550 §6.6: a BYE removes the stream; the SSRC is accepted again
+%% only with later packets.
+bye_removes_stream_test() ->
+    {SB0, K0} = keyed(),
+    {Bin, {Tx1, _, _} = K1} = from(77, 1, K0),
+    {SB1, _} = webrtc_media:handle_packet(Bin, 0, SB0),
+    ?assertEqual(1, receivers(SB1)),
+    Bye = webrtc_rtcp:encode([#rtcp_rr{ssrc = 77}, #rtcp_bye{ssrcs = [77]}]),
+    {ok, SBye, _} = webrtc_srtp:protect_rtcp(Bye, Tx1),
+    {SB2, A} = webrtc_media:handle_packet(SBye, 0, SB1),
+    ?assertEqual([{bye, <<"0">>, 77}], [E || {bye, _, _} = E <- events(A)]),
+    ?assertEqual(0, receivers(SB2)),
+    %% A replay of the packet sent before the BYE is refused.
+    {SB3, A3} = webrtc_media:handle_packet(Bin, 0, SB2),
+    ?assertEqual([], events(A3)),
+    ?assertEqual(1, counter(srtp_rejected, SB3)),
+    {Bin2, _} = from(77, 2, K1),
+    {SB4, A4} = webrtc_media:handle_packet(Bin2, 0, SB3),
+    ?assertMatch([{rtp, <<"0">>, #rtp{ssrc = 77, seq = 2}}], events(A4)),
+    ?assertEqual(1, receivers(SB4)).
+
+%%--------------------------------------------------------------------
+%% RTCP with more sources than one report holds (RFC 3550 §6.4)
+%%--------------------------------------------------------------------
+
+%% B receives from 80 SSRCs over 5 video transceivers.
+many_sources() ->
+    Add = fun(J0) -> lists:foldl(fun(_, J) -> {ok, _, J1} = webrtc_jsep:add_transceiver(video, #{}, J), J1 end, J0, lists:seq(1, 5)) end,
+    A1 = Add(jsep(#{})),
+    B1 = Add(jsep(#{})),
+    {ok, O, A2} = webrtc_jsep:create_offer(#{}, A1),
+    {ok, _} = webrtc_jsep:set_local_description(offer, O, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(O), B1),
+    {ok, Ans, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(answer, Ans, B3),
+    #{media := MB} = webrtc_jsep:negotiated(B4),
+    MB1 = [M#{remote_ssrcs => []} || M <- MB],
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SB0 = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{cname => <<"b">>}))),
+    {Tx0, Rx} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    {SB, _} = lists:foldl(
+        fun({#{mid := Mid, recv_extensions := #{?URI_MID := MidId}, recv_codecs := [#{pt := Pt} | _]}, I}, {S, Tx}) ->
+            lists:foldl(
+                fun(K, {S1, Tx1}) ->
+                    Pkt = #rtp{pt = Pt, seq = 1, ts = 1, ssrc = I * 100 + K, ext = [{MidId, Mid}], payload = <<"x">>},
+                    {ok, Bin, Tx2} = webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), Tx1),
+                    {S2, _} = webrtc_media:handle_packet(Bin, 10, S1),
+                    {S2, Tx2}
+                end,
+                {S, Tx},
+                lists:seq(1, 16)
+            )
+        end,
+        {SB0, Tx0},
+        lists:zip(MB1, lists:seq(1, length(MB1)))
+    ),
+    {SB, Rx}.
+
+many_sources_reported_test() ->
+    {SB, Rx} = many_sources(),
+    ?assertEqual(80, receivers(SB)),
+    All = lists:sort(maps:keys(maps:get(receivers, webrtc_media:stats(SB)))),
+    {Seen, Sizes, _} = lists:foldl(
+        fun(_, {Seen0, Sizes0, S0}) ->
+            Now = webrtc_media:next_timeout(S0),
+            {S1, Acts} = webrtc_media:handle_timeout(Now, S0),
+            Pkts = lists:append([P || {send, Bin} <- Acts, {ok, Plain, _} <- [webrtc_srtp:unprotect_rtcp(Bin, Rx)], {ok, P} <- [webrtc_rtcp:decode(Plain)]]),
+            Blocks = lists:append([Rbs || #rtcp_rr{reports = Rbs} <- Pkts] ++ [Rbs || #rtcp_sr{reports = Rbs} <- Pkts]),
+            %% No source is reported twice in one compound.
+            Ssrcs = [S || #rtcp_rb{ssrc = S} <- Blocks],
+            ?assertEqual(length(Ssrcs), length(lists:usort(Ssrcs))),
+            {Seen0 ++ Ssrcs, Sizes0 ++ [byte_size(B) || {send, B} <- Acts], S1}
+        end,
+        {[], [], SB},
+        lists:seq(1, 3)
+    ),
+    %% 80 blocks do not fit one compound; three intervals cover them all.
+    ?assertEqual(All, lists:usort(Seen)),
+    ?assert(lists:all(fun(Sz) -> Sz =< 1200 end, Sizes)).

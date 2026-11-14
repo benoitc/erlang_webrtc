@@ -197,6 +197,33 @@ late_candidates_test() ->
     ?assertEqual([P], [C#ice_cand.priority || C <- BCands]),
     assert_symmetric(N6).
 
+%% RFC 8838 §11: the peer's check arrives before its candidate, which
+%% is learned as peer-reflexive and paired only with the local base that
+%% received the check. Once signaled, the candidate is paired with every
+%% local base, the relayed one included.
+signaled_after_prflx_pairs_every_local_test() ->
+    Turn = #{turn_servers => [#{address => ?TURN, username => <<"user">>, password => <<"pass">>}]},
+    N0 = pair_net(#{auto => false}, {Turn#{role => controlling}, [{sa, {?A4, 5000}}], none},
+                  {#{role => controlled}, [{sb, {?B4, 6000}}], none}),
+    N1 = run_ok(N0, fun(X) -> ?AG:gathering_state(?NET:agent(X, a)) =:= complete end, 5000),
+    ACands = ?AG:local_candidates(?NET:agent(N1, a)),
+    ?assert(lists:any(fun(#ice_cand{type = T}) -> T =:= relay end, ACands)),
+    N2 = lists:foldl(
+        fun(C, N) -> ?NET:call(N, b, fun(Ag) -> ?AG:add_remote_candidate(C, ?NET:now(N), Ag) end) end,
+        N1,
+        ACands
+    ),
+    N3 = run_ok(N2, fun(N) -> ?AG:remote_candidates(?NET:agent(N, a)) =/= [] end, 3000),
+    [#ice_cand{type = prflx}] = ?AG:remote_candidates(?NET:agent(N3, a)),
+    N4 = lists:foldl(
+        fun(C, N) -> ?NET:call(N, a, fun(Ag) -> ?AG:add_remote_candidate(C, ?NET:now(N), Ag) end) end,
+        N3,
+        ?AG:local_candidates(?NET:agent(N3, b))
+    ),
+    #{pairs := Pairs} = ?AG:stats(?NET:agent(N4, a)),
+    ?assertEqual([host, relay], lists:sort([T || #{local := #ice_cand{type = T}} <- Pairs])),
+    [#ice_cand{type = host}] = ?AG:remote_candidates(?NET:agent(N4, a)).
+
 candidates_after_eoc_ignored_test() ->
     A0 = ?AG:new(#{}),
     {A1, _} = ?AG:set_remote_credentials(<<"abcd">>, <<"0123456789012345678901">>, 0, A0),

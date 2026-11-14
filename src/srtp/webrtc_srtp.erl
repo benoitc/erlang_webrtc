@@ -32,6 +32,8 @@
 %% <li>`too_old': index behind the replay window.</li>
 %% <li>`key_exhausted': 2^48 SRTP or 2^31 SRTCP indices used; the
 %%     session must be rekeyed (RFC 3711 §9.2).</li>
+%% <li>`too_many_streams': a packet of a new SSRC while ?MAX_RX_STREAMS
+%%     SSRCs already have receive state (see `forget/2').</li>
 %% </ul>
 %%
 %% Per-SSRC state (rollover counter, highest sequence number, replay
@@ -51,6 +53,11 @@
 %% <li>`encrypt_rtcp' (default `true'): set the SRTCP E flag and encrypt
 %%     outgoing RTCP. Incoming RTCP is accepted with either flag.</li>
 %% </ul>
+%%
+%% `forget/2' drops the receive state of an SSRC (a stream that ended).
+%% Its highest indices are kept, for the last ?MAX_RETIRED SSRCs
+%% forgotten, so that packets sent before cannot be replayed; a stream
+%% that comes back continues from them.
 %%
 %% Stream state helpers: `roc/3' reads the rollover counter of an SSRC,
 %% `set_roc/4' sets it (a receiver joining a running stream, or keeping
@@ -80,6 +87,7 @@
     key_material_length/1,
     split_dtls_keying_material/2,
     estimate_index/3,
+    forget/2,
     roc/3,
     set_roc/4,
     set_rtcp_index/3
@@ -94,7 +102,7 @@
     rtcp_replay_window => pos_integer(),
     encrypt_rtcp => boolean()
 }.
--type error_reason() :: malformed | auth_failed | replay | too_old | key_exhausted.
+-type error_reason() :: malformed | auth_failed | replay | too_old | key_exhausted | too_many_streams.
 
 -record(rtp_stream, {
     roc :: non_neg_integer(),
@@ -114,8 +122,16 @@
     rtp_rx = #{} :: #{ssrc() => #rtp_stream{}},
     %% Next SRTCP index to send, per SSRC.
     rtcp_tx = #{} :: #{ssrc() => non_neg_integer()},
-    rtcp_rx = #{} :: #{ssrc() => webrtc_srtp_replay:window()}
+    rtcp_rx = #{} :: #{ssrc() => webrtc_srtp_replay:window()},
+    %% Receive state of forgotten SSRCs: the RTP rollover counter,
+    %% highest sequence number and index, and the highest SRTCP index.
+    retired = #{} ::
+        #{ssrc() => {undefined | {non_neg_integer(), 0..16#FFFF, integer()}, undefined | integer()}},
+    retired_order = queue:new() :: queue:queue(ssrc())
 }).
+
+-define(MAX_RETIRED, 1024).
+-define(MAX_RX_STREAMS, 512).
 
 -opaque ctx() :: #srtp{}.
 
@@ -230,10 +246,12 @@ protect_rtp(_, #srtp{}) ->
     {error, malformed}.
 
 -spec unprotect_rtp(binary(), ctx()) -> {ok, binary(), ctx()} | {error, error_reason()}.
-unprotect_rtp(Packet, #srtp{rtp = Keys, rtp_rx = Rx} = C) when is_binary(Packet) ->
+unprotect_rtp(Packet, #srtp{rtp = Keys} = C) when is_binary(Packet) ->
     case rtp_header(Packet) of
         {ok, HdrLen, Seq, SSRC} when byte_size(Packet) >= HdrLen + Keys#srtp_keys.tag_len ->
+            Rx = revive_rtp(SSRC, C),
             maybe
+                ok ?= room(SSRC, Rx),
                 {ok, V, Index, S} ?= rtp_index(SSRC, Seq, Rx, C#srtp.window),
                 {ok, Plain} ?= webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen),
                 {ok, Plain, C#srtp{rtp_rx = Rx#{SSRC => advance(S, V, Seq, Index)}}}
@@ -352,6 +370,53 @@ set_rtcp_index(SSRC, Index, #srtp{rtcp_tx = Tx} = C) when
 ->
     C#srtp{rtcp_tx = Tx#{SSRC => Index}}.
 
+%% @doc Drop the receive state (RTP and RTCP) of an SSRC. Packets of
+%% that SSRC are accepted again only with higher indices than seen.
+-spec forget(ssrc(), ctx()) -> ctx().
+forget(SSRC, #srtp{rtp_rx = Rx, rtcp_rx = RRx} = C) ->
+    Rtp =
+        case Rx of
+            #{SSRC := #rtp_stream{s_l = undefined}} -> undefined;
+            #{SSRC := #rtp_stream{roc = ROC, s_l = SL, window = W}} -> {ROC, SL, webrtc_srtp_replay:top(W)};
+            #{} -> undefined
+        end,
+    Rtcp =
+        case RRx of
+            #{SSRC := RW} -> webrtc_srtp_replay:top(RW);
+            #{} -> undefined
+        end,
+    C1 = C#srtp{rtp_rx = maps:remove(SSRC, Rx), rtcp_rx = maps:remove(SSRC, RRx)},
+    case {Rtp, Rtcp} of
+        {undefined, undefined} -> C1;
+        _ -> retire(SSRC, {Rtp, Rtcp}, C1)
+    end.
+
+retire(SSRC, Entry, #srtp{retired = R, retired_order = Q} = C) ->
+    Q1 =
+        case maps:is_key(SSRC, R) of
+            true -> Q;
+            false -> queue:in(SSRC, Q)
+        end,
+    trim_retired(C#srtp{retired = R#{SSRC => Entry}, retired_order = Q1}).
+
+trim_retired(#srtp{retired = R, retired_order = Q} = C) when map_size(R) > ?MAX_RETIRED ->
+    {{value, Old}, Q1} = queue:out(Q),
+    trim_retired(C#srtp{retired = maps:remove(Old, R), retired_order = Q1});
+trim_retired(C) ->
+    C.
+
+%% A forgotten SSRC continues from its last indices, every earlier
+%% index counting as received.
+revive_rtp(SSRC, #srtp{rtp_rx = Rx, retired = R, window = Size}) ->
+    case {Rx, R} of
+        {#{SSRC := _}, _} ->
+            Rx;
+        {#{}, #{SSRC := {{ROC, SL, Top}, _}}} ->
+            Rx#{SSRC => #rtp_stream{roc = ROC, s_l = SL, window = webrtc_srtp_replay:seen(Size, Top)}};
+        {#{}, _} ->
+            Rx
+    end.
+
 rtp_streams(tx, #srtp{rtp_tx = Tx}) -> Tx;
 rtp_streams(rx, #srtp{rtp_rx = Rx}) -> Rx.
 
@@ -383,11 +448,13 @@ unprotect_rtcp(Packet, #srtp{rtcp = Keys} = C) when is_binary(Packet) ->
             Index = srtcp_index(Keys, Packet),
             #srtp{rtcp_rx = Rx, rtcp_window = Size} = C,
             W =
-                case Rx of
-                    #{SSRC := W0} -> W0;
-                    #{} -> webrtc_srtp_replay:new(Size)
+                case {Rx, C#srtp.retired} of
+                    {#{SSRC := W0}, _} -> W0;
+                    {#{}, #{SSRC := {_, Top}}} when is_integer(Top) -> webrtc_srtp_replay:seen(Size, Top);
+                    {#{}, _} -> webrtc_srtp_replay:new(Size)
                 end,
             maybe
+                ok ?= room(SSRC, Rx),
                 ok ?= webrtc_srtp_replay:check(Index, W),
                 {ok, Plain} ?= webrtc_srtp_cipher:rtcp_unprotect(Keys, SSRC, Index, Packet),
                 W1 = webrtc_srtp_replay:update(Index, W),
@@ -398,6 +465,9 @@ unprotect_rtcp(Packet, #srtp{rtcp = Keys} = C) when is_binary(Packet) ->
     end;
 unprotect_rtcp(_, #srtp{}) ->
     {error, malformed}.
+
+room(SSRC, Rx) when is_map_key(SSRC, Rx); map_size(Rx) < ?MAX_RX_STREAMS -> ok;
+room(_, _) -> {error, too_many_streams}.
 
 %% The E flag and index word sits before the tag for AES-CM
 %% (RFC 3711 §3.4) and at the very end for GCM (RFC 7714 §17).

@@ -1,6 +1,6 @@
 REBAR ?= rebar3
 
-.PHONY: all compile test test-protocol test-e2e test-interop test-network test-security test-all dialyzer xref fmt bench clean
+.PHONY: all compile test test-protocol test-e2e test-interop test-network test-security test-all dialyzer xref fmt bench profile clean
 
 all: compile
 
@@ -50,6 +50,14 @@ bench:
 	erl -noshell -pa _build/test/lib/*/ebin -pa _build/test/lib/webrtc/bench \
 	    -pa _build/test/lib/webrtc/test/support \
 	    -eval 'webrtc_srtp_bench:run(), webrtc_pc_bench:run(), halt().'
+
+## Connection setup timeline, RTP send capacity and tprof profiles of
+## the hot paths (the relayed setup needs make -C interop turn).
+profile:
+	$(REBAR) as test compile
+	erl -noshell -pa _build/test/lib/*/ebin -pa _build/test/lib/webrtc/bench \
+	    -pa _build/test/lib/webrtc/test/support \
+	    -eval 'webrtc_profile:run(), halt().'
 
 clean:
 	$(REBAR) clean

@@ -136,7 +136,11 @@ unreliable_channel_under_loss(Config) ->
     ok = webrtc:create_data_channel(A, <<"u">>, #{ordered => false, max_retransmits => 0}),
     ?S:connect(A, B, 60000),
     Id = channel(A, <<"u">>),
-    _ = channel(B, <<"u">>),
+    IdB = channel(B, <<"u">>),
+    %% RFC 8832 §6: A sends ordered until it hears from B. A lost DCEP
+    %% ACK would make this an ordered transfer; a message from B ends
+    %% that phase.
+    hear_from(B, IdB, A),
     N = 300,
     [ok = send_retry(A, Id, <<I:32>>) || I <- lists:seq(1, N)],
     Got = collect(B, N, 3000, []),
@@ -147,6 +151,13 @@ unreliable_channel_under_loss(Config) ->
     ?assert(length(Got) > N div 2),
     ?assertEqual(length(Got), length(lists:usort(Got))),
     close(A, B).
+
+hear_from(B, IdB, A) ->
+    ok = send_retry(B, IdB, <<"hello">>),
+    receive
+        {webrtc, A, {channel_message, _, binary, <<"hello">>}} -> ok
+    after 2000 -> hear_from(B, IdB, A)
+    end.
 
 media_recovers_with_nack(Config) ->
     {A, B} = pair(Config, #{loss => 0.1}),

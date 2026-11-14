@@ -63,3 +63,4 @@ The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and a
 | ID | Spec | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
 | TURN-INTEROP-1 | 7, 9, 11 | Allocate with the 401 retry, permissions for remote candidates and relayed connectivity checks and data, against an independent server (pion/turn v5) | webrtc_turn_client, webrtc_ice_relay | webrtc_turn_interop_SUITE (relay/relay, relay/host, wrong password) | Interoperability tested |
+| TURN-INTEROP-2 | 8 | Allocations deleted with a zero lifetime Refresh when the peer connection closes | webrtc_transport, webrtc_ice_relay | webrtc_security_SUITE:turn_allocation_deleted_on_close | E2E tested |

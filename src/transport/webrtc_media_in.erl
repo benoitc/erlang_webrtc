@@ -8,6 +8,7 @@
 -include("webrtc_media.hrl").
 
 -export([
+    expire_idle/2,
     nack_actions/4,
     rtcp_in/3,
     rtp_in/3
@@ -18,8 +19,11 @@ rtp_in(Bin, Now, M) ->
         {ok, Plain, In} ->
             M1 = M#media{in = In},
             case webrtc_rtp:decode(Plain, #{extensions => parse}) of
-                {ok, Pkt} -> route(Pkt, Now, twcc_arrival(Pkt, Now, M1));
-                {error, _} -> {webrtc_media_out:count(dropped, M1), []}
+                {ok, #rtp{ssrc = Ssrc} = Pkt} ->
+                    {M2, Acts} = route(Pkt, Now, twcc_arrival(Pkt, Now, M1)),
+                    {keep_srtp(Ssrc, M2), Acts};
+                {error, _} ->
+                    {webrtc_media_out:count(dropped, M1), []}
             end;
         {error, _} ->
             {webrtc_media_out:count(srtp_rejected, M), []}
@@ -36,25 +40,80 @@ twcc_arrival(#rtp{ext = Ext, ssrc = Ssrc}, Now, #media{twcc_ids = [_ | _] = Ids}
 twcc_arrival(_Pkt, _Now, M) ->
     M.
 
+%% SRTP keeps receive state only for SSRCs whose packets were accepted.
+keep_srtp(Ssrc, #media{ssrc_mid = SM} = M) when is_map_key(Ssrc, SM) ->
+    M;
+keep_srtp(Ssrc, M) ->
+    M#media{in = webrtc_srtp:forget(Ssrc, M#media.in)}.
+
 route(#rtp{ssrc = Ssrc} = Pkt, Now, M) ->
     case find_mid(Pkt, M) of
         undefined ->
             {webrtc_media_out:count(unroutable, M), []};
         Mid ->
-            M1 = M#media{ssrc_mid = (M#media.ssrc_mid)#{Ssrc => Mid}},
-            case maps:find(Ssrc, M1#media.rtx_ssrc) of
-                {ok, Primary} -> rtx_in(Mid, Primary, Pkt, Now, M1);
-                error -> layer_in(Mid, Pkt, Now, M1)
+            case room_for(Ssrc, Mid, M) of
+                false ->
+                    {webrtc_media_out:count(too_many_streams, M), []};
+                true ->
+                    case maps:find(Ssrc, M#media.rtx_ssrc) of
+                        {ok, Primary} -> rtx_in(Mid, Primary, Pkt, Now, M);
+                        error -> layer_in(Mid, Pkt, Now, M)
+                    end
             end
     end.
 
+%% A new SSRC is accepted only while the transceiver and the session
+%% have room for another receive stream.
+room_for(Ssrc, _Mid, #media{ssrc_mid = SM}) when is_map_key(Ssrc, SM) ->
+    true;
+room_for(_Ssrc, Mid, #media{ssrc_mid = SM}) ->
+    map_size(SM) < ?MAX_STREAMS andalso
+        length([x || _ := Mi <- SM, Mi =:= Mid]) < ?MAX_MID_STREAMS.
+
+learn(Ssrc, Mid, Now, M) ->
+    M#media{ssrc_mid = (M#media.ssrc_mid)#{Ssrc => Mid}, last_seen = (M#media.last_seen)#{Ssrc => Now}}.
+
+%% @doc Forget the receive streams silent for ?RECV_IDLE ms (RFC 3550
+%% §6.3.5 times out members; this bounds the state of a peer that keeps
+%% changing SSRC).
+-spec expire_idle(integer(), #media{}) -> #media{}.
+expire_idle(Now, #media{last_seen = Seen} = M) ->
+    Idle = [S || S := T <- Seen, Now - T >= ?RECV_IDLE],
+    lists:foldl(fun forget/2, M, Idle).
+
+%% Drop all state of a receive stream and of its RTX stream.
+forget(Ssrc, #media{rtx_ssrc = Rtx} = M) ->
+    Repair = [X || X := P <- Rtx, P =:= Ssrc],
+    lists:foldl(
+        fun(S, Acc) ->
+            Acc#media{
+                receivers = maps:remove(S, Acc#media.receivers),
+                last_seen = maps:remove(S, Acc#media.last_seen),
+                ssrc_mid =
+                    case maps:find(S, Acc#media.signaled) of
+                        {ok, Mid} -> (Acc#media.ssrc_mid)#{S => Mid};
+                        error -> maps:remove(S, Acc#media.ssrc_mid)
+                    end,
+                rtx_ssrc = maps:remove(S, Acc#media.rtx_ssrc),
+                rids = webrtc_media_rid:forget(S, Acc#media.rids),
+                in =
+                    case Acc#media.in of
+                        undefined -> undefined;
+                        In -> webrtc_srtp:forget(S, In)
+                    end
+            }
+        end,
+        M,
+        [Ssrc | Repair]
+    ).
+
 %% Simulcast layers are told apart by rid (RFC 8852); an RTX stream is
-%% bound to its layer by repaired-rid and remembered.
-layer_in(Mid, #rtp{ssrc = Ssrc} = Pkt, Now, M) ->
+%% bound to its layer by repaired-rid and remembered once a packet of it
+%% is accepted.
+layer_in(Mid, Pkt, Now, M) ->
     case webrtc_media_rid:classify(Mid, Pkt, M#media.rids) of
         {{repair, Primary}, R} ->
-            M1 = M#media{rids = R, rtx_ssrc = (M#media.rtx_ssrc)#{Ssrc => Primary}},
-            rtx_in(Mid, Primary, Pkt, Now, M1);
+            rtx_in(Mid, Primary, Pkt, Now, M#media{rids = R});
         {drop, R} ->
             {webrtc_media_out:count(unknown_rid, M#media{rids = R}), []};
         {_, R} ->
@@ -101,7 +160,9 @@ rtx_in(Mid, Primary, Pkt, Now, M) ->
     case Apt of
         [OrigPt] ->
             case webrtc_rtx:decapsulate(Pkt, #{ssrc => Primary, pt => OrigPt}) of
-                {ok, Orig} -> deliver(Mid, Orig, Now, webrtc_media_out:count(rtx_received, M));
+                {ok, Orig} ->
+                    M1 = learn(Pkt#rtp.ssrc, Mid, Now, M#media{rtx_ssrc = (M#media.rtx_ssrc)#{Pkt#rtp.ssrc => Primary}}),
+                    deliver(Mid, Orig, Now, webrtc_media_out:count(rtx_received, M1));
                 {error, _} -> {webrtc_media_out:count(dropped, M), []}
             end;
         _ ->
@@ -121,7 +182,7 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
             N -> webrtc_nack:packet(Seq, Now, N)
         end,
     R1 = R0#rcv{rx = Rx, nack = Nack},
-    M1 = M#media{receivers = (M#media.receivers)#{Ssrc => R1}},
+    M1 = learn(Ssrc, Mid, Now, M#media{receivers = (M#media.receivers)#{Ssrc => R1}}),
     {Out, M2} = nack_actions(Mid, Ssrc, NackActions, M1),
     Event =
         case webrtc_media_rid:rid(Ssrc, M2#media.rids) of
@@ -218,8 +279,10 @@ rtcp_packet(#rtcp_sdes{chunks = Chunks}, _Now, M) ->
     {M#media{rids = webrtc_media_rid:sdes(Chunks, M#media.ssrc_mid, M#media.rids)}, []};
 rtcp_packet(#rtcp_rr{reports = Rbs}, Now, M) ->
     report_blocks(Rbs, Now, M);
+%% RFC 3550 §6.6: the source left; its state goes with it.
 rtcp_packet(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
-    {M, [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs]};
+    Events = [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs],
+    {lists:foldl(fun forget/2, M, Ssrcs), Events};
 rtcp_packet(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
     {Events, Cc} = webrtc_cc:rtcp(P, Now, M#media.cc),
     {M#media{cc = Cc}, [{event, {rtcp, undefined, P}} | [{event, E} || E <- Events]]};

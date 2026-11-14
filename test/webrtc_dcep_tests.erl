@@ -162,6 +162,46 @@ open_ack_test() ->
     ?assertEqual([{0, binary, <<1, 2, 3>>}], msgs(a, N5)),
     ?assertMatch(#{0 := #{state := open, label := <<"chat">>}}, ?D:channels(?NET:engine(a, N5))).
 
+%% A DATA_CHANNEL_OPEN that SCTP cannot queue leaves no channel behind.
+open_send_error_test() ->
+    N0 = pair(#{sctp => #{random_seed => 1, heartbeat_interval => infinity, send_buffer => 2000}}, #{}, #{}),
+    {Id, N1} = open_ch(a, <<"fill">>, #{}, N0),
+    N2 = wait(fun(X) -> lists:keymember(channel_open, 1, evs(b, X)) end, N1),
+    %% Fill the send buffer to the byte, without letting it drain.
+    A1 = fill(Id, [1900, 500, 100, 10, 1], ?NET:engine(a, N2)),
+    ?assertMatch({error, buffer_full}, ?D:open_channel(<<"late">>, #{}, 0, A1)),
+    ?assertEqual([Id], maps:keys(?D:channels(A1))).
+
+fill(_Id, [], D) ->
+    D;
+fill(Id, [Size | Rest] = Sizes, D) ->
+    case ?D:send(Id, binary, crypto:strong_rand_bytes(Size), 0, D) of
+        {ok, D1, _} -> fill(Id, Sizes, D1);
+        {error, buffer_full} -> fill(Id, Rest, D)
+    end.
+
+%% RFC 8831 §6.2: channel ids must exist in both directions once the
+%% stream counts are known.
+stream_ids_bounded_test() ->
+    Small = #{sctp => #{random_seed => 2, heartbeat_interval => infinity, inbound_streams => 16, outbound_streams => 16}},
+    A = ?D:new(opts(client, 1)),
+    %% Opened before the association, on an id the peer will not grant.
+    {ok, 30, A1, []} = ?D:open_channel(<<"far">>, #{id => 30}, 0, A),
+    {ok, 2, A2, []} = ?D:open_channel(<<"near">>, #{id => 2}, 0, A1),
+    B = ?D:new(maps:merge(opts(server, 2), Small)),
+    N0 = ?NET:new(?D, {A2, B}, #{seed => 1}),
+    N1 = ?NET:call(a, fun(E, Now) -> ?D:connect(Now, E) end, N0),
+    N2 = ?NET:call(b, fun(E, Now) -> ?D:connect(Now, E) end, N1),
+    N3 = wait(fun(X) -> lists:keymember(channel_open, 1, evs(b, X)) end, N2),
+    EvA = evs(a, N3),
+    ?assert(lists:member({channel_error, 30, invalid_stream_id}, EvA)),
+    ?assert(lists:member({channel_closed, 30}, EvA)),
+    ?assertMatch([{channel_open, 2, <<"near">>, _, _}], [E || {channel_open, _, _, _, _} = E <- evs(b, N3)]),
+    ?assertEqual([2], maps:keys(?D:channels(?NET:engine(a, N3)))),
+    %% After the association: ids beyond the streams are refused.
+    ?assertEqual({error, invalid_stream_id}, ?D:open_channel(<<"x">>, #{id => 16}, 0, ?NET:engine(a, N3))),
+    ?assertMatch({ok, 14, _, _}, ?D:open_channel(<<"x">>, #{id => 14}, 0, ?NET:engine(a, N3))).
+
 open_before_connect_test() ->
     A = ?D:new(opts(client, 1)),
     {ok, 0, A1, []} = ?D:open_channel(<<"early">>, #{}, 0, A),
@@ -424,3 +464,17 @@ bad_options_test() ->
     ?assertEqual({error, badarg}, ?D:open_channel(<<"x">>, #{priority => 70000}, 0, D)),
     ?assertEqual({error, unknown_channel}, ?D:send(3, text, <<"x">>, 0, D)),
     ?assertEqual({error, unknown_channel}, ?D:close_channel(3, 0, D)).
+
+%% RFC 8841 §6: a message over the max-message-size we announced closes
+%% that channel only.
+oversize_closes_channel_only_test() ->
+    N0 = pair(#{max_message_size => 0},
+              #{sctp => #{random_seed => 2, heartbeat_interval => infinity, max_message_size => 5000}}, #{}),
+    {Big, N1} = open_ch(a, <<"big">>, #{}, N0),
+    {Ok, N2} = open_ch(a, <<"ok">>, #{}, N1),
+    N3 = send(a, Big, binary, binary:copy(<<7>>, 20000), N2),
+    N4 = wait(fun(X) -> (has(b, {channel_error, Big, message_too_large}))(X) andalso
+                            (has(a, {channel_closed, Big}))(X) end, N3),
+    N5 = send(a, Ok, text, <<"still here">>, N4),
+    N6 = wait(fun(X) -> lists:member({Ok, text, <<"still here">>}, msgs(b, X)) end, N5),
+    ?assertNot(lists:keymember(Big, 1, msgs(b, N6))).

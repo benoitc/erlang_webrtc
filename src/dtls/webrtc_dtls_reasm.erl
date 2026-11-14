@@ -9,8 +9,27 @@
 
 -export([fragment/4, classify/2, add/3, deliver/2]).
 
+-ifdef(TEST).
+-export([peek/2]).
+-endif.
+
 -define(MAX_MSG_LEN, 131072).
 -define(REASM_AHEAD, 8).
+%% A maximum length message sent with a 1200 byte MTU is about 115
+%% fragments; the limits leave room for retransmissions that fragment
+%% differently.
+-define(MAX_PIECES, 256).
+-define(MAX_HELD, 262144).
+
+-record(msg, {
+    type :: webrtc_dtls_msg:msg_type(),
+    len :: non_neg_integer(),
+    epoch :: non_neg_integer(),
+    %% Sorted disjoint intervals {Start, End, iodata()}.
+    ivs = [] :: [{non_neg_integer(), non_neg_integer(), iodata()}],
+    covered = 0 :: non_neg_integer(),
+    pieces = 0 :: non_neg_integer()
+}).
 
 %% @doc DTLS 1.2 entry point (and the hello exchange before a version
 %% is chosen): handle one fragment, detect peer retransmissions.
@@ -43,14 +62,24 @@ classify(_, _) ->
     ignore.
 
 %% @doc Buffer a fragment.
+%%
+%% A message is kept as sorted, disjoint intervals of the bytes received
+%% so far. A new fragment is trimmed to the bytes not covered yet, so the
+%% bytes held never exceed the advertised length however the peer
+%% overlaps its fragments; completion is a counter check. Fragments are
+%% dropped, as any invalid record would be, once a message holds
+%% ?MAX_PIECES pieces or all buffered messages hold ?MAX_HELD bytes.
 -spec add(webrtc_dtls_msg:fragment(), non_neg_integer(), #dtls{}) -> #dtls{}.
 add(#{length := Len}, _E, St) when Len > ?MAX_MSG_LEN ->
     webrtc_dtls:fail(?ALERT_HANDSHAKE_FAILURE, message_too_large, St);
 add(#{type := T, length := L, seq := Seq, offset := Off, data := D}, E, #dtls{reasm = R} = St) ->
-    case maps:get(Seq, R, {T, L, E, #{}}) of
-        {T, L, E, Pieces} ->
-            St#dtls{reasm = R#{Seq => {T, L, E, Pieces#{Off => D}}}};
-        {T, L, _OtherEpoch, _} ->
+    case maps:get(Seq, R, #msg{type = T, len = L, epoch = E}) of
+        #msg{type = T, len = L, epoch = E} = M ->
+            case insert(Off, D, M, held(R)) of
+                {ok, M1} -> St#dtls{reasm = R#{Seq => M1}};
+                drop -> St
+            end;
+        #msg{type = T, len = L} ->
             %% A fragment of the same message in another epoch cannot
             %% be genuine; ignore it.
             St;
@@ -59,46 +88,73 @@ add(#{type := T, length := L, seq := Seq, offset := Off, data := D}, E, #dtls{re
             webrtc_dtls:fail(?ALERT_ILLEGAL_PARAMETER, inconsistent_fragment, St)
     end.
 
+held(R) ->
+    maps:fold(fun(_, #msg{covered = C}, Acc) -> Acc + C end, 0, R).
+
+insert(Off, D, #msg{ivs = Ivs, covered = C, pieces = P} = M, Held) ->
+    New = gaps(Off, Off + byte_size(D), Ivs),
+    Bytes = lists:sum([E - S || {S, E} <- New]),
+    if
+        New =:= [] ->
+            {ok, M};
+        P + length(New) > ?MAX_PIECES; Held + Bytes > ?MAX_HELD ->
+            drop;
+        true ->
+            Pieces = [{S, E, binary:part(D, S - Off, E - S)} || {S, E} <- New],
+            {ok, M#msg{
+                ivs = merge(lists:keymerge(1, Ivs, Pieces)),
+                covered = C + Bytes,
+                pieces = P + length(New)
+            }}
+    end.
+
+%% Sub-ranges of [S, E) not covered by the sorted disjoint intervals.
+gaps(S, E, _) when S >= E -> [];
+gaps(S, E, []) -> [{S, E}];
+gaps(S, E, [{_IS, IE, _} | Rest]) when IE =< S -> gaps(S, E, Rest);
+gaps(S, E, [{IS, _, _} | _]) when IS >= E -> [{S, E}];
+gaps(S, E, [{IS, IE, _} | Rest]) when IS > S -> [{S, IS} | gaps(IE, E, Rest)];
+gaps(_S, E, [{_IS, IE, _} | Rest]) -> gaps(IE, E, Rest).
+
+%% Join adjacent intervals; their data is an iolist, so joining copies
+%% nothing.
+merge([{S1, E1, D1}, {E1, E2, D2} | Rest]) -> merge([{S1, E2, [D1, D2]} | Rest]);
+merge([I | Rest]) -> [I | merge(Rest)];
+merge([]) -> [].
+
 %% @doc Deliver complete messages in order.
 -spec deliver(integer(), #dtls{}) -> #dtls{}.
 deliver(Now, #dtls{recv_msg_seq = Next, reasm = R} = St) ->
     case maps:find(Next, R) of
-        {ok, {T, L, E, Pieces}} ->
-            case assemble(L, lists:sort(maps:to_list(Pieces)), 0, []) of
-                {ok, Body} ->
-                    St1 = St#dtls{recv_msg_seq = Next + 1, reasm = maps:remove(Next, R)},
-                    St2 =
-                        case St1#dtls.version of
-                            dtls13 ->
-                                webrtc_dtls13_hs:handle(T, Body, E, Now, St1);
-                            _ ->
-                                webrtc_dtls_hs:handle(T, Body, webrtc_dtls_msg:full(T, Next, Body), Now, St1)
-                        end,
-                    case St2#dtls.state of
-                        S when S =:= failed; S =:= closed -> St2;
-                        _ -> deliver(Now, St2)
-                    end;
-                incomplete ->
-                    St
+        {ok, #msg{type = T, len = L, epoch = E, covered = L, ivs = Ivs}} ->
+            Body =
+                case Ivs of
+                    [] -> <<>>;
+                    [{0, L, Io}] -> iolist_to_binary(Io)
+                end,
+            St1 = St#dtls{recv_msg_seq = Next + 1, reasm = maps:remove(Next, R)},
+            St2 =
+                case St1#dtls.version of
+                    dtls13 ->
+                        webrtc_dtls13_hs:handle(T, Body, E, Now, St1);
+                    _ ->
+                        webrtc_dtls_hs:handle(T, Body, webrtc_dtls_msg:full(T, Next, Body), Now, St1)
+                end,
+            case St2#dtls.state of
+                S when S =:= failed; S =:= closed -> St2;
+                _ -> deliver(Now, St2)
             end;
-        error ->
+        _ ->
             St
     end.
 
-%% Pieces may overlap (retransmissions with a different fragmentation).
-assemble(L, _Pieces, Pos, Acc) when Pos >= L ->
-    {ok, iolist_to_binary(lists:reverse(Acc))};
-assemble(_L, [], _Pos, _Acc) ->
-    incomplete;
-assemble(L, [{Off, _} | _], Pos, _Acc) when Off > Pos, Off < L ->
-    incomplete;
-assemble(L, [{Off, D} | Rest], Pos, Acc) ->
-    End = Off + byte_size(D),
-    case End =< Pos of
-        true ->
-            assemble(L, Rest, Pos, Acc);
-        false ->
-            Skip = Pos - Off,
-            <<_:Skip/binary, New/binary>> = D,
-            assemble(L, Rest, End, [New | Acc])
+-ifdef(TEST).
+%% Test helper: `{Covered, Pieces, Body | incomplete}' of a buffered
+%% message, or `none'.
+peek(Seq, #dtls{reasm = R}) ->
+    case maps:find(Seq, R) of
+        {ok, #msg{len = L, covered = L, ivs = [{0, L, Io}], pieces = P}} -> {L, P, iolist_to_binary(Io)};
+        {ok, #msg{covered = C, pieces = P}} -> {C, P, incomplete};
+        error -> none
     end.
+-endif.

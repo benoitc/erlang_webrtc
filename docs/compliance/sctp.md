@@ -64,7 +64,7 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | PR-1 | 3.1, 3.3 | Forward-TSN-Supported parameter and FORWARD TSN in Supported Extensions | webrtc_sctp_handshake | assoc:handshake_test | Unit tested |
 | PR-2 | 3.2 | FORWARD TSN chunk format | webrtc_sctp_chunk | webrtc_sctp_chunk_tests | Unit tested |
 | PR-3 | 3.5 A1 to A3 | Abandoned chunks are no longer outstanding, not credited to cwnd, all fragments of the message abandoned (including unsent ones) | webrtc_sctp_pr | assoc:pr_ordered_max_retransmits_test, assoc:pr_lifetime_loss_test | Unit tested |
-| PR-4 | 3.5 C1 to C5, A5 | Advanced.Peer.Ack.Point, FORWARD TSN with the highest SSN per ordered stream, T3 kept running, repeated at most once per RTO | webrtc_sctp_pr, webrtc_sctp_ack | assoc:pr_max_retransmits_test | Unit tested |
+| PR-4 | 3.5 C1 to C5, A5 | Advanced.Peer.Ack.Point, FORWARD TSN with the highest SSN per ordered stream, T3 kept running until the FORWARD TSN is acknowledged (also when a SACK leaves nothing in flight), repeated at most once per RTO | webrtc_sctp_pr, webrtc_sctp_ack | assoc:pr_max_retransmits_test, assoc:pr_forward_tsn_lost_test, webrtc_impairment_SUITE:unreliable_channel_under_loss | E2E tested |
 | PR-5 | 3.5 C4 | Lower the Advanced.Peer.Ack.Point when the FORWARD TSN does not fit one MTU | | | Not implemented (only reachable with more than about 290 streams abandoning messages at once) |
 | PR-6 | 3.6 | Receiver: cumulative TSN moved, stranded fragments removed, ordered streams skipped and waiting messages delivered | webrtc_sctp_recv | assoc:pr_ordered_max_retransmits_test (window fully restored) | Unit tested |
 | PR-7 | 4 | Timed reliability (lifetime in ms from the send call), checked before first transmission and before retransmission | webrtc_sctp_send | assoc:pr_lifetime_test, assoc:pr_lifetime_loss_test | Unit tested |
@@ -85,6 +85,7 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | RC-9 | 5.2.6 | Add Incoming Streams | webrtc_sctp_reconfig | assoc:reconf_requests_test | Non-compliant / known limitation: always answered "Denied" |
 | RC-10 | 5.2.7 | Responses: success resets the streams, "In progress" restarts the timer without counting an error, failures release held data | webrtc_sctp_reconfig | assoc:stream_reset_deferred_test | Unit tested |
 | RC-11 | 5.1.3 | Sending Incoming SSN Reset, SSN/TSN Reset and Add Streams requests | | | Not implemented (WebRTC only needs outgoing resets) |
+| RC-12 | 5.2.2 E3 | An Outgoing SSN Reset Request with no stream numbers resets every incoming stream, including when no stream has state | webrtc_sctp_recv | webrtc_sctp_recv_tests:reset_all_without_state_test_, assoc:reconf_reset_all_streams_empty_test_, reconf_reset_all_streams_with_state_test_ | Unit tested |
 
 ## RFC 8260 (message interleaving)
 
@@ -117,6 +118,6 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | ID | Section | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
 | ZC-1 | 4 | Zero Checksum Acceptable parameter (EDMID 1, SCTP over DTLS) | webrtc_sctp_param | webrtc_sctp_chunk_tests | Unit tested |
-| ZC-2 | 5.1 | Announced only when the upper layer allows it (`zero_checksum` option) | webrtc_sctp_handshake | assoc:zero_checksum_one_side_test | Unit tested |
+| ZC-2 | 5.1 | Announced only when the upper layer allows it (`zero_checksum` option); the WebRTC transport, always over DTLS, enables it | webrtc_sctp_handshake, webrtc_transport | assoc:zero_checksum_one_side_test, the E2E and interop data channel suites | Interoperability tested |
 | ZC-3 | 5.2 | Zero checksum sent only after the peer announced DTLS; INIT, INIT ACK, COOKIE ECHO and OOTB responses keep a correct CRC32c | webrtc_sctp_out, webrtc_sctp_handshake | assoc:zero_checksum_test | Unit tested |
 | ZC-4 | 5.3 | Zero checksum accepted only after announcing it, correct CRC32c always accepted | webrtc_sctp_assoc | assoc:bad_checksum_test, assoc:zero_checksum_test | Unit tested |

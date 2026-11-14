@@ -41,6 +41,7 @@
     new/1,
     configure/2,
     set_srtp/5,
+    clear_srtp/1,
     ready/1,
     send/5,
     send_packet/4,
@@ -120,7 +121,9 @@ configure(Sections, #media{} = M) ->
         twcc_ids = TwccIds,
         cc = Cc,
         recv = Recv,
-        ssrc_mid = maps:merge(M#media.ssrc_mid, SsrcMid),
+        %% Learned SSRCs are kept while their stream is live.
+        ssrc_mid = maps:merge(maps:with(maps:keys(M#media.last_seen), M#media.ssrc_mid), SsrcMid),
+        signaled = SsrcMid,
         rtx_ssrc = RtxSsrc,
         pt_mid = PtMid,
         mid_ext = MidExt,
@@ -132,6 +135,12 @@ configure(Sections, #media{} = M) ->
 set_srtp(Profile, Material, Role, Now, M) ->
     {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{}),
     M#media{out = Out, in = In, rtcp_at = Now + ?RTCP_INTERVAL}.
+
+%% @doc Forget the SRTP contexts: the DTLS association they came from is
+%% gone. Sending fails with `not_ready' until `set_srtp/5'.
+-spec clear_srtp(state()) -> state().
+clear_srtp(M) ->
+    M#media{out = undefined, in = undefined}.
 
 -spec ready(state()) -> boolean().
 ready(#media{out = O}) -> O =/= undefined.
@@ -267,7 +276,7 @@ handle_timeout(Now, M0) ->
     case M2#media.rtcp_at =/= infinity andalso Now >= M2#media.rtcp_at of
         true ->
             %% Transport-wide feedback due now joins the compound report.
-            {A2, M3} = webrtc_media_out:reports(Now, Fb, M2),
+            {A2, M3} = webrtc_media_out:reports(Now, Fb, webrtc_media_in:expire_idle(Now, M2)),
             %% RFC 3550 §6.3.5: randomize in [0.5, 1.5] of the interval.
             Next = Now + round(?RTCP_INTERVAL * (0.5 + rand:uniform())),
             {M3#media{rtcp_at = Next}, A0 ++ A1 ++ A2};

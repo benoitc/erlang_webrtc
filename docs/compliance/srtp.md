@@ -34,6 +34,7 @@ This page tracks the SRTP and SRTCP requirements implemented by `src/srtp`: pack
 | SRTP-26 | 3.3.1, 9.2 | No more than 2^48 SRTP and 2^31 SRTCP packets per key; then `{error, key_exhausted}` | webrtc_srtp | srtp_key_exhausted_test_, srtcp_key_exhausted_test_ | Unit tested |
 | SRTP-27 | 3.1, 8.1 | MKI | | | Not implemented: RFC 8827 §6.5 forbids MKI in WebRTC |
 | SRTP-28 | 3.3, 3.4 | Malformed or truncated packets are refused without crashing | webrtc_srtp | truncated_test_, malformed_test_, prop_unprotect_random_binary | Unit tested |
+| SRTP-29 | 3.3.2 | Receive state bounded: `forget/2` drops an SSRC and keeps its highest SRTP and SRTCP indices for the last 1024 SSRCs forgotten, so earlier packets stay refused and the stream continues after them; at most 512 SSRCs with receive state (`{error, too_many_streams}`) | webrtc_srtp, webrtc_srtp_replay | forget_test, forget_bounded_test, rx_streams_bounded_test | Unit tested |
 
 ## RFC 3711: key derivation
 

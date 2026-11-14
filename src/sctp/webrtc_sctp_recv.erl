@@ -31,6 +31,7 @@
 
 -type event() ::
     {message, 0..65535, 0..16#FFFFFFFF, binary()}
+    | {message_too_large, 0..65535}
     | {stream_reset, [0..65535]}.
 -export_type([event/0]).
 
@@ -107,10 +108,8 @@ accept(U, #sctp_data{sid = Sid} = C, #rcv{deferred = Def} = R) ->
         true ->
             {ok, R#rcv{held = [{U, C} | R#rcv.held], bytes = R#rcv.bytes + dsize(C)}, [], []};
         false ->
-            case deliver(U, C, R) of
-                {ok, R1, Evs} -> {ok, R1, Evs, []};
-                {abort, _} = A -> A
-            end
+            {ok, R1, Evs} = deliver(U, C, R),
+            {ok, R1, Evs, []}
     end.
 
 affects(_Sid, []) -> true;
@@ -144,6 +143,12 @@ advance(#rcv{seen = Seen, cum = Cum} = R) ->
 %% Reassembly. Keys: I-DATA {Sid, U, MID} by FSN; ordered DATA
 %% {Sid, false, SSN} by TSN; unordered DATA one bucket per stream by TSN
 %% where a message is a run of consecutive TSNs from B to E.
+deliver(_U, #sctp_data{sid = Sid}, #rcv{discard = D} = R) when is_map_key(Sid, D) ->
+    {ok, bump(discarded_chunks, R), []};
+deliver(_U, #sctp_data{beginning = true, ending = true, sid = Sid, data = Data}, #rcv{max_msg = Max} = R) when
+    byte_size(Data) > Max
+->
+    too_large(Sid, none, R);
 deliver(_U, #sctp_data{beginning = true, ending = true} = C, R) ->
     complete(
         C#sctp_data.sid,
@@ -159,6 +164,8 @@ deliver(U, #sctp_data{idata = false, unordered = true, sid = Sid} = C, R) ->
     Ra = add_frag(U, C, Ra0),
     R1 = R#rcv{ra = (R#rcv.ra)#{Key => Ra}, bytes = R#rcv.bytes + dsize(C)},
     case find_run(U, Ra#ra.frags) of
+        _ when Ra#ra.bytes > R#rcv.max_msg ->
+            too_large(Sid, Key, R1);
         none ->
             {ok, R1, []};
         {First, Last} ->
@@ -187,7 +194,7 @@ deliver(U, #sctp_data{sid = Sid, unordered = Un, mid = Mid} = C, R) ->
             R1 = R#rcv{bytes = R#rcv.bytes + dsize(C)},
             if
                 Ra#ra.bytes > R#rcv.max_msg ->
-                    {abort, {protocol_violation, <<"message exceeds max-message-size">>}};
+                    too_large(Sid, Key, R1#rcv{ra = (R1#rcv.ra)#{Key => Ra}});
                 Ra#ra.first =/= undefined,
                 Ra#ra.last =/= undefined,
                 map_size(Ra#ra.frags) =:= Ra#ra.last - Ra#ra.first + 1 ->
@@ -201,6 +208,18 @@ deliver(U, #sctp_data{sid = Sid, unordered = Un, mid = Mid} = C, R) ->
                     {ok, R1#rcv{ra = (R1#rcv.ra)#{Key => Ra}}, []}
             end
     end.
+
+%% A message over the local max-message-size: drop what was buffered for
+%% it and every later chunk of the stream until the stream is reset, and
+%% tell the data channel layer, which closes the channel (RFC 8841 §6).
+too_large(Sid, Key, R) ->
+    {Ra, Bytes} =
+        case maps:take(Key, R#rcv.ra) of
+            {#ra{bytes = B}, Rest} -> {Rest, B};
+            error -> {R#rcv.ra, 0}
+        end,
+    R1 = R#rcv{ra = Ra, bytes = R#rcv.bytes - Bytes, discard = (R#rcv.discard)#{Sid => true}},
+    {ok, bump(oversized_messages, R1), [{message_too_large, Sid}]}.
 
 add_frag(Pos, #sctp_data{beginning = B, ending = E, ppid = P, data = D}, Ra) ->
     Ra#ra{
@@ -526,14 +545,19 @@ replay([], R, Acc) ->
     {R, Acc};
 replay([{U, C} | Rest], R, Acc) ->
     R0 = R#rcv{bytes = R#rcv.bytes - dsize(C)},
-    case deliver(U, C, R0) of
-        {ok, R1, Evs} -> replay(Rest, R1, Acc ++ Evs);
-        {abort, _} -> replay(Rest, R0, Acc)
-    end.
+    {ok, R1, Evs} = deliver(U, C, R0),
+    replay(Rest, R1, Acc ++ Evs).
 
+%% RFC 6525 §5.2.2 E3: an empty list means every incoming stream. It is
+%% expanded once into the streams that have state (possibly none), never
+%% re-entered with an empty list.
 do_reset([], #rcv{streams = M} = R) ->
-    do_reset(maps:keys(M) ++ [Sid || {Sid, _, _} <- maps:keys(R#rcv.ra)], R);
+    reset_streams(maps:keys(M) ++ [Sid || {Sid, _, _} <- maps:keys(R#rcv.ra)], R);
 do_reset(Sids, R) ->
+    reset_streams(Sids, R).
+
+reset_streams(Sids, R0) ->
+    R = R0#rcv{discard = maps:without(Sids, R0#rcv.discard)},
     lists:foldl(
         fun(Sid, Acc) ->
             #istream{pending = P} = istream(Sid, Acc),

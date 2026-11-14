@@ -176,9 +176,12 @@ short(T) -> io_lib:format("~p", [T]).
 forget(#peer{events = Es} = P, Ev) ->
     P#peer{events = lists:delete(Ev, Es)}.
 
+%% The installed Firefox is used when WEBRTC_FIREFOX names it, or on
+%% macOS, where Playwright's build is not used (see peer.js). Elsewhere a
+%% `firefox' on the PATH may be a launcher that cannot run headless (the
+%% Ubuntu snap): Playwright's Firefox is used.
 system_firefox(Dir) ->
     Installed =
         os:getenv("WEBRTC_FIREFOX") =/= false orelse
-            filelib:is_dir("/Applications/Firefox.app") orelse
-            os:find_executable("firefox") =/= false,
+            filelib:is_dir("/Applications/Firefox.app"),
     Installed andalso filelib:is_dir(filename:join(Dir, "node_modules/puppeteer-core")).

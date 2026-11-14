@@ -12,7 +12,7 @@
 
 -include("webrtc_rtp.hrl").
 
--export([new/0, configure/2, classify/3, rid/2, source/3, sdes/3]).
+-export([new/0, configure/2, classify/3, rid/2, source/3, sdes/3, forget/2]).
 
 -export_type([state/0]).
 
@@ -96,6 +96,14 @@ learn(Mid, Rid, Ssrc, R) ->
     R#rids{ssrc_rid = (R#rids.ssrc_rid)#{Ssrc => Rid}, source = (R#rids.source)#{{Mid, Rid} => Ssrc}}.
 
 %% @doc Rid of a learned source SSRC.
+%% @doc Forget a source stream that ended.
+-spec forget(ssrc(), state()) -> state().
+forget(Ssrc, R) ->
+    R#rids{
+        ssrc_rid = maps:remove(Ssrc, R#rids.ssrc_rid),
+        source = maps:filter(fun(_, S) -> S =/= Ssrc end, R#rids.source)
+    }.
+
 -spec rid(ssrc(), state()) -> binary() | undefined.
 rid(Ssrc, R) -> maps:get(Ssrc, R#rids.ssrc_rid, undefined).
 

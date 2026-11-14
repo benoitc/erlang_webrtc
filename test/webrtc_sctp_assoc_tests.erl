@@ -260,6 +260,34 @@ pr_max_retransmits_test() ->
     ?assertEqual(0, ?A:buffered_amount(1, ?NET:engine(a, N5))),
     ?assertEqual(0, stat(a, outstanding_chunks, N5)).
 
+%% RFC 3758 A5, C3: a lost FORWARD TSN is sent again even when the SACKs
+%% that follow find nothing in flight; otherwise the ordered messages
+%% behind the abandoned one stay in the receive buffer for ever.
+pr_forward_tsn_lost_test() ->
+    put(fwd_dropped, false),
+    Filter = fun
+        (a, Bin, _Now) ->
+            {ok, #sctp_packet{chunks = Cs}} = webrtc_sctp_chunk:decode(Bin),
+            Lost = [x || #sctp_data{data = <<"lost">>} <- Cs],
+            Fwd = [x || C <- Cs, element(1, C) =:= forward_tsn orelse element(1, C) =:= i_forward_tsn],
+            case {Lost, Fwd, get(fwd_dropped)} of
+                {[_ | _], _, _} -> drop;
+                {_, [_ | _], false} -> put(fwd_dropped, true), drop;
+                _ -> keep
+            end;
+        (_, _, _) ->
+            keep
+    end,
+    N0 = established(#{}, #{}, #{filter => Filter}),
+    Msgs = [<<"lost">> | [payload(I, 100) || I <- lists:seq(1, 6)]],
+    N1 = lists:foldl(fun(M, Acc) -> send(a, 1, M, #{max_retransmits => 0}, Acc) end, N0, Msgs),
+    N2 = ?NET:run(?MINUTE, N1),
+    ?assert(get(fwd_dropped)),
+    ?assertEqual(tl(Msgs), [D || {1, _, D} <- received(b, N2)]),
+    ?assert(stat(a, forward_tsn_sent, N2) >= 2),
+    ?assertEqual(0, stat(a, outstanding_chunks, N2)),
+    ?assertEqual(1048576, stat(b, a_rwnd, N2)).
+
 pr_ordered_max_retransmits_test() ->
     N0 = established(#{}, #{}, #{loss => 0.25, seed => 22}),
     Msgs = [payload(I, 3000) || I <- lists:seq(1, 60)],
@@ -585,11 +613,30 @@ receive_window_test() ->
     ?assertEqual([{0, 53, M} || M <- Msgs], received(b, N2)),
     ?assertEqual(0, stat(b, dropped_chunks, N2)).
 
-too_large_message_test() ->
-    N0 = established(#{}, #{max_message_size => 10000}, #{}),
-    N1 = ?NET:run(1000, send(a, 0, payload(1, 20000), #{}, N0)),
-    ?assertMatch([{protocol_violation, _}], closed(b, N1)),
-    ?assertMatch([{peer_abort, _}], closed(a, N1)).
+%% RFC 8841 §6: a message over the receiver's max-message-size is
+%% dropped and reported; the stream stays discarded until reset, the
+%% association and the other streams go on. Every receive path: a
+%% single chunk, fragmented ordered, fragmented unordered (DATA).
+too_large(Size, Max, Opts) ->
+    N0 = established(#{}, #{max_message_size => Max}, #{}),
+    N1 = ?NET:run(1000, send(a, 0, payload(1, Size), Opts, N0)),
+    N2 = wait_messages(b, 1, send(a, 1, <<"other stream">>, #{}, N1)),
+    ?assertEqual([], closed(b, N2)),
+    ?assertEqual([], closed(a, N2)),
+    ?assert(lists:member({message_too_large, 0}, ?NET:events(b, N2))),
+    ?assertEqual([{1, 53, <<"other stream">>}], received(b, N2)),
+    %% Later data on the discarded stream is dropped too.
+    N3 = ?NET:run(1000, send(a, 0, <<"small">>, #{}, N2)),
+    ?assertEqual([{1, 53, <<"other stream">>}], received(b, N3)).
+
+too_large_single_chunk_test() ->
+    too_large(800, 500, #{}).
+
+too_large_fragmented_test() ->
+    too_large(20000, 10000, #{}).
+
+too_large_unordered_test() ->
+    too_large(20000, 10000, #{ordered => false}).
 
 %%====================================================================
 %% Many streams
@@ -956,3 +1003,24 @@ reconf_deferred_requests_test() ->
     ),
     {_, Out3, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Ahead, [1]}]}], N1),
     ?assertEqual([{reconf_response, Seq, in_progress, undefined}], reconf_out(Out3)).
+
+%% RFC 6525 §5.2.2 E3: an Outgoing SSN Reset Request with no stream
+%% numbers resets every incoming stream. With no stream state at all it
+%% must still complete (it used to recurse forever).
+reconf_reset_all_streams_empty_test_() ->
+    {timeout, 5, fun() ->
+        {V, Seq, N} = reconf_pair(#{}),
+        Last = (Seq - 1) band 16#FFFFFFFF,
+        {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Last, []}]}], N),
+        ?assertEqual([{reconf_response, Seq, success_performed, undefined}], reconf_out(Out))
+    end}.
+
+reconf_reset_all_streams_with_state_test_() ->
+    {timeout, 5, fun() ->
+        {V, Seq, N0} = reconf_pair(#{}),
+        %% b received one message on stream 3: the first data TSN is the
+        %% initial TSN, which is also the first request sequence number.
+        N1 = wait_messages(b, 1, send(a, 3, <<"x">>, #{}, N0)),
+        {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Seq, []}]}], N1),
+        ?assertEqual([{reconf_response, Seq, success_performed, undefined}], reconf_out(Out))
+    end}.

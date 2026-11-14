@@ -75,6 +75,7 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         ice_lite = maps:get(ice_lite, Opts, false),
         fingerprints = FPs,
         cname = token(16),
+        tls_id = token(24),
         session_id = Sid,
         caps = Caps,
         sctp_port = maps:get(sctp_port, Opts, 5000),
@@ -198,7 +199,7 @@ set_local_description(_, _, #jsep{signaling = closed}) ->
 set_local_description(offer, Sdp, #jsep{signaling = S} = J) when
     S =:= stable; S =:= have_local_offer
 ->
-    {ok, J#jsep{pending_local = Sdp, signaling = have_local_offer}};
+    {ok, snapshot(J#jsep{pending_local = Sdp, signaling = have_local_offer})};
 set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
     (Type =:= answer orelse Type =:= pranswer),
     (S =:= have_remote_offer orelse S =:= have_local_pranswer)
@@ -220,8 +221,8 @@ set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
                 ice_restart = false
             }}
     end;
-set_local_description(rollback, _, #jsep{signaling = have_local_offer} = J) ->
-    {ok, J#jsep{pending_local = undefined, signaling = stable}};
+set_local_description(rollback, _, J) ->
+    rollback(J);
 set_local_description(_, _, _) ->
     {error, invalid_state}.
 
@@ -234,9 +235,10 @@ set_remote_description(offer, Sdp0, #jsep{signaling = S} = J) when
     Sdp = bundle_view(Sdp0),
     maybe
         ok ?= validate(offer, Sdp, J),
-        J0 = restore(J),
-        Snap = {J0#jsep.transceivers, J0#jsep.next_id, J0#jsep.data_mid, J0#jsep.data_mline},
-        J1 = associate(Sdp, J0#jsep{snapshot = Snap}),
+        ok ?= validate_reoffer(Sdp, J),
+        J0 = snapshot(restore(J)),
+        {ok, J01} ?= dtls_identity(Sdp, J0),
+        J1 = associate(Sdp, J01),
         {ok, J1#jsep{
             pending_remote = Sdp,
             pending_remote_orig = Sdp0,
@@ -251,8 +253,9 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
     Sdp = bundle_view(Sdp0),
     maybe
         ok ?= validate(answer, Sdp, J),
-        ok ?= check_answer_mids(Sdp, J#jsep.pending_local),
-        J1 = negotiate(offerer, J#jsep.pending_local, Sdp, J),
+        {ok, Jd} ?= dtls_identity(Sdp, J),
+        ok ?= validate_answer(Sdp, J#jsep.pending_local, Jd),
+        J1 = negotiate(offerer, J#jsep.pending_local, Sdp, Jd),
         J2 = J1#jsep{remote_ice = remote_ice(Sdp)},
         case Type of
             pranswer ->
@@ -265,22 +268,74 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
                     pending_local = undefined,
                     pending_remote = undefined,
                     pending_remote_orig = undefined,
+                    snapshot = undefined,
                     signaling = stable,
                     ice_restart = false
                 }}
         end
     end;
-set_remote_description(rollback, _, #jsep{signaling = have_remote_offer} = J) ->
-    J1 = restore(J),
-    {ok, J1#jsep{pending_remote = undefined, pending_remote_orig = undefined, signaling = stable, snapshot = undefined}};
+set_remote_description(rollback, _, J) ->
+    rollback(J);
 set_remote_description(_, _, _) ->
     {error, invalid_state}.
 
-%% Undo the transceiver changes of a previous remote offer (§4.1.10.2).
+%% RFC 9429 §5.7: a rollback is allowed in every state but stable, has
+%% the same effect through either setter, and abandons the offer/answer
+%% exchange in progress, provisional answers included.
+rollback(#jsep{signaling = S} = J) when
+    S =:= have_local_offer;
+    S =:= have_remote_offer;
+    S =:= have_local_pranswer;
+    S =:= have_remote_pranswer
+->
+    J1 = restore(J),
+    {ok, J1#jsep{
+        pending_local = undefined,
+        pending_remote = undefined,
+        pending_remote_orig = undefined,
+        snapshot = undefined,
+        signaling = stable
+    }};
+rollback(_) ->
+    {error, invalid_state}.
+
+%% The state an offer/answer exchange changes, saved when it starts (the
+%% first offer applied in stable state) so a rollback can undo it.
+snapshot(#jsep{snapshot = undefined} = J) ->
+    J#jsep{
+        snapshot = #{
+            transceivers => J#jsep.transceivers,
+            next_id => J#jsep.next_id,
+            data_mid => J#jsep.data_mid,
+            data_mline => J#jsep.data_mline,
+            dtls_role => J#jsep.dtls_role,
+            tls_id => J#jsep.tls_id,
+            remote_ice => J#jsep.remote_ice,
+            ice_ufrag => J#jsep.ice_ufrag,
+            ice_pwd => J#jsep.ice_pwd,
+            ice_restart => J#jsep.ice_restart
+        }
+    };
+snapshot(J) ->
+    J.
+
+%% Undo the changes of the exchange in progress (§4.1.10.2, §5.7).
 restore(#jsep{snapshot = undefined} = J) ->
     J;
-restore(#jsep{snapshot = {Trs, Next, DMid, DLine}} = J) ->
-    J#jsep{transceivers = Trs, next_id = Next, data_mid = DMid, data_mline = DLine}.
+restore(#jsep{snapshot = Snap} = J) ->
+    J#jsep{
+        transceivers = maps:get(transceivers, Snap),
+        next_id = maps:get(next_id, Snap),
+        data_mid = maps:get(data_mid, Snap),
+        data_mline = maps:get(data_mline, Snap),
+        dtls_role = maps:get(dtls_role, Snap),
+        tls_id = maps:get(tls_id, Snap),
+        remote_ice = maps:get(remote_ice, Snap),
+        ice_ufrag = maps:get(ice_ufrag, Snap),
+        ice_pwd = maps:get(ice_pwd, Snap),
+        ice_restart = maps:get(ice_restart, Snap),
+        snapshot = undefined
+    }.
 
 -spec signaling_state(state()) -> atom().
 signaling_state(#jsep{signaling = S}) -> S.
@@ -330,6 +385,48 @@ first_defined(A, _) -> A.
 
 -spec close(state()) -> state().
 close(J) -> J#jsep{signaling = closed}.
+
+%%====================================================================
+%% DTLS identity (RFC 8842 §5, RFC 9429 §5.8.3)
+%%====================================================================
+
+%% A remote description whose fingerprints (or tls-id) differ from the
+%% current ones asks for a new DTLS association. That is only allowed
+%% with an ICE restart (new remote ufrag and pwd); then the DTLS role is
+%% negotiated again and we pick a new tls-id. Otherwise the description
+%% is refused: keeping the old association would leave the connection
+%% authenticated against a certificate the peer no longer claims.
+dtls_identity(_Sdp, #jsep{current_remote = undefined} = J) ->
+    {ok, J};
+dtls_identity(Sdp, #jsep{current_remote = Cur} = J) ->
+    case identity(Sdp) =:= identity(Cur) of
+        true ->
+            {ok, J};
+        false ->
+            case remote_ice(Sdp) =/= remote_ice(Cur) of
+                true -> {ok, J#jsep{dtls_role = undefined, tls_id = token(24)}};
+                false -> {error, dtls_identity_changed}
+            end
+    end.
+
+%% Fingerprints and tls-id of the first active m= section; a missing
+%% tls-id (older peers) only compares the fingerprints.
+identity(#sdp{media = Media} = Sdp) ->
+    case [M || M <- Media, M#sdp_media.port =/= 0] of
+        [M | _] ->
+            FPs = lists:sort([{H, V} || #{hash := H, value := V} <- webrtc_sdp_media:fingerprints(M, Sdp)]),
+            TlsId =
+                case webrtc_sdp_media:find_attr(tls_id, M, Sdp) of
+                    {ok, T} -> T;
+                    error -> undefined
+                end,
+            case TlsId of
+                undefined -> {FPs, any};
+                _ -> {FPs, TlsId}
+            end;
+        [] ->
+            undefined
+    end.
 
 %%====================================================================
 %% Validation (RFC 9429 §5.8, RFC 8839, RFC 8842)
@@ -387,13 +484,100 @@ validate_sections([M | Rest], Sdp) ->
         [R | _] -> {error, {R, webrtc_sdp_media:mid(M)}}
     end.
 
-check_answer_mids(Answer, Offer) ->
-    Om = [webrtc_sdp_media:mid(M) || M <- Offer#sdp.media],
-    Am = [webrtc_sdp_media:mid(M) || M <- Answer#sdp.media],
-    case Om =:= Am of
-        true -> ok;
-        false -> {error, mid_mismatch}
+%% RFC 9429 §5.8.3, RFC 3264 §6: an answer has the offer's m= sections,
+%% in order, with the same mid, media type and protocol; an active
+%% section chooses `active' or `passive' (the established DTLS role
+%% kept unless the association is replaced), a direction the offer
+%% allows, and payload types the offer has, for the same codecs.
+validate_answer(#sdp{media = Am}, #sdp{media = Om}, _J) when length(Am) =/= length(Om) ->
+    {error, mline_count_mismatch};
+validate_answer(#sdp{media = Am} = A, #sdp{media = Om} = O, J) ->
+    check_sections([{OM, AM} || {OM, AM} <- lists:zip(Om, Am)], fun(OM, AM) -> answer_section(OM, O, AM, A, J) end).
+
+check_sections([], _Check) ->
+    ok;
+check_sections([{OM, AM} | Rest], Check) ->
+    case Check(OM, AM) of
+        ok -> check_sections(Rest, Check);
+        {error, R} -> {error, {R, webrtc_sdp_media:mid(AM)}}
     end.
+
+answer_section(OM, O, AM, A, J) ->
+    Active = AM#sdp_media.port =/= 0,
+    Rtp = webrtc_jsep_build:media_kind(AM#sdp_media.media) =/= application,
+    Checks = [
+        {webrtc_sdp_media:mid(OM) =:= webrtc_sdp_media:mid(AM), mid_mismatch},
+        {OM#sdp_media.media =:= AM#sdp_media.media, media_type_mismatch},
+        {not Active orelse same_proto(OM, AM), proto_mismatch},
+        {not Active orelse answer_setup(AM, A, J), bad_setup},
+        {not Active orelse not Rtp orelse
+            direction_allowed(webrtc_sdp_media:direction(OM, O), webrtc_sdp_media:direction(AM, A)),
+            direction_mismatch},
+        {not Active orelse not Rtp orelse offered_formats(OM, AM), payload_type_mismatch}
+    ],
+    case [R || {false, R} <- Checks] of
+        [] -> ok;
+        [R | _] -> {error, R}
+    end.
+
+same_proto(#sdp_media{proto = P1}, #sdp_media{proto = P2}) ->
+    string:uppercase(P1) =:= string:uppercase(P2).
+
+answer_setup(M, Sdp, #jsep{dtls_role = Role}) ->
+    case {webrtc_sdp_media:setup(M, Sdp), Role} of
+        {{ok, active}, R} -> R =:= undefined orelse R =:= server;
+        {{ok, passive}, R} -> R =:= undefined orelse R =:= client;
+        _ -> false
+    end.
+
+%% RFC 3264 §6.1.
+direction_allowed(sendrecv, _) -> true;
+direction_allowed(sendonly, A) -> A =:= recvonly orelse A =:= inactive;
+direction_allowed(recvonly, A) -> A =:= sendonly orelse A =:= inactive;
+direction_allowed(inactive, A) -> A =:= inactive.
+
+offered_formats(OM, AM) ->
+    Offered = maps:from_list([{Pt, C} || #{pt := Pt} = C <- webrtc_sdp_media:codecs(OM)]),
+    lists:all(fun(F) -> lists:member(F, OM#sdp_media.fmts) end, AM#sdp_media.fmts) andalso
+        lists:all(
+            fun(#{pt := Pt, name := N, clock_rate := R}) ->
+                case Offered of
+                    #{Pt := #{name := ON, clock_rate := OR}} ->
+                        string:uppercase(ON) =:= string:uppercase(N) andalso OR =:= R;
+                    _ ->
+                        false
+                end
+            end,
+            webrtc_sdp_media:codecs(AM)
+        ).
+
+%% RFC 9429 §5.8.3: a subsequent offer keeps every m= section of the
+%% current description in place, with its mid and media type; only a
+%% rejected section may be reused for something else (§5.2.2).
+validate_reoffer(_Sdp, #jsep{current_remote = undefined}) ->
+    ok;
+validate_reoffer(#sdp{media = New}, #jsep{current_remote = #sdp{media = Cur}}) when length(New) < length(Cur) ->
+    {error, mline_removed};
+validate_reoffer(#sdp{media = New}, #jsep{current_remote = #sdp{media = Cur}, current_local = Local}) ->
+    Pairs = lists:zip(lists:sublist(New, length(Cur)), lists:zip(Cur, local_sections(Local, length(Cur)))),
+    check_sections(
+        [{{C, L}, N} || {N, {C, L}} <- Pairs],
+        fun({C, L}, N) ->
+            Rejected = C#sdp_media.port =:= 0 orelse L#sdp_media.port =:= 0,
+            if
+                Rejected -> ok;
+                C#sdp_media.media =/= N#sdp_media.media -> {error, media_type_changed};
+                true ->
+                    case webrtc_sdp_media:mid(C) =:= webrtc_sdp_media:mid(N) of
+                        true -> ok;
+                        false -> {error, mid_changed}
+                    end
+            end
+        end
+    ).
+
+local_sections(#sdp{media = M}, N) when length(M) >= N -> lists:sublist(M, N);
+local_sections(_, N) -> lists:duplicate(N, #sdp_media{port = 0}).
 
 %%====================================================================
 %% Transceiver association (RFC 9429 §5.10)

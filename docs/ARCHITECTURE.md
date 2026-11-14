@@ -61,7 +61,7 @@ webrtc_sup (one_for_one)
 ```
 
 - `webrtc_pc` owns the signaling state, the local and remote descriptions, the transceivers and the data channel registry. It is the process the application talks to.
-- `webrtc_transport` owns the UDP sockets and every engine of the transport. Media send calls go straight from the application to the transport process, so RTP forwarding does not pass through `webrtc_pc`.
+- `webrtc_transport` owns the UDP sockets and every engine of the transport. Media send calls go straight from the application to the transport process, so RTP forwarding does not pass through `webrtc_pc`. The process code is split in three modules over one state: `webrtc_transport` (API, callbacks, timer), `webrtc_transport_net` (sockets, received datagrams, ICE actions) and `webrtc_transport_secure` (DTLS, SRTP, media actions, SCTP).
 - Each transport process handles one ICE component. With BUNDLE (the WebRTC default) that is one per peer connection.
 - Peer connections are independent. There is no global registry on the packet path.
 
@@ -74,10 +74,10 @@ Inbound:
 1. `gen_udp` delivers `{udp, Sock, IP, Port, Bin}` to `webrtc_transport`.
 2. `webrtc_demux:classify/1` looks at the first byte (RFC 7983 as updated by RFC 9443).
 3. STUN goes to the ICE agent. A valid check from an unknown address creates a peer-reflexive candidate. Consent responses refresh the selected pair.
-4. DTLS records go to the DTLS endpoint. Handshake output is sent back through the selected pair. Once connected, application data goes to the SCTP association; the exported keying material configures SRTP.
+4. DTLS records go to the DTLS endpoint. Handshake output is sent back through the best valid pair (RFC 8445 §12.1), and kept until one exists. Once connected, application data goes to the SCTP association; the exported keying material configures SRTP.
 5. RTP/RTCP is unprotected with the SRTP context of the remote side, parsed, and delivered to the owner as `{webrtc, Pc, {rtp, Mid, Packet}}` (`{rtp, Mid, Rid, Packet}` for a simulcast layer, told apart by its rid header extension) or handed to the RTCP handler.
 
-Outbound follows the reverse path. Only the selected candidate pair is used for DTLS, SRTP and SCTP traffic; data is never sent before ICE has a valid pair and consent is fresh (RFC 7675).
+Outbound follows the reverse path. DTLS, SRTP and SCTP traffic uses the best valid pair until ICE selects one, then only the selected pair; data is never sent before ICE has a valid pair and consent is fresh (RFC 7675).
 
 ## Interaction between ICE, DTLS, SRTP and SCTP
 

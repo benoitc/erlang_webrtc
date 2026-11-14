@@ -57,7 +57,8 @@ new(#cfg{} = C) ->
 %% @doc Enter the established state: initial TSN, peer window and
 %% negotiated features.
 -spec start(map(), #snd{}) -> #snd{}.
-start(#{tsn := Itsn, rwnd := Rwnd, idata := IData, pr := PR, os := OS}, S) ->
+start(#{tsn := Itsn, rwnd := Rwnd, idata := IData, pr := PR, os := OS}, S0) ->
+    S = drop_beyond(OS, S0),
     Mtu = S#snd.mtu,
     Next = Itsn + (1 bsl 32),
     S#snd{
@@ -535,6 +536,23 @@ min_t(A, B) -> min(A, B).
 %%====================================================================
 %% Helpers
 %%====================================================================
+
+%% Messages queued before the association came up on streams the peer
+%% did not grant are dropped: those streams do not exist (RFC 9260
+%% §6.5). The owner learns it from the negotiated stream counts.
+drop_beyond(OS, #snd{streams = M} = S) ->
+    Drop = maps:filter(fun(Sid, _) -> Sid >= OS end, M),
+    Bytes = lists:sum([B || _ := #ostream{bytes = B} <- Drop]),
+    S#snd{
+        streams = maps:without(maps:keys(Drop), M),
+        buffered = S#snd.buffered - Bytes,
+        active = queue:filter(fun(Sid) -> Sid < OS end, S#snd.active),
+        current =
+            case S#snd.current of
+                C when is_integer(C), C >= OS -> undefined;
+                C -> C
+            end
+    }.
 
 stream(Sid, #snd{streams = M}) ->
     case M of

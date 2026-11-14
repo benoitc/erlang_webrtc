@@ -21,6 +21,11 @@
     close_notifies_peer/1,
     concurrent_peer_connections/1,
     candidates_before_local_description/1,
+    fingerprint_change_refused/1,
+    max_message_size_wired/1,
+    fingerprint_change_ends_association/1,
+    remote_ice_restart_rolled_back/1,
+    pranswer_connects/1,
     simulcast_layers/1,
     simulcast_sfu_forward/1
 ]).
@@ -43,6 +48,11 @@ all() ->
         close_notifies_peer,
         concurrent_peer_connections,
         candidates_before_local_description,
+        fingerprint_change_refused,
+        max_message_size_wired,
+        fingerprint_change_ends_association,
+        remote_ice_restart_rolled_back,
+        pranswer_connects,
         simulcast_layers,
         simulcast_sfu_forward
     ].
@@ -405,3 +415,139 @@ simulcast_sfu_forward(_Config) ->
     {ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>, <<"h">>} end, 5000),
     [webrtc:close(P) || P <- [A, B, C, D]],
     ok.
+
+tamper_fingerprint(Sdp) ->
+    Other = webrtc_dtls_cert:format_fingerprint(
+        webrtc_dtls_cert:fingerprint(sha256, maps:get(der, webrtc_dtls_cert:generate()))
+    ),
+    re:replace(Sdp, <<"a=fingerprint:[^\r]*">>, <<"a=fingerprint:", Other/binary>>, [global, {return, binary}]).
+
+%% RFC 8842 §5, RFC 9429 §5.8.3: other fingerprints without an ICE
+%% restart are refused.
+fingerprint_change_refused(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"id">>, #{}),
+    ?S:connect(A, B),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ?assertEqual({error, dtls_identity_changed}, webrtc:set_remote_description(B, offer, tamper_fingerprint(Offer))),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% With an ICE restart the description is accepted, and the peer that
+%% got the new fingerprint drops the old association: its channels close
+%% and nothing more flows on the old keys.
+fingerprint_change_ends_association(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"id">>, #{}),
+    ?S:connect(A, B),
+    IdB = channel_id(B, <<"id">>),
+    ok = webrtc:restart_ice(A),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    ok = webrtc:set_remote_description(B, offer, tamper_fingerprint(Offer)),
+    {ok, Answer} = webrtc:create_answer(B, #{}),
+    ok = webrtc:set_local_description(B, answer, Answer),
+    ok = webrtc:set_remote_description(A, answer, Answer),
+    {ok, _} = ?S:wait(B, fun(E) -> E =:= {datachannel_closed, IdB} end, 10000),
+    ?assertMatch({error, _}, webrtc:send_data(B, IdB, text, <<"old keys">>)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% RFC 9429 §5.7: a remote offer that restarts ICE and is then rolled
+%% back leaves the live ICE generation alone. The answer prepared in
+%% between carried new credentials; they are dropped with the rollback.
+remote_ice_restart_rolled_back(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"keep">>, #{}),
+    ?S:connect(A, B),
+    IdA = channel_id(A, <<"keep">>),
+    IdB = channel_id(B, <<"keep">>),
+    LocalB = webrtc:local_description(B),
+    Before = wait_selected(B, 50),
+    ?assertNotEqual([], Before),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    Restart = re:replace(
+        re:replace(Offer, <<"a=ice-ufrag:[^\r]*">>, <<"a=ice-ufrag:rstr">>, [global, {return, binary}]),
+        <<"a=ice-pwd:[^\r]*">>, <<"a=ice-pwd:restartrestartrestartrest">>, [global, {return, binary}]
+    ),
+    ok = webrtc:set_remote_description(B, offer, Restart),
+    {ok, Answer} = webrtc:create_answer(B, #{}),
+    ?assertNotEqual(ufrag(LocalB), ufrag(Answer)),
+    ?assertEqual(Before, selected_pair(B)),
+    ok = webrtc:set_remote_description(B, rollback, <<>>),
+    ?assertEqual(stable, webrtc:signaling_state(B)),
+    ?assertEqual(Before, selected_pair(B)),
+    {ok, Reoffer} = webrtc:create_offer(B, #{}),
+    ?assertEqual(ufrag(LocalB), ufrag(Reoffer)),
+    ok = webrtc:send_data(A, IdA, text, <<"a to b">>),
+    _ = message(B, <<"a to b">>),
+    ok = webrtc:send_data(B, IdB, text, <<"b to a">>),
+    _ = message(A, <<"b to a">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% RFC 9429 §4.1.10.1: with a provisional answer the connection comes
+%% up and data flows; the final answer keeps it.
+pranswer_connects(_Config) ->
+    A = pc(),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"early">>, #{}),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    ok = webrtc:set_remote_description(B, offer, Offer),
+    {ok, Pr} = webrtc:create_answer(B, #{}),
+    ok = webrtc:set_local_description(B, pranswer, Pr),
+    ok = webrtc:set_remote_description(A, pranswer, Pr),
+    ok = ?S:wait_connected([A, B], 10000),
+    ?assertEqual({have_remote_pranswer, have_local_pranswer}, {webrtc:signaling_state(A), webrtc:signaling_state(B)}),
+    IdA = channel_id(A, <<"early">>),
+    ok = webrtc:send_data(A, IdA, text, <<"provisional">>),
+    _ = message(B, <<"provisional">>),
+    {ok, Answer} = webrtc:create_answer(B, #{}),
+    ok = webrtc:set_local_description(B, answer, Answer),
+    ok = webrtc:set_remote_description(A, answer, Answer),
+    ok = webrtc:send_data(A, IdA, text, <<"final">>),
+    _ = message(B, <<"final">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+selected_pair(Pc) ->
+    #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
+    [{L, R} || #{selected := true, local := L, remote := R} <- Pairs].
+
+%% Data may flow before nomination (RFC 8445 §12.1): wait for it.
+wait_selected(Pc, Tries) ->
+    case selected_pair(Pc) of
+        [] when Tries > 0 -> timer:sleep(100), wait_selected(Pc, Tries - 1);
+        Sel -> Sel
+    end.
+
+ufrag(Sdp) ->
+    {match, [U]} = re:run(Sdp, <<"a=ice-ufrag:([^\r]*)">>, [{capture, all_but_first, binary}]),
+    U.
+
+%% RFC 8841 §6: the max-message-size we announce is what SCTP accepts;
+%% the peer honours the one it was given.
+max_message_size_wired(_Config) ->
+    {error, {badarg, max_message_size}} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 0}),
+    {error, {badarg, congestion_control}} = webrtc:new_peer_connection(#{loopback => true, congestion_control => false}),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 10000}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 300000}),
+    ok = webrtc:create_data_channel(A, <<"m">>, #{}),
+    ?S:connect(A, B),
+    IdA = channel_id(A, <<"m">>),
+    IdB = channel_id(B, <<"m">>),
+    %% A may send B up to 300000 bytes, more than the 262144 SCTP default.
+    Big = crypto:strong_rand_bytes(290000),
+    ok = webrtc:send_data(A, IdA, binary, Big),
+    {_, binary, Big} = message(B, Big),
+    %% B may only send A 10000 bytes.
+    ?assertEqual({error, message_too_large}, webrtc:send_data(B, IdB, binary, crypto:strong_rand_bytes(10001))),
+    Small = crypto:strong_rand_bytes(10000),
+    ok = webrtc:send_data(B, IdB, binary, Small),
+    {_, binary, Small} = message(A, Small),
+    webrtc:close(A),
+    webrtc:close(B).

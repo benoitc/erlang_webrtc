@@ -14,7 +14,11 @@
     replayed_datagrams_dropped/1,
     teardown_during_traffic/1,
     resources_released_on_close/1,
-    owner_exit_closes/1
+    owner_exit_closes/1,
+    stuck_transport_killed_on_close/1,
+    turn_allocation_deleted_on_close/1,
+    nothing_sent_after_peer_close/1,
+    no_state_in_caller/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -27,7 +31,11 @@ all() ->
         replayed_datagrams_dropped,
         teardown_during_traffic,
         resources_released_on_close,
-        owner_exit_closes
+        owner_exit_closes,
+        stuck_transport_killed_on_close,
+        turn_allocation_deleted_on_close,
+        nothing_sent_after_peer_close,
+        no_state_in_caller
     ].
 
 init_per_suite(Config) ->
@@ -179,7 +187,8 @@ resources_released_on_close(_Config) ->
     Pairs = [connected_pair(#{}) || _ <- lists:seq(1, 5)],
     [begin webrtc:close(A), webrtc:close(B) end || {A, B, _} <- Pairs],
     timer:sleep(500),
-    ?assertEqual(Ports0, length(erlang:ports())),
+    %% Ports of earlier cases may still be closing: a leak only adds.
+    ?assert(length(erlang:ports()) =< Ports0),
     ?assert(length(processes()) =< Procs0 + 2),
     ?assertEqual([], supervisor:which_children(webrtc_pc_sup)).
 
@@ -202,3 +211,98 @@ webrtc_transport_of(Pc) ->
 proc_memory(P) ->
     {memory, M} = process_info(P, memory),
     M.
+
+%% A transport stuck in a callback (here a blocking outbound filter)
+%% cannot outlive its peer connection: close kills it and its sockets are
+%% released.
+stuck_transport_killed_on_close(_Config) ->
+    Block = atomics:new(1, []),
+    Filter = {fun(_Dest, Bin, S) ->
+                  case atomics:get(Block, 1) of
+                      1 -> receive never -> ok end;
+                      0 -> ok
+                  end,
+                  {[{0, Bin}], S}
+              end, undefined},
+    {A, B, Id} = connected_pair(#{outbound_filter => Filter}),
+    T = webrtc_transport_of(A),
+    {links, Links} = process_info(T, links),
+    Ports = [P || P <- Links, is_port(P)],
+    ?assertNotEqual([], Ports),
+    Ref = monitor(process, T),
+    atomics:put(Block, 1, 1),
+    %% The next datagram A sends blocks its transport forever.
+    _ = spawn(fun() -> webrtc:send_data(A, Id, text, <<"x">>) end),
+    timer:sleep(300),
+    {Time, ok} = timer:tc(fun() -> webrtc:close(A) end),
+    ct:log("close took ~p ms", [Time div 1000]),
+    receive {'DOWN', Ref, process, T, _} -> ok after 1000 -> ct:fail(transport_survived) end,
+    webrtc:close(B),
+    %% The sockets of the killed transport are released.
+    ?assertEqual([], [P || P <- Ports, erlang:port_info(P) =/= undefined]).
+
+%% RFC 8656 §8: closing deletes the TURN allocation (Refresh with a zero
+%% lifetime) instead of leaving it until it expires.
+turn_allocation_deleted_on_close(_Config) ->
+    {Turn, Addr} = webrtc_test_turn_udp:start(#{users => #{<<"u">> => <<"p">>}}),
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        turn_servers => [#{address => Addr, username => <<"u">>, password => <<"p">>}]
+    }),
+    ok = webrtc:create_data_channel(A, <<"t">>, #{}),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    {ok, _} = ?S:wait(A, fun({ice_candidate, C, _}) when is_binary(C) ->
+                                 binary:match(C, <<"typ relay">>) =/= nomatch;
+                            (_) -> false end, 5000),
+    ?assertEqual(1, webrtc_test_turn_udp:allocations(Turn)),
+    ok = webrtc:close(A),
+    timer:sleep(300),
+    ?assertEqual(0, webrtc_test_turn_udp:allocations(Turn)),
+    webrtc_test_turn_udp:stop(Turn).
+
+%% After the peer's close_notify the transport is finished: media and
+%% data calls fail and no datagram leaves (no SRTP on old keys, no
+%% consent checks, no RTCP).
+nothing_sent_after_peer_close(_Config) ->
+    Count = atomics:new(1, []),
+    Counter = {fun(_Dest, Bin, S) -> atomics:add(Count, 1, 1), {[{0, Bin}], S} end, undefined},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => Counter}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ok = webrtc:create_data_channel(A, <<"c">>, #{}),
+    ?S:connect(A, B),
+    {ok, {datachannel_open, Id, _, _, _}} =
+        ?S:wait(B, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 10000),
+    ok = webrtc:close(A),
+    {ok, _} = ?S:wait(B, fun({connection_state, closed}) -> true; (_) -> false end, 5000),
+    timer:sleep(200),
+    After = atomics:get(Count, 1),
+    ?assertEqual({error, closed}, webrtc:send_rtp(B, <<"0">>, <<"x">>, #{timestamp => 1})),
+    ?assertEqual({error, closed}, webrtc:send_data(B, Id, text, <<"x">>)),
+    timer:sleep(6000),
+    ?assertEqual(After, atomics:get(Count, 1)),
+    webrtc:close(B).
+
+%% Using many peer connections from one process leaves nothing in its
+%% dictionary, and closed connections leave no transport rows behind.
+no_state_in_caller(_Config) ->
+    Dict0 = get(),
+    Pcs = [
+        begin
+            {ok, Pc} = webrtc:new_peer_connection(#{loopback => true}),
+            {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+            {ok, Offer} = webrtc:create_offer(Pc, #{}),
+            ok = webrtc:set_local_description(Pc, offer, Offer),
+            [{Pc, _}] = ets:lookup(webrtc_transports, Pc),
+            %% Not connected: the transport answers, nothing is cached.
+            {error, _} = webrtc:send_rtp(Pc, <<"0">>, <<"x">>, #{timestamp => 1}),
+            ok = webrtc:close(Pc),
+            {error, closed} = webrtc:send_rtp(Pc, <<"0">>, <<"x">>, #{timestamp => 1}),
+            Pc
+        end
+     || _ <- lists:seq(1, 100)
+    ],
+    ?assertEqual(Dict0, get()),
+    ?assertEqual([], [P || P <- Pcs, ets:lookup(webrtc_transports, P) =/= []]).

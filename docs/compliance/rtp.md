@@ -44,6 +44,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTCP-18 | 6.3.6 | Timer reconsideration on expiry | webrtc_rtcp_interval | reconsider_test_ | Unit tested |
 | RTCP-19 | 6.3.4 | Reverse reconsideration after BYE | webrtc_rtcp_interval | reverse_reconsider_test_ | Unit tested |
 | RTCP-20 | 6.3 | RTCP scheduler state (members, senders, tp, tn, BYE back-off of 6.3.7) | | | Not implemented (transport process) |
+| RTCP-21 | 6.4, 6.4.2 | Report blocks for every received source: 31 in the first SR or RR, more in RR packets that follow it, each source once per compound, the compound kept under 1150 bytes before SRTCP; when not all fit, the first source reported rotates and a source's interval statistics only advance when it is reported | webrtc_media_out | webrtc_media_tests:many_sources_reported_test | Unit tested |
 
 ## RFC 8834: RTP usage in WebRTC
 
@@ -71,6 +72,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | WRTP-20 | 6.1 | Senders understand generic NACK | webrtc_rtcp_fb, webrtc_nack_buffer | nack_test, webrtc_nack_buffer_tests:buffer_test | Unit tested |
 | WRTP-21 | 6.1 | Receivers support RTX with SSRC multiplexing (RFC 4588) | webrtc_rtx | webrtc_rtx_tests:rtx_test | Unit tested |
 | WRTP-22 | 6.1 | RTT estimate from SR / RR to decide on retransmission | webrtc_rtp_stats, webrtc_nack_buffer | rtt_rfc_example_test, buffer_test | Unit tested |
+| WRTP-23 | RFC 3550 §6.6, §6.3.5 | Receive streams end with a BYE or after 60 s without packets: receiver, NACK, rid, RTX and SRTP state removed; at most 16 receive streams per transceiver and 256 per session, packets of further SSRCs dropped (`too_many_streams`); SSRCs learned from packets kept across renegotiation only while live | webrtc_media_in, webrtc_media | webrtc_media_tests:ssrc_churn_bounded_test, bye_removes_stream_test | Unit tested |
 
 ## RFC 4585: RTP/AVPF
 
@@ -262,3 +264,4 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 - `webrtc_rtp:encode/1` does not check that the payload type avoids 64..95 (MUX-2); the SDP layer must enforce it.
 - The RTCP and AVPF scheduling state machines (RTCP-20, AVPF-13, RSIZE-3) are not implemented; `webrtc_rtcp_interval` provides the pure computations they need.
 - `webrtc_nack` (receiver NACK generation) follows RFC 4585 §6.2.1 for the message and libwebrtc for the retry policy (retry every max(RTT, min interval), give up after `max_retries` or `max_age`, request a key frame when more than `max_missing` packets are missing); RFC 4585 does not specify this policy.
+| NACK-10 | RFC 4585 §6.2.1, RFC 3711 §3.3 | NACK answered without RTX: the exact SRTP bytes of the first transmission are resent (no second protection of the same index) | webrtc_media_out | webrtc_media_tests:nack_without_rtx_test | Unit tested |

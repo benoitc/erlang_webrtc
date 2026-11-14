@@ -741,3 +741,74 @@ bad_options_test() ->
         {unsupported_profile, srtp_null_hmac_sha1_80},
         webrtc_srtp:new(srtp_null_hmac_sha1_80, K, S, #{})
     ).
+
+%%--------------------------------------------------------------------
+%% forget/2: bounded receive state without a replay window
+%%--------------------------------------------------------------------
+
+%% A forgotten SSRC loses its state; its earlier packets stay refused
+%% and later ones are accepted, also across a rollover.
+forget_test() ->
+    {Tx0, Rx0} = pair(srtp_aes128_cm_hmac_sha1_80),
+    Seqs = lists:seq(65530, 65535) ++ lists:seq(0, 4),
+    {Ps, Tx1} = protect_all([rtp(S) || S <- Seqs], Tx0),
+    {Res, Rx1} = unprotect_all(Ps, Rx0),
+    ?assert(lists:all(fun({ok, _}) -> true; (_) -> false end, Res)),
+    {ok, Rtcp, _} = webrtc_srtp:protect_rtcp(rtcp(16#CAFEBABE), Tx1),
+    {ok, _, Rx2} = webrtc_srtp:unprotect_rtcp(Rtcp, Rx1),
+    Rx3 = webrtc_srtp:forget(16#CAFEBABE, Rx2),
+    ?assertEqual(error, webrtc_srtp:roc(rx, 16#CAFEBABE, Rx3)),
+    ?assert(erts_debug:flat_size(Rx3) < erts_debug:flat_size(Rx2)),
+    %% Replays of packets sent before are refused.
+    [?assertMatch({error, _}, webrtc_srtp:unprotect_rtp(P, Rx3)) || P <- Ps],
+    ?assertEqual({error, replay}, webrtc_srtp:unprotect_rtcp(Rtcp, Rx3)),
+    %% The stream continues where it was, after the rollover.
+    {[Next], _} = protect_all([rtp(5)], Tx1),
+    {ok, _, Rx4} = webrtc_srtp:unprotect_rtp(Next, Rx3),
+    ?assertEqual({ok, 1}, webrtc_srtp:roc(rx, 16#CAFEBABE, Rx4)).
+
+%% The memory of forgotten SSRCs is bounded: the oldest are dropped.
+forget_bounded_test() ->
+    {Tx, Rx0} = pair(srtp_aes128_cm_hmac_sha1_80),
+    Ssrcs = lists:seq(1, 1100),
+    Rx1 = lists:foldl(
+        fun(Ssrc, R) ->
+            {ok, P, _} = webrtc_srtp:protect_rtp(rtp(1, Ssrc, <<"x">>), Tx),
+            {ok, _, R1} = webrtc_srtp:unprotect_rtp(P, R),
+            webrtc_srtp:forget(Ssrc, R1)
+        end,
+        Rx0,
+        Ssrcs
+    ),
+    Size = erts_debug:flat_size(Rx1),
+    Rx2 = lists:foldl(
+        fun(Ssrc, R) ->
+            {ok, P, _} = webrtc_srtp:protect_rtp(rtp(1, Ssrc, <<"x">>), Tx),
+            {ok, _, R1} = webrtc_srtp:unprotect_rtp(P, R),
+            webrtc_srtp:forget(Ssrc, R1)
+        end,
+        Rx1,
+        lists:seq(5000, 5500)
+    ),
+    ?assert(erts_debug:flat_size(Rx2) =< Size + 64),
+    %% A recent one is still protected against replay.
+    {ok, Recent, _} = webrtc_srtp:protect_rtp(rtp(1, 5500, <<"x">>), Tx),
+    ?assertEqual({error, replay}, webrtc_srtp:unprotect_rtp(Recent, Rx2)).
+
+%% Receive state is created for at most 512 SSRCs.
+rx_streams_bounded_test() ->
+    {Tx, Rx0} = pair(srtp_aes128_cm_hmac_sha1_80),
+    Rx1 = lists:foldl(
+        fun(Ssrc, R) ->
+            {ok, P, _} = webrtc_srtp:protect_rtp(rtp(1, Ssrc, <<"x">>), Tx),
+            {ok, _, R1} = webrtc_srtp:unprotect_rtp(P, R),
+            R1
+        end,
+        Rx0,
+        lists:seq(1, 512)
+    ),
+    {ok, New, _} = webrtc_srtp:protect_rtp(rtp(1, 999, <<"x">>), Tx),
+    ?assertEqual({error, too_many_streams}, webrtc_srtp:unprotect_rtp(New, Rx1)),
+    {ok, Known, _} = webrtc_srtp:protect_rtp(rtp(2, 7, <<"x">>), Tx),
+    ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(Known, Rx1)),
+    ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(New, webrtc_srtp:forget(7, Rx1))).

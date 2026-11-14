@@ -11,7 +11,7 @@
 %% packet has been authenticated, so forged packets cannot move it.
 -module(webrtc_srtp_replay).
 
--export([new/1, check/2, update/2, top/1, window_size/1]).
+-export([new/1, seen/2, check/2, update/2, top/1, window_size/1]).
 
 -export_type([window/0]).
 
@@ -31,6 +31,13 @@ new(Size) when is_integer(Size), Size >= 64 ->
     #window{size = Size, mask = (1 bsl Size) - 1};
 new(Size) ->
     erlang:error(badarg, [Size]).
+
+%% @doc Window of `Size' entries in which every index up to `Top' counts
+%% as received: only later indices are accepted.
+-spec seen(pos_integer(), integer()) -> window().
+seen(Size, Top) ->
+    W = new(Size),
+    W#window{top = Top, bits = W#window.mask}.
 
 -spec window_size(window()) -> pos_integer().
 window_size(#window{size = S}) -> S.

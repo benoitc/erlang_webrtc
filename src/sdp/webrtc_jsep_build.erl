@@ -211,7 +211,7 @@ transport_attrs(Setup, J) ->
         {ice_options, [<<"trickle">>]}
     ] ++
         [{fingerprint, #{hash => H, value => V}} || {H, V} <- J#jsep.fingerprints] ++
-        [{setup, Setup}].
+        [{setup, Setup}, {tls_id, J#jsep.tls_id}].
 
 %% `Rids' are the a=rid and a=simulcast lines of the section. Layers sent
 %% with rids are identified by the RtpStreamId header extension (RFC

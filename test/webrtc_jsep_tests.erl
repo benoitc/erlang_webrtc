@@ -227,6 +227,145 @@ pranswer_test() ->
     {ok, A4} = webrtc_jsep:set_remote_description(answer, wire(Ans), A3),
     ?assertEqual({stable, stable}, {webrtc_jsep:signaling_state(A4), webrtc_jsep:signaling_state(B5)}).
 
+%% RFC 9429 §5.7: provisional answers can be rolled back, through either
+%% setter, and the previous negotiation applies again.
+pranswer_rollback_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    Before = {webrtc_jsep:negotiated(A1), webrtc_jsep:negotiated(B1)},
+    {ok, _, A2} = webrtc_jsep:add_transceiver(video, #{}, A1),
+    {ok, Offer, A3} = webrtc_jsep:create_offer(#{}, A2),
+    {ok, A4} = webrtc_jsep:set_local_description(offer, Offer, A3),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(Offer), B1),
+    {ok, Pr, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(pranswer, Pr, B3),
+    {ok, A5} = webrtc_jsep:set_remote_description(pranswer, wire(Pr), A4),
+    ?assertMatch(#{media := [_, _]}, webrtc_jsep:negotiated(A5)),
+    ?assertMatch([_, _], webrtc_jsep:transceivers(B4)),
+    %% Answerer: rollback from have-local-pranswer, through either setter.
+    lists:foreach(
+        fun(Set) ->
+            {ok, B5} = webrtc_jsep:Set(rollback, undefined, B4),
+            ?assertEqual(stable, webrtc_jsep:signaling_state(B5)),
+            ?assertEqual(element(2, Before), webrtc_jsep:negotiated(B5)),
+            ?assertMatch([_], webrtc_jsep:transceivers(B5)),
+            ?assertEqual(webrtc_jsep:remote_description(B1), webrtc_jsep:remote_description(B5))
+        end,
+        [set_local_description, set_remote_description]
+    ),
+    %% Offerer: rollback from have-remote-pranswer.
+    lists:foreach(
+        fun(Set) ->
+            {ok, A6} = webrtc_jsep:Set(rollback, undefined, A5),
+            ?assertEqual(stable, webrtc_jsep:signaling_state(A6)),
+            ?assertEqual(element(1, Before), webrtc_jsep:negotiated(A6)),
+            ?assertEqual(webrtc_jsep:local_description(A1), webrtc_jsep:local_description(A6)),
+            ?assertEqual(webrtc_jsep:remote_description(A1), webrtc_jsep:remote_description(A6))
+        end,
+        [set_local_description, set_remote_description]
+    ),
+    %% No rollback from stable.
+    ?assertEqual({error, invalid_state}, webrtc_jsep:set_remote_description(rollback, undefined, A1)),
+    ?assertEqual({error, invalid_state}, webrtc_jsep:set_local_description(rollback, undefined, A1)).
+
+%% A rolled back ICE restart leaves the ICE credentials as they were.
+ice_restart_rollback_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, Answer} = exchange(A0, new()),
+    A2 = webrtc_jsep:restart_ice(<<"newufrag">>, <<"newpasswordnewpassword">>, A1),
+    {ok, Offer, A3} = webrtc_jsep:create_offer(#{}, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(Offer), B1),
+    B3 = webrtc_jsep:restart_ice(<<"bnewufrg">>, <<"bnewpasswordbnewpassword">>, B2),
+    {ok, B4} = webrtc_jsep:set_remote_description(rollback, undefined, B3),
+    #{ice := Ice} = webrtc_jsep:negotiated(B4),
+    ?assertNotEqual(<<"newufrag">>, maps:get(remote_ufrag, Ice)),
+    {ok, Offer2, _} = webrtc_jsep:create_offer(#{}, B4),
+    {ok, Old} = ?M:ice_credentials(hd(Answer#sdp.media), Answer),
+    ?assertEqual({ok, Old}, ?M:ice_credentials(hd(Offer2#sdp.media), Offer2)),
+    %% The offerer's own restart survives a rollback of its offer: its
+    %% agent already uses the new credentials.
+    {ok, A4} = webrtc_jsep:set_local_description(offer, Offer, A3),
+    {ok, A5} = webrtc_jsep:set_local_description(rollback, undefined, A4),
+    {ok, Offer3, _} = webrtc_jsep:create_offer(#{}, A5),
+    ?assertMatch({ok, #{ufrag := <<"newufrag">>}}, ?M:ice_credentials(hd(Offer3#sdp.media), Offer3)).
+
+%% RFC 9429 §5.8.3, RFC 3264 §6: answers that do not match the offer
+%% are refused. Each case edits a real answer.
+tamper(Sdp, Re, Rep) ->
+    {ok, P} = webrtc_sdp:parse(re:replace(webrtc_sdp:encode(Sdp), Re, Rep, [{return, binary}])),
+    P.
+
+answer_for(OfferOpts) ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, OfferOpts, new()),
+    {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
+    {ok, Offer, A2} = webrtc_jsep:create_offer(#{}, A1),
+    {ok, A3} = webrtc_jsep:set_local_description(offer, Offer, A2),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), new()),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    {A3, Answer}.
+
+answer_validation_test_() ->
+    {A, Answer} = answer_for(#{}),
+    {Ar, AnswerR} = answer_for(#{direction => sendonly}),
+    Refused = fun(J, Sdp) -> webrtc_jsep:set_remote_description(answer, Sdp, J) end,
+    [
+        ?_assertMatch({ok, _}, Refused(A, wire(Answer))),
+        ?_assertEqual({error, mline_count_mismatch}, Refused(A, tamper(Answer, <<"m=video.*">>, <<"">>, [dotall]))),
+        ?_assertEqual({error, {media_type_mismatch, <<"1">>}},
+                      Refused(A, tamper(Answer, <<"m=video 9 UDP/TLS/RTP/SAVPF 96">>, <<"m=audio 9 UDP/TLS/RTP/SAVPF 96">>))),
+        ?_assertEqual({error, {proto_mismatch, <<"0">>}},
+                      Refused(A, tamper(Answer, <<"m=audio 9 UDP/TLS/RTP/SAVPF">>, <<"m=audio 9 RTP/SAVPF">>))),
+        ?_assertEqual({error, {bad_setup, <<"0">>}}, Refused(A, tamper(Answer, <<"a=setup:active">>, <<"a=setup:actpass">>))),
+        ?_assertEqual({error, {direction_mismatch, <<"0">>}},
+                      Refused(Ar, tamper(AnswerR, <<"a=recvonly">>, <<"a=sendonly">>))),
+        ?_assertEqual({error, {payload_type_mismatch, <<"0">>}},
+                      Refused(A, tamper(Answer, <<"m=audio 9 UDP/TLS/RTP/SAVPF 111">>, <<"m=audio 9 UDP/TLS/RTP/SAVPF 111 35">>))),
+        ?_assertEqual({error, {payload_type_mismatch, <<"0">>}},
+                      Refused(A, tamper(Answer, <<"a=rtpmap:111 opus/48000/2">>, <<"a=rtpmap:111 ISAC/16000">>)))
+    ].
+
+tamper(Sdp, Re, Rep, Opts) ->
+    {ok, P} = webrtc_sdp:parse(re:replace(webrtc_sdp:encode(Sdp), Re, Rep, [{return, binary} | Opts])),
+    P.
+
+%% RFC 8842 §5.5: the answer to a re-offer keeps the DTLS role.
+answer_keeps_dtls_role_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    {ok, Offer, A2} = webrtc_jsep:create_offer(#{}, A1),
+    {ok, A3} = webrtc_jsep:set_local_description(offer, Offer, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(Offer), B1),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B2),
+    ?assertMatch({ok, _}, webrtc_jsep:set_remote_description(answer, wire(Answer), A3)),
+    ?assertEqual({error, {bad_setup, <<"0">>}},
+                 webrtc_jsep:set_remote_description(answer, tamper(Answer, <<"a=setup:active">>, <<"a=setup:passive">>), A3)).
+
+%% RFC 8285 §6: only header extensions present in both descriptions are
+%% used for sending.
+answer_extensions_filtered_test() ->
+    {A, Answer} = answer_for(#{}),
+    Extra = tamper(Answer, <<"a=extmap:1 ">>, <<"a=extmap:9 urn:example:not-offered\r\na=extmap:1 ">>),
+    {ok, A1} = webrtc_jsep:set_remote_description(answer, Extra, A),
+    #{media := [#{send_extensions := Exts} | _]} = webrtc_jsep:negotiated(A1),
+    ?assertNot(maps:is_key(<<"urn:example:not-offered">>, Exts)),
+    ?assert(maps:is_key(<<"urn:ietf:params:rtp-hdrext:ssrc-audio-level">>, Exts)).
+
+%% RFC 9429 §5.8.3: a re-offer keeps the existing m= sections in place.
+reoffer_validation_test_() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
+    {A2, B, _, _} = exchange(A1, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A2),
+    Set = fun(Sdp) -> webrtc_jsep:set_remote_description(offer, Sdp, B) end,
+    [
+        ?_assertMatch({ok, _}, Set(wire(Offer))),
+        ?_assertEqual({error, mline_removed}, Set(tamper(Offer, <<"m=video.*">>, <<"">>, [dotall]))),
+        ?_assertEqual({error, {mid_changed, <<"7">>}},
+                      Set(tamper(tamper(Offer, <<"a=mid:1">>, <<"a=mid:7">>), <<"BUNDLE 0 1">>, <<"BUNDLE 0 7">>))),
+        ?_assertEqual({error, {media_type_changed, <<"1">>}},
+                      Set(tamper(Offer, <<"m=video 9 UDP/TLS/RTP/SAVPF 96">>, <<"m=audio 9 UDP/TLS/RTP/SAVPF 96">>)))
+    ].
+
 validation_test_() ->
     {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
     {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),
@@ -315,3 +454,45 @@ port_zero_without_bundle_only_rejected_test() ->
     {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
     [_, AV] = (wire(Answer))#sdp.media,
     ?assertEqual(0, AV#sdp_media.port).
+
+%% RFC 8842 §5, RFC 9429 §5.8.3: a re-offer with other fingerprints is
+%% only acceptable as part of an ICE restart, and then starts a new DTLS
+%% association (role negotiated again, new tls-id).
+other_fingerprint(Sdp) ->
+    FP = #{hash => sha256, value => crypto:strong_rand_bytes(32)},
+    Sdp#sdp{media = [M#sdp_media{attributes = [case A of {fingerprint, _} -> {fingerprint, FP}; _ -> A end
+                                               || A <- M#sdp_media.attributes]}
+                     || M <- Sdp#sdp.media]}.
+
+tls_id_offered_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),
+    [M] = (wire(Offer))#sdp.media,
+    ?assertMatch({ok, <<_:24/binary>>}, ?M:attr(tls_id, M)).
+
+fingerprint_change_without_ice_restart_refused_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A1),
+    ?assertEqual({error, dtls_identity_changed},
+                 webrtc_jsep:set_remote_description(offer, other_fingerprint(wire(Offer)), B1)).
+
+fingerprint_change_with_ice_restart_new_association_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, Answer1} = exchange(A0, new()),
+    A2 = webrtc_jsep:restart_ice(<<"newufrag">>, <<"newpasswordnewpassword">>, A1),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, other_fingerprint(wire(Offer)), B1),
+    {ok, Answer2, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(answer, Answer2, B3),
+    Tls = fun(S) -> [M | _] = (wire(S))#sdp.media, ?M:attr(tls_id, M) end,
+    ?assertNotEqual(Tls(Answer1), Tls(Answer2)),
+    #{dtls := #{role := Role, remote_fingerprints := [{sha256, _}]}} = webrtc_jsep:negotiated(B4),
+    ?assertNotEqual(undefined, Role).
+
+identity_unchanged_renegotiation_ok_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {A1, B1, _, _} = exchange(A0, new()),
+    {ok, _, A2} = webrtc_jsep:add_transceiver(video, #{}, A1),
+    {_, B2, _, _} = exchange(A2, B1),
+    ?assertEqual(stable, webrtc_jsep:signaling_state(B2)).

@@ -35,6 +35,13 @@
 %% <li>`{datachannel_open, Id, Label, Protocol, Opts}'</li>
 %% <li>`{channel_message, Id, text | binary, Data}'</li>
 %% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
+%% <li>`{datachannel_error, Id, message_too_large}': the peer sent a
+%%     message over our `max_message_size'; the channel is closed.</li>
+%% <li>`{datachannel_error, Id, invalid_stream_id}': a channel created
+%%     before the connection on an id beyond the streams negotiated
+%%     with the peer; it is closed.</li>
+%% <li>`{datachannel_open_failed, Label, Reason}': a channel created
+%%     before the connection could not be opened once it came up.</li>
 %% <li>`{dtls_error, Reason}'</li>
 %% </ul>
 %%
@@ -124,6 +131,12 @@ new_peer_connection() ->
 %%     `schedule', `group', `listen', ...).</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
+new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
+    %% RFC 8841 §6 gives 0 the meaning "any size"; we always have a
+    %% memory bound, so a positive limit is required.
+    {error, {badarg, max_message_size}};
+new_peer_connection(#{congestion_control := C}) when not is_map(C) ->
+    {error, {badarg, congestion_control}};
 new_peer_connection(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 
@@ -276,20 +289,21 @@ close(Pc) ->
 call(Pc, Msg) ->
     gen_server:call(Pc, Msg, ?TIMEOUT).
 
-%% Media and data go straight to the transport process. Its pid is
-%% looked up once per caller and cached in the caller's dictionary.
+%% Media and data go straight to the transport process, found in the
+%% `webrtc_transports' table that the peer connection keeps up to date.
 transport(Pc, F) ->
-    case get({?MODULE, transport, Pc}) of
-        undefined ->
-            case call(Pc, transport_pid) of
-                {ok, T} ->
-                    put({?MODULE, transport, Pc}, T),
-                    run_transport(Pc, T, F);
-                {error, _} = E ->
-                    E
-            end;
-        T ->
-            run_transport(Pc, T, F)
+    case ets:lookup(webrtc_transports, Pc) of
+        [{_, T}] ->
+            run_transport(Pc, T, F);
+        [] ->
+            %% No transport yet, or the peer connection is gone.
+            try call(Pc, transport_pid) of
+                {ok, T} -> run_transport(Pc, T, F);
+                {error, _} = E -> E
+            catch
+                exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown ->
+                    {error, closed}
+            end
     end.
 
 run_transport(Pc, T, F) ->
@@ -297,7 +311,7 @@ run_transport(Pc, T, F) ->
         F(T)
     catch
         exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown ->
-            erase({?MODULE, transport, Pc}),
+            ets:delete_object(webrtc_transports, {Pc, T}),
             {error, closed}
     end.
 

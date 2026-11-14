@@ -25,10 +25,10 @@ What works today, end to end and against independent implementations (see [INTER
 - SRTP and SRTCP (AES-CM and AES-GCM profiles).
 - RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
-- JSEP offer/answer, renegotiation, rollback, pranswer.
+- JSEP offer/answer with answers and re-offers checked against the offer, renegotiation, rollback from offers and provisional answers, pranswer; a new DTLS certificate is accepted only with an ICE restart and starts a new association (RFC 8842).
 - Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, per-layer NACK, RTX and keyframe requests.
 - Congestion control: transport-wide CC feedback in both directions, a GCC delay and loss based estimator, a pacer with audio and retransmission priority, RFC 8083 circuit breakers that halt a stream (timeouts) or cut its rate by ten then halt it (congestion), and receiver report based control for peers without transport-cc. Chromium's estimate grows on our feedback and encodes its top simulcast layer.
-- Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay and floods.
+- Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay, floods and SSRC churn; per-connection state stays bounded (DTLS reassembly, receive streams, SRTP state, data channel message size).
 
 Known gaps that matter for a full WebRTC deployment:
 

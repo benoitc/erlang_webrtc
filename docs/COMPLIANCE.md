@@ -25,6 +25,7 @@ What works today, end to end and against independent implementations (see [INTER
 - RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
 - JSEP offer/answer, renegotiation, rollback, pranswer.
+- Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, per-layer NACK, RTX and keyframe requests.
 - Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay and floods.
 
 Known gaps that matter for a full WebRTC deployment:
@@ -32,7 +33,7 @@ Known gaps that matter for a full WebRTC deployment:
 | Gap | Effect | Page |
 |---|---|---|
 | DTLS 1.3 (RFC 9147) | Peers negotiate DTLS 1.2, which every current implementation supports | [dtls](compliance/dtls.md) |
-| Simulcast and RID (RFC 8853, RFC 8851) | Negotiation and forwarding of simulcast layers are not available | [sdp](compliance/sdp.md) |
+| Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
 | Congestion control and pacing (RFC 8836, RFC 8888, transport-wide CC) | Feedback is parsed and passed to the application; no built-in bandwidth estimator or pacer | [rtp](compliance/rtp.md) |
 | mDNS host candidates (`.local`) | Rejected; browsers that hide local addresses connect through server-reflexive or relay candidates only | [ice](compliance/ice.md) |
 | ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |

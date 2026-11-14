@@ -116,6 +116,7 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | SDP-SC-1 | 8853 5.1 | `simulcast` send and/or recv, streams separated by `;`, alternatives by `,` | webrtc_sdp_rid | simulcast_paused_test, firefox_offer_test | Unit tested |
 | SDP-SC-2 | 8853 5.1 | Paused streams (`~`) | webrtc_sdp_rid | simulcast_paused_test | Unit tested |
 | SDP-SC-3 | | Draft syntax (`a=simulcast: send rid=...`) of old Firefox | | | Non-compliant / known limitation: rejected as a malformed attribute. |
+| SDP-RID-4 | 8851 6.2.2 step 1 | A malformed `a=rid` line is discarded, not the description | webrtc_sdp | malformed_test_ | Non-compliant / known limitation: the parser rejects the whole description. |
 
 ## Other attributes
 
@@ -153,5 +154,12 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | JSEP-15 | 8285 §5 | Header extension ids from the offer reused in the answer | webrtc_jsep_caps | basic_test | Unit tested |
 | JSEP-16 | 9143 | Media not covered by one BUNDLE group | webrtc_jsep | unbundled_media_rejected_test | Non-compliant / known limitation: one transport per peer connection; offers with several unbundled active sections are refused. Browsers bundle by default. |
 | JSEP-17 | 8841 §6 | max-message-size defaults to 64 KiB when absent | webrtc_jsep | | Implemented, untested |
-| JSEP-18 | 9429 §5.2.1 | Simulcast and rid negotiation | | | Not implemented |
+| JSEP-18 | 9429 §5.2.1 | Offer: one `a=rid` send line per encoding and `a=simulcast:send` with several, only when sending; rids from the application or generated from a counter; the same lines in later offers | webrtc_jsep_simulcast | webrtc_jsep_simulcast_tests:offer_test, not_sending_no_rid_lines_test, reoffer_keeps_rid_lines_test, encodings_test | Unit tested |
+| JSEP-20 | 9429 §5.8.3 | rid-ids of `a=simulcast` exist as `a=rid` lines, otherwise the description is refused | webrtc_jsep | webrtc_jsep_simulcast_tests:unknown_simulcast_rid_rejected_test | Unit tested |
+| JSEP-21 | 8851 §6.2.2, §6.3 | Answer to offered send rids: duplicated rid-ids discarded, `pt=` reduced to answered formats (line dropped when none is left, no `pt=` added), unknown `depend` discarded, direction reversed, restrictions and rid-ids kept | webrtc_jsep_simulcast | webrtc_jsep_simulcast_tests:discarded_rid_lines_test, restrictions_alternatives_and_paused_test | Unit tested. Restrictions are not checked against codec parameters (§6.2.2 step 6, §8). |
+| JSEP-22 | 8853 §5.3.2 | Answer: `a=simulcast:recv` with the kept rid-ids and alternatives, never more streams; several `a=simulcast` lines disable simulcast; no stream marked paused without pause/resume | webrtc_jsep_simulcast | webrtc_jsep_simulcast_tests:chrome_simulcast_answer_test, firefox_simulcast_answer_test, two_simulcast_lines_disable_simulcast_test, restrictions_alternatives_and_paused_test | Unit tested. RTP pause/resume (RFC 7728) is not implemented, so the offer's `~` marks are reported in `recv_rids` (`paused`) but not repeated. |
+| JSEP-23 | 8851 §6.4 | Offerer: answer rid lines with new restrictions, less restrictive values or a `pt=` the offer did not have are discarded; `pt=` lists compared by codec | webrtc_jsep_simulcast | webrtc_jsep_simulcast_tests:answer_restrictions_test_ | Unit tested |
+| JSEP-24 | 8853 §5.3.3, 9429 §3.7 | Offerer: rids removed by the answer are not sent; without `a=simulcast` in the answer only the first encoding is sent; pause marks of the answer reported | webrtc_jsep_simulcast | webrtc_jsep_simulcast_tests:answer_removes_and_pauses_layers_test, answer_without_simulcast_test | Unit tested |
+| JSEP-25 | 9429 §5.9, 8852 | Layers are negotiated only with the RtpStreamId header extension, and exposed as `send_rids` / `recv_rids` in `negotiated/1` | webrtc_jsep_simulcast | webrtc_jsep_simulcast_tests:no_rid_extension_no_layers_test, erlang_to_erlang_layers_test | Unit tested |
+| JSEP-26 | 9429 §3.7 | Sending simulcast in an answer (offer with `a=rid` recv and `a=simulcast:recv`) | | | Not implemented: JSEP defines no API for it; offered recv rids are discarded. Offering recv simulcast is not available either. |
 | JSEP-19 | 7874, 7742 | Mandatory codecs offered: Opus, PCMU, PCMA, VP8, H.264 constrained baseline | webrtc_jsep_caps | basic_test | Unit tested (negotiation only; payloads are forwarded, not decoded) |

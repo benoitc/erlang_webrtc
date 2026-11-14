@@ -80,6 +80,16 @@ relayed_pc(Config, Password) ->
     }),
     Pc.
 
+%% Connect, logging both sides' ICE and DTLS state when it fails.
+connect(A, B) ->
+    try
+        ?S:connect(A, B, 30000)
+    catch
+        C:R:Stk ->
+            [ct:pal("~p stats: ~p", [N, webrtc:get_stats(P)]) || {N, P} <- [{a, A}, {b, B}]],
+            erlang:raise(C, R, Stk)
+    end.
+
 selected_types(Pc) ->
     #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
     [{L#ice_cand.type, R#ice_cand.type}
@@ -129,7 +139,7 @@ one_side_relayed(Config) ->
     A = relayed_pc(Config, <<"wonderland">>),
     {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
     ok = webrtc:create_data_channel(A, <<"h">>, #{}),
-    ?S:connect(A, B, 30000),
+    connect(A, B),
     {ok, {datachannel_open, Id, _, _, _}} =
         ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 15000),
     ok = webrtc:send_data(A, Id, text, <<"half relayed">>),

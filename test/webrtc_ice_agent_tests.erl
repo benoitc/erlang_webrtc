@@ -618,3 +618,23 @@ forged_consent_response_test() ->
     {A6, Later} = tick(A5, 30100),
     ?assertMatch([{consent_lost, _, _}], [E || {_, {event, {consent_lost, _, _} = E}} <- Later]),
     ?assertEqual(failed, ?AG:connection_state(A6)).
+
+%% Authenticated checks from many sources do not grow state without
+%% bound.
+remote_candidate_cap_test() ->
+    A0 = with_remote(agent(#{max_remote => 5})),
+    A1 = lists:foldl(
+        fun(N, A) ->
+            Bin = encode(check_attrs(), ?P),
+            {A2, Acts} = deliver(Bin, {{10, 9, 0, N}, 6000}, 10, A),
+            {#stun{class = success}, _} = response(Acts, txid(Bin)),
+            A2
+        end,
+        A0,
+        lists:seq(1, 50)
+    ),
+    ?assertEqual(5, length(?AG:remote_candidates(A1))),
+    #{pairs := Pairs} = ?AG:stats(A1),
+    ?assertEqual(5, length(Pairs)),
+    {A3, _} = ?AG:add_remote_candidate(remote(1), 20, A1),
+    ?assertEqual(5, length(?AG:remote_candidates(A3))).

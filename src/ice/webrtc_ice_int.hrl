@@ -65,6 +65,7 @@
     max_check_rto = 2500 :: pos_integer() | infinity,
     max_rto = infinity :: pos_integer() | infinity,
     max_pairs = 100 :: pos_integer(),
+    max_remote = 100 :: pos_integer(),
     pac_timeout = 39500 :: non_neg_integer(),
     eoc_timeout = 39500 :: non_neg_integer(),
     nomination = best :: best | first,

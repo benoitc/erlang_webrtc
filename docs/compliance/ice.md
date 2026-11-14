@@ -69,6 +69,7 @@ This page lists the ICE requirements tracked by the stack: the agent itself (RFC
 | ICE-61 | 19.2 | Malformed, truncated or bit-flipped checks and responses never crash the agent | webrtc_ice_agent | webrtc_ice_agent_tests:malformed_check_test_, malformed_response_test, garbage_test | Unit tested |
 | ICE-62 | 2.2 | Two agents conclude on the same pair under random loss below 50% | webrtc_ice_agent | prop_webrtc_ice:prop_lossy_network_connects, webrtc_ice_net_tests:lossy_checks_test | Unit tested (the property uses Rc = 40 to make transaction failure negligible) |
 | ICE-63 | 5.1.1.1, 17.1 | Host, server-reflexive, peer-reflexive and relayed paths through full cone, restricted, port-restricted and symmetric NATs, IPv4, IPv6 and dual stack | webrtc_ice_agent | webrtc_ice_net_tests:full_cone_test, restricted_test, port_restricted_test, symmetric_needs_relay_test, ipv6_only_test, dual_stack_test | Unit tested |
+| ICE-65 | 19.5.1 | Per-peer state bounded: pairs (`max_pairs`), remote candidates including peer-reflexive ones (`max_remote`, 100), checks remembered before the remote credentials (64), consent transactions (30 s window); unauthenticated requests get a small unprotected error and create no state | webrtc_ice_checklist, webrtc_ice_responder | webrtc_ice_agent_tests:remote_candidate_cap_test, max_pairs_test, reject_test_ | Unit tested |
 | ICE-64 | 5.1.1.4 | Network change: removing a socket removes its candidates, pairs and transactions; a lost selected pair fails the session until a restart | webrtc_ice_gather | webrtc_ice_net_tests:remove_host_test | Unit tested |
 
 ## RFC 8863
@@ -125,6 +126,8 @@ This page lists the ICE requirements tracked by the stack: the agent itself (RFC
 | SDP-6 | 5.5, 5.6 | `a=ice-lite`, `a=ice-options`, `a=ice-pacing` | | | Not implemented here: SDP layer; the agent takes `lite`, `remote_lite` and `ta` options |
 
 ## Notes
+
+- Specification status checked on 2026-11-14 at rfc-editor.org: RFC 8445 is updated only by RFC 8863; RFC 8838 is updated by RFC 8863; RFC 8489, RFC 8839, RFC 8863 and RFC 7675 have no update or obsoleting document.
 
 - Integration with TURN: the agent owns one `webrtc_turn_client` per (host socket, TURN server). See docs/compliance/turn.md.
 - Selection of the pair to keep after a network change is not automatic: the owner calls `restart/2,3` and signals the new credentials and candidates.

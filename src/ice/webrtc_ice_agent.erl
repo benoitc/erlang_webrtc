@@ -115,6 +115,7 @@
 -define(OPTS, [
     {ta, #ice.ta}, {rc, #ice.rc}, {rm, #ice.rm}, {min_rto, #ice.min_rto},
     {max_check_rto, #ice.max_check_rto}, {max_rto, #ice.max_rto}, {max_pairs, #ice.max_pairs},
+    {max_remote, #ice.max_remote},
     {pac_timeout, #ice.pac_timeout}, {eoc_timeout, #ice.eoc_timeout},
     {nomination, #ice.nomination}, {nomination_timeout, #ice.nomination_timeout},
     {consent, #ice.consent}, {consent_interval, #ice.consent_interval},
@@ -134,7 +135,8 @@
 %% reproducible tie-breakers and jitter), `stun_servers' ([Addr]),
 %% `turn_servers' ([#{address, username, password}]), `components',
 %% `ta' (50 ms), `rc' (7), `rm' (16), `min_rto' (500), `max_check_rto'
-%% (2500), `max_rto', `max_pairs' (100), `pac_timeout' (39500),
+%% (2500), `max_rto', `max_pairs' (100), `max_remote' (remote
+%% candidates kept, signaled or peer-reflexive, 100), `pac_timeout' (39500),
 %% `eoc_timeout' (39500), `nomination' (`best' | `first'),
 %% `nomination_timeout' (1000), `consent' (true), `consent_interval'
 %% (5000), `consent_expiry' (30000), `disconnect_timeout' (10000),
@@ -241,6 +243,7 @@ add_remote_candidate(#ice_cand{component = Comp} = C0, Now, S) ->
     C = C0#ice_cand{base = undefined, socket = undefined, server = undefined},
     Ufrag = proplists:get_value(<<"ufrag">>, C#ice_cand.extensions),
     Skip = not lists:member(Comp, S#ice.components) orelse
+        map_size(S#ice.remote) >= S#ice.max_remote orelse
         (Ufrag =/= undefined andalso S#ice.remote_ufrag =/= undefined andalso Ufrag =/= S#ice.remote_ufrag),
     case Skip of
         true ->

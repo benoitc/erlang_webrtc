@@ -54,3 +54,8 @@ The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and a
 | TURN-I4 | | Channel bound to the peer of a selected relayed pair | webrtc_ice_relay | webrtc_ice_net_tests:symmetric_needs_relay_test | Unit tested |
 | TURN-I5 | | Lost allocation removes the relayed candidate and its pairs (`{local_candidate_removed, C}`, `{turn_error, Server, Reason}`) | webrtc_ice_relay | webrtc_ice_net_tests:turn_allocation_lost_test | Unit tested |
 | TURN-I6 | | Allocations deleted when the agent closes | webrtc_ice_relay | webrtc_ice_net_tests:close_deletes_allocations_test | Unit tested |
+
+## Notes
+
+- Specification status checked on 2026-11-14 at rfc-editor.org: RFC 8656 and RFC 8489 have no update or obsoleting document.
+- Per-allocation state is bounded: data queued while a permission is pending (64 datagrams per peer IP), permissions and channels follow the remote candidates the ICE agent keeps (`max_remote`).

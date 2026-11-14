@@ -170,8 +170,17 @@ replay_early(Now, #ice{early = Early, remote_ufrag = RU} = S) ->
 %% RFC 8445 §7.3.1.3 to §7.3.1.5 and §7.3.2.
 learned(LId, From, Prio, UseCand, Now, S) ->
     #ice_cand{component = Comp} = webrtc_ice_checklist:local(LId, S),
+    case webrtc_ice_checklist:find_remote(Comp, From, S) of
+        error when map_size(S#ice.remote) >= S#ice.max_remote ->
+            %% Answered, but no more state for new sources.
+            {S, []};
+        Found ->
+            learned(LId, From, Prio, UseCand, Comp, Found, Now, S)
+    end.
+
+learned(LId, From, Prio, UseCand, Comp, Found, Now, S) ->
     {RId, S1} =
-        case webrtc_ice_checklist:find_remote(Comp, From, S) of
+        case Found of
             {ok, Id} ->
                 {Id, S};
             error ->

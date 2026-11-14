@@ -90,10 +90,16 @@ connect(A, B) ->
             erlang:raise(C, R, Stk)
     end.
 
+%% Data may flow before nomination (RFC 8445 §12.1): wait for it.
 selected_types(Pc) ->
+    [{L#ice_cand.type, R#ice_cand.type} || {L, R} <- selected(Pc, 50)].
+
+selected(Pc, Tries) ->
     #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
-    [{L#ice_cand.type, R#ice_cand.type}
-     || #{selected := true, local := #ice_cand{} = L, remote := #ice_cand{} = R} <- Pairs].
+    case [{L, R} || #{selected := true, local := #ice_cand{} = L, remote := #ice_cand{} = R} <- Pairs] of
+        [] when Tries > 0 -> timer:sleep(100), selected(Pc, Tries - 1);
+        Sel -> Sel
+    end.
 
 relay_only_datachannel(Config) ->
     A = relayed_pc(Config, <<"wonderland">>),
@@ -159,9 +165,7 @@ relayed_spoofing_dropped(Config) ->
     {ok, _} = webrtc:add_transceiver(A, audio, #{}),
     {ok, _} = webrtc:add_transceiver(B, audio, #{}),
     ?S:connect(A, B, 30000),
-    #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(A),
-    [Relay | _] = [{L#ice_cand.address, L#ice_cand.port}
-                   || #{selected := true, local := #ice_cand{type = relay} = L} <- Pairs],
+    [Relay | _] = [{L#ice_cand.address, L#ice_cand.port} || {#ice_cand{type = relay} = L, _} <- selected(A, 50)],
     {ok, Rogue} = gen_udp:open(0, [binary, {ip, {127, 0, 0, 1}}]),
     {IP, Port} = Relay,
     [ok = gen_udp:send(Rogue, IP, Port, <<128, 111, N:16, 0:64, (crypto:strong_rand_bytes(40))/binary>>)

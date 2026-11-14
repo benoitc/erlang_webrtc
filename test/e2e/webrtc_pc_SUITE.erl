@@ -466,7 +466,7 @@ remote_ice_restart_rolled_back(_Config) ->
     IdA = channel_id(A, <<"keep">>),
     IdB = channel_id(B, <<"keep">>),
     LocalB = webrtc:local_description(B),
-    Before = selected_pair(B),
+    Before = wait_selected(B, 50),
     ?assertNotEqual([], Before),
     {ok, Offer} = webrtc:create_offer(A, #{}),
     Restart = re:replace(
@@ -517,6 +517,13 @@ pranswer_connects(_Config) ->
 selected_pair(Pc) ->
     #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
     [{L, R} || #{selected := true, local := L, remote := R} <- Pairs].
+
+%% Data may flow before nomination (RFC 8445 §12.1): wait for it.
+wait_selected(Pc, Tries) ->
+    case selected_pair(Pc) of
+        [] when Tries > 0 -> timer:sleep(100), wait_selected(Pc, Tries - 1);
+        Sel -> Sel
+    end.
 
 ufrag(Sdp) ->
     {match, [U]} = re:run(Sdp, <<"a=ice-ufrag:([^\r]*)">>, [{capture, all_but_first, binary}]),

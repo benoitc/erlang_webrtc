@@ -60,6 +60,8 @@
     finished = false :: boolean(),
     %% DTLS datagrams received before the DTLS role is known.
     early_dtls = [] :: [binary()],
+    %% ICE has a valid pair with consent (connected or completed).
+    ice_usable = false :: boolean(),
     media :: term(),
     data :: undefined | map(),
     dcep :: undefined | term(),
@@ -406,15 +408,17 @@ end_association(Reason, #st{dtls = D} = St0) ->
         media = webrtc_media:clear_srtp(St2#st.media)
     }.
 
-%% The client starts the handshake once ICE has a pair; buffered early
-%% DTLS datagrams are replayed for the server.
+%% The client starts the handshake once ICE has a valid pair: data may
+%% use any valid pair before nomination (RFC 8445 §12.1), so DTLS does
+%% not wait for it. Buffered early DTLS datagrams are replayed for the
+%% server.
 start_dtls_if_ready(#st{dtls = undefined} = St) ->
     St;
 start_dtls_if_ready(#st{dtls = D} = St) ->
-    case webrtc_ice_agent:selected_pair(St#st.ice) of
-        undefined ->
+    case St#st.ice_usable orelse webrtc_ice_agent:selected_pair(St#st.ice) =/= undefined of
+        false ->
             St;
-        _ ->
+        true ->
             Now = now_ms(),
             {D1, A} = webrtc_dtls:start(Now, D),
             St1 = dtls_actions(A, St#st{dtls = D1}),
@@ -509,6 +513,12 @@ ice_action({event, {data, Via, Peer, Bin}}, St) ->
         true -> secure_relayed(Peer, Bin, St);
         false -> St
     end;
+ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
+    to_pc(E, St),
+    start_dtls_if_ready(St#st{ice_usable = true});
+ice_action({event, {connection_state, _} = E}, St) ->
+    to_pc(E, St),
+    St#st{ice_usable = false};
 ice_action({event, {selected_pair, L, R}}, St) ->
     to_pc({selected_pair, L, R}, St),
     start_dtls_if_ready(St);

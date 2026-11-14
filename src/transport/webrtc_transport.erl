@@ -61,7 +61,10 @@
     pending_channels = [] :: list(),
     timer :: undefined | {reference(), integer()},
     srtp_profiles :: [non_neg_integer()],
-    connected = false :: boolean()
+    connected = false :: boolean(),
+    %% Optional outbound filter used by impairment tests:
+    %% fun((Bin, FState) -> {[{DelayMs, Bin}], FState}).
+    filter :: undefined | {fun(), term()}
 }).
 
 %%====================================================================
@@ -114,7 +117,8 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 ice = webrtc_ice_agent:new(IceOpts),
                 cert = Cert,
                 media = webrtc_media:new(#{cname => maps:get(cname, Opts, <<"webrtc">>)}),
-                srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002])
+                srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),
+                filter = maps:get(outbound_filter, Opts, undefined)
             }}
     end.
 
@@ -217,6 +221,9 @@ handle_cast(_Msg, St) ->
 handle_info({udp, Sock, IP, Port, Bin}, St) ->
     St1 = datagram(Sock, {IP, Port}, Bin, now_ms(), St),
     {noreply, arm(St1)};
+handle_info({delayed_send, Sock, Dest, Bin}, St) ->
+    udp_send(Sock, Dest, Bin),
+    {noreply, St};
 handle_info({udp_passive, Sock}, St) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
     {noreply, St};
@@ -340,9 +347,19 @@ tick(Now, St0) ->
 ice_actions(Acts, St) ->
     lists:foldl(fun ice_action/2, St, Acts).
 
-ice_action({send, Sock, {IP, Port}, Bin}, St) ->
+ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     St;
+ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
+    {Out, FS1} = F(Bin, FS),
+    lists:foreach(
+        fun
+            ({0, B}) -> udp_send(Sock, Dest, B);
+            ({Delay, B}) -> erlang:send_after(Delay, self(), {delayed_send, Sock, Dest, B})
+        end,
+        Out
+    ),
+    St#st{filter = {F, FS1}};
 ice_action({event, {data, _Via, Peer, Bin}}, St) ->
     %% Relayed non-STUN data: demultiplex as if received from Peer.
     secure_relayed(Peer, Bin, St);
@@ -364,6 +381,10 @@ secure_relayed(_Peer, Bin, St) ->
             media_actions(Acts, St#st{media = M1});
         _ -> St
     end.
+
+udp_send(Sock, {IP, Port}, Bin) ->
+    _ = gen_udp:send(Sock, IP, Port, Bin),
+    ok.
 
 %% Send a datagram on the selected pair.
 send_out(Bin, St) ->
@@ -433,7 +454,11 @@ start_sctp(#st{data = Data, dtls_role = Role} = St) ->
         max_message_size => maps:get(remote_max_message_size, Data, 65536),
         sctp => #{
             local_port => maps:get(local_port, Data, 5000),
-            remote_port => maps:get(remote_port, Data, 5000)
+            remote_port => maps:get(remote_port, Data, 5000),
+            %% 1200 byte datagrams minus the DTLS record overhead (13 byte
+            %% header, 8 byte explicit nonce, 16 byte tag), so SCTP
+            %% packets never need IP fragmentation (RFC 8261 §5).
+            mtu => 1200 - 37
         }
     }),
     {D1, Acts} = webrtc_dcep:connect(now_ms(), D0),

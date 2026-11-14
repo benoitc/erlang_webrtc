@@ -228,7 +228,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     #sdp{media = [M | _]} = Local = webrtc_jsep:local_description(St#st.jsep),
     {ok, #{ufrag := U, pwd := P}} = webrtc_sdp_media:ice_credentials(M, Local),
     TOpts = maps:merge(
-        maps:with([stun_servers, turn_servers, addresses, loopback, consent, nomination], St#st.opts),
+        maps:with([stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter], St#st.opts),
         #{
             pc => self(),
             app => St#st.app,

@@ -316,7 +316,7 @@ ntp_from_us(Us) when is_integer(Us), Us >= 0 ->
 ntp_to_us(Ntp) ->
     Secs = (Ntp bsr 32) - ?NTP_UNIX_OFFSET,
     Frac = Ntp band 16#FFFFFFFF,
-    Secs * 1000000 + (Frac * 1000000 + (1 bsl 31)) bsr 32.
+    Secs * 1000000 + ((Frac * 1000000 + (1 bsl 31)) bsr 32).
 
 %% @doc The middle 32 bits of a 64-bit NTP timestamp (LSR format).
 -spec ntp_middle(0..16#FFFFFFFFFFFFFFFF) -> 0..16#FFFFFFFF.

@@ -47,8 +47,8 @@
     responder :: webrtc_mdns_responder:responder(),
     %% Name => [{Pid, Ref}] waiting for a multicast DNS answer.
     waiters = #{} :: #{binary() => [{pid(), reference()}]},
-    %% Helper monitor => {Pid, Ref} for DNS lookups.
-    fqdn = #{} :: #{reference() => {pid(), reference()}},
+    %% Lookup helper => {Monitor, Pid, Ref} for DNS lookups.
+    fqdn = #{} :: #{pid() => {reference(), pid(), reference()}},
     fqdn_timeout :: pos_integer(),
     nets :: [{inet:ip4_address(), inet:ip4_address()}] | any,
     timer :: undefined | reference()
@@ -183,15 +183,14 @@ handle_info({timeout, T, tick}, #st{timer = T} = St) ->
     {noreply, arm(actions(Acts, St#st{resolver = R1, timer = undefined}))};
 handle_info({'DOWN', _, process, Owner, _}, #st{owner = Owner} = St) ->
     {stop, normal, St};
-handle_info({'DOWN', Mon, process, _, Reason}, #st{fqdn = F} = St) when is_map_key(Mon, F) ->
-    {{Pid, Ref}, F1} = maps:take(Mon, F),
-    Result =
-        case Reason of
-            {lookup, {ok, [_ | _] = IPs}} -> {ok, IPs};
-            {lookup, {error, R}} -> {error, R};
-            _ -> {error, lookup_failed}
-        end,
+handle_info({lookup, Helper, Result}, #st{fqdn = F} = St) when is_map_key(Helper, F) ->
+    {{Mon, Pid, Ref}, F1} = maps:take(Helper, F),
+    demonitor(Mon, [flush]),
     Pid ! {webrtc_mdns, Ref, Result},
+    {noreply, St#st{fqdn = F1}};
+handle_info({'DOWN', _, process, Helper, _}, #st{fqdn = F} = St) when is_map_key(Helper, F) ->
+    {{_, Pid, Ref}, F1} = maps:take(Helper, F),
+    Pid ! {webrtc_mdns, Ref, {error, lookup_failed}},
     {noreply, St#st{fqdn = F1}};
 handle_info(_, St) ->
     {noreply, St}.
@@ -234,8 +233,9 @@ fqdn_resolve(Pid, Ref, _Name, #st{fqdn = F} = St) when map_size(F) >= ?MAX_FQDN 
     Pid ! {webrtc_mdns, Ref, {error, too_many_queries}},
     St;
 fqdn_resolve(Pid, Ref, Name, #st{fqdn = F, fqdn_timeout = T} = St) ->
-    {_, Mon} = spawn_monitor(fun() -> exit({lookup, lookup(binary_to_list(Name), T)}) end),
-    St#st{fqdn = F#{Mon => {Pid, Ref}}}.
+    Self = self(),
+    {Helper, Mon} = spawn_monitor(fun() -> Self ! {lookup, self(), lookup(binary_to_list(Name), T)} end),
+    St#st{fqdn = F#{Helper => {Mon, Pid, Ref}}}.
 
 %% RFC 8839 §5.1: AAAA first, then A.
 lookup(Host, Timeout) ->

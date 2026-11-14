@@ -15,6 +15,6 @@
 | STUN-11 | 6.3.1, 14 | Unknown comprehension-required attributes reported (for 420) | webrtc_stun | unknown_comprehension_required_test | Unit tested |
 | STUN-12 | 14.3 | USERNAME < 513 bytes; REALM, NONCE, SOFTWARE, reason <= 763 bytes | webrtc_stun | | Implemented, untested |
 | STUN-13 | 9.2.4 | Integrity comparison is constant time | webrtc_stun | (crypto:hash_equals) | Implemented, untested |
-| STUN-14 | 6.2.1 | Request retransmission: RTO, Rc=7, Rm=16 | webrtc_stun_tx | | Not implemented |
-| STUN-15 | 9.1 | Short-term credential mechanism (used by ICE) | webrtc_ice_agent | | Not implemented |
+| STUN-14 | 6.2.1 | Request retransmission: RTO (default 500 ms, cached per server from RTT samples with Karn's rule), doubling, Rc=7, Rm=16, all configurable | webrtc_stun_tx | webrtc_stun_tx_tests:default_schedule_test, custom_parameters_test, rto_cache_test, karn_no_rtt_after_retransmit_test | Unit tested |
+| STUN-15 | 9.1 | Short-term credential mechanism (used by ICE): USERNAME and MESSAGE-INTEGRITY required (400), unknown username or bad integrity (401), responses protected with the same password, unprotected or forged responses discarded | webrtc_ice_responder, webrtc_ice_conncheck | webrtc_ice_agent_tests:reject_test_, valid_check_test, forged_response_ignored_test | Unit tested |
 | STUN-16 | 9.1.3 | SASLprep/OpaqueString of passwords | | | Non-compliant / known limitation: passwords are used as given. ICE passwords are ASCII (RFC 8839 ice-char) so ICE is unaffected. |

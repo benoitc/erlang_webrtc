@@ -254,6 +254,29 @@ turn_quota_srflx_fallback_test() ->
     ?assertEqual([host, srflx], types(N, a)),
     ?assertMatch([{turn_error, ?TURN, {error, 486}}], events(N, a, turn_error)).
 
+turn_allocation_lost_test() ->
+    N0 = run_ok(nat_pair(full_cone, full_cone, #{}), fun completed/1, 20000),
+    %% The TURN server becomes unreachable from `a': the refresh fails
+    %% and the relayed candidate goes away; the direct path stays up.
+    {TIP, _} = ?TURN,
+    N1 = ?NET:set_filter(N0, fun(_, {IP, _}, {D, _}, _) when IP =:= ?NAT_A, D =:= TIP -> drop; (_, _, _, _) -> pass end),
+    N2 = run_ok(N1, fun(N) -> events(N, a, turn_error) =/= [] end, 700000),
+    ?assertMatch([{turn_error, ?TURN, {allocation_lost, _}}], events(N2, a, turn_error)),
+    ?assertMatch([{local_candidate_removed, #ice_cand{type = relay}}], events(N2, a, local_candidate_removed)),
+    ?assertEqual([host, srflx], types(N2, a)),
+    ?assertEqual(completed, state(N2, a)).
+
+close_deletes_allocations_test() ->
+    N0 = run_ok(nat_pair(full_cone, full_cone, #{}), fun completed/1, 20000),
+    TurnIP = element(1, ?TURN),
+    ?assertEqual(2, map_size(webrtc_test_turn_server:allocations(?NET:server(N0, TurnIP)))),
+    N1 = ?NET:call(N0, a, fun(A) -> ?AG:close(?NET:now(N0), A) end),
+    {_, N2} = ?NET:run(N1, ?NET:now(N1) + 1000),
+    ?assertEqual(1, map_size(webrtc_test_turn_server:allocations(?NET:server(N2, TurnIP)))),
+    ?assertEqual(closed, state(N2, a)),
+    ?assertEqual(infinity, ?AG:next_timeout(?NET:agent(N2, a))),
+    ?assertEqual({error, closed}, ?AG:send(<<1>>, ?NET:now(N2), ?NET:agent(N2, a))).
+
 port_restricted_test() ->
     N = run_ok(nat_pair(port_restricted, port_restricted, #{}), fun completed/1, 20000),
     {LT, RT, _, _} = selected(N, a),

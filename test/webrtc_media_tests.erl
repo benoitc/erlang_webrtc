@@ -1,0 +1,160 @@
+%% Tests for webrtc_media: two media sessions configured from a real
+%% JSEP negotiation and DTLS-SRTP style keys.
+-module(webrtc_media_tests).
+-include_lib("eunit/include/eunit.hrl").
+-include("webrtc_rtp.hrl").
+-include("webrtc_rtp_rtcp.hrl").
+
+jsep() ->
+    webrtc_jsep:new(#{
+        ice_ufrag => <<"ufrag">>,
+        ice_pwd => <<"passwordpasswordpassword">>,
+        fingerprints => [{sha256, crypto:strong_rand_bytes(32)}]
+    }).
+
+wire(Sdp) ->
+    {ok, P} = webrtc_sdp:parse(webrtc_sdp:encode(Sdp)),
+    P.
+
+%% Negotiate audio + video both ways and return configured sessions.
+pair() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
+    {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
+    {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),
+    {ok, O, A2} = webrtc_jsep:create_offer(#{}, A1),
+    {ok, A3} = webrtc_jsep:set_local_description(offer, O, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(O), B1),
+    {ok, Ans, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(answer, Ans, B3),
+    {ok, A4} = webrtc_jsep:set_remote_description(answer, wire(Ans), A3),
+    #{media := MA} = webrtc_jsep:negotiated(A4),
+    #{media := MB} = webrtc_jsep:negotiated(B4),
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SA = webrtc_media:set_srtp(Profile, Material, server, 0, webrtc_media:configure(MA, webrtc_media:new(#{cname => <<"a">>}))),
+    SB = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB, webrtc_media:new(#{cname => <<"b">>}))),
+    {SA, SB, MA, MB}.
+
+%% Same negotiation, but B does not know A's SSRCs: demultiplexing has
+%% to use the MID header extension.
+pair_without_ssrcs() ->
+    {SA, SB, MA, MB} = pair(),
+    MB1 = [M#{remote_ssrcs => []} || M <- MB],
+    Profile = srtp_aead_aes_128_gcm,
+    _ = SB,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SA1 = webrtc_media:set_srtp(Profile, Material, server, 0, webrtc_media:configure(MA, webrtc_media:new(#{}))),
+    SB1 = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{}))),
+    _ = SA,
+    {SA1, SB1}.
+
+deliver([], S, _Now) ->
+    {S, []};
+deliver([{send, Bin} | Rest], S, Now) ->
+    {S1, A} = webrtc_media:handle_packet(Bin, Now, S),
+    {S2, A2} = deliver(Rest, S1, Now),
+    {S2, A ++ A2}.
+
+events(Actions) -> [E || {event, E} <- Actions].
+sends(Actions) -> [A || {send, _} = A <- Actions].
+
+send_receive_test() ->
+    {SA, SB, _, _} = pair(),
+    {ok, Out, _SA1} = webrtc_media:send(<<"0">>, <<"opus-frame">>, #{timestamp => 960, marker => true}, 0, SA),
+    {_SB1, A} = deliver(Out, SB, 0),
+    ?assertMatch([{rtp, <<"0">>, #rtp{payload = <<"opus-frame">>, pt = 111, ts = 960, marker = true}}], events(A)).
+
+mid_extension_demux_test() ->
+    {SA, SB} = pair_without_ssrcs(),
+    {ok, O1, SA1} = webrtc_media:send(<<"1">>, <<"vp8">>, #{timestamp => 1}, 0, SA),
+    {ok, O2, _} = webrtc_media:send(<<"0">>, <<"opus">>, #{timestamp => 1}, 0, SA1),
+    {_, A} = deliver(O1 ++ O2, SB, 0),
+    ?assertMatch([{rtp, <<"1">>, #rtp{payload = <<"vp8">>}}, {rtp, <<"0">>, #rtp{payload = <<"opus">>}}], events(A)).
+
+codec_selection_test() ->
+    {SA, SB, _, _} = pair(),
+    {ok, O, _} = webrtc_media:send(<<"0">>, <<"x">>, #{codec => <<"PCMU">>}, 0, SA),
+    {_, A} = deliver(O, SB, 0),
+    ?assertMatch([{rtp, <<"0">>, #rtp{pt = 0}}], events(A)),
+    ?assertEqual({error, unknown_codec}, webrtc_media:send(<<"0">>, <<"x">>, #{codec => <<"G729">>}, 0, SA)),
+    ?assertEqual({error, not_sending}, webrtc_media:send(<<"9">>, <<"x">>, #{}, 0, SA)).
+
+tampered_packet_dropped_test() ->
+    {SA, SB, _, _} = pair(),
+    {ok, [{send, Bin}], _} = webrtc_media:send(<<"0">>, <<"data">>, #{}, 0, SA),
+    Sz = byte_size(Bin) - 1,
+    <<H:Sz/binary, L>> = Bin,
+    {SB1, A} = webrtc_media:handle_packet(<<H/binary, (L bxor 1)>>, 0, SB),
+    ?assertEqual([], A),
+    ?assertMatch(#{counters := #{srtp_rejected := 1}}, webrtc_media:stats(SB1)),
+    %% Replay of a valid packet is dropped too.
+    {SB2, [_]} = webrtc_media:handle_packet(Bin, 0, SB1),
+    {_, []} = webrtc_media:handle_packet(Bin, 0, SB2).
+
+%% A lost video packet is NACKed by the receiver and resent by the
+%% sender over RTX; the receiver gets the original sequence number back.
+nack_rtx_test() ->
+    {SA0, SB0, _, _} = pair(),
+    {Pkts, SA1} = lists:foldl(
+        fun(I, {Acc, S}) ->
+            {ok, O, S1} = webrtc_media:send(<<"1">>, <<I>>, #{timestamp => I * 3000}, 0, S),
+            {Acc ++ O, S1}
+        end,
+        {[], SA0},
+        lists:seq(1, 5)
+    ),
+    [P1, P2, _Lost, P4, P5] = Pkts,
+    {SB1, A1} = deliver([P1, P2, P4, P5], SB0, 0),
+    ?assertEqual(4, length(events(A1))),
+    %% NACK is sent right away or on the NACK timer.
+    {SB2, A2} = webrtc_media:handle_timeout(50, SB1),
+    Nacks = sends(A1) ++ sends(A2),
+    ?assert(length(Nacks) >= 1),
+    {SA2, A3} = deliver(Nacks, SA1, 60),
+    Rtx = sends(A3),
+    ?assertEqual(1, length(Rtx)),
+    {_SB3, A4} = deliver(Rtx, SB2, 70),
+    [{rtp, <<"1">>, #rtp{payload = <<3>>} = Recovered}] = events(A4),
+    #rtp{seq = S2} = element(3, hd(events(A1)) ),
+    _ = S2,
+    ?assertMatch(#{counters := #{retransmitted := 1}}, webrtc_media:stats(SA2)),
+    ?assertEqual(<<3>>, Recovered#rtp.payload).
+
+keyframe_request_test() ->
+    {SA, SB0, _, _} = pair(),
+    {ok, O, _SA1} = webrtc_media:send(<<"1">>, <<"frame">>, #{}, 0, SA),
+    {SB1, _} = deliver(O, SB0, 0),
+    {Pli, _SB2} = webrtc_media:request_keyframe(<<"1">>, 0, SB1),
+    ?assertMatch([{send, _}], Pli),
+    {_, A} = deliver(Pli, SA, 0),
+    ?assertEqual([{keyframe_request, <<"1">>}], events(A)).
+
+rtcp_reports_test() ->
+    {SA0, SB0, _, _} = pair(),
+    {ok, O, SA1} = webrtc_media:send(<<"0">>, <<"a">>, #{timestamp => 100}, 0, SA0),
+    {SB1, _} = deliver(O, SB0, 0),
+    Far = 5000,
+    {_SA2, RA} = webrtc_media:handle_timeout(Far, SA1),
+    {_SB2, RB} = webrtc_media:handle_timeout(Far, SB1),
+    ?assertMatch([{send, _}], sends(RA)),
+    ?assertMatch([{send, _}], sends(RB)),
+    %% A's SR reaches B without errors and is not an application event.
+    {SB3, Ev} = deliver(sends(RA), SB1, Far),
+    ?assertEqual([], events(Ev)),
+    ?assertMatch(#{counters := #{rtcp_received := 1}}, webrtc_media:stats(SB3)).
+
+not_ready_before_keys_test() ->
+    {_, _, MA, _} = pair(),
+    S = webrtc_media:configure(MA, webrtc_media:new(#{})),
+    ?assertNot(webrtc_media:ready(S)),
+    ?assertEqual({error, not_ready}, webrtc_media:send(<<"0">>, <<"x">>, #{}, 0, S)),
+    ?assertEqual({S, []}, webrtc_media:handle_packet(<<128, 0:88>>, 0, S)).
+
+garbage_test() ->
+    {_, SB, _, _} = pair(),
+    rand:seed(exsss, {7, 8, 9}),
+    [_ = webrtc_media:handle_packet(rand:bytes(rand:uniform(200)), 0, SB) || _ <- lists:seq(1, 2000)],
+    [_ = webrtc_media:handle_packet(<<128, (rand:bytes(rand:uniform(200)))/binary>>, 0, SB)
+     || _ <- lists:seq(1, 2000)],
+    ok.

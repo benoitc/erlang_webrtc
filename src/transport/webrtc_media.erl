@@ -1,0 +1,622 @@
+%% @doc Media session of one BUNDLE transport, as a sans-IO engine:
+%% SRTP/SRTCP protection, RTP demultiplexing to transceivers, RTCP
+%% reports, NACK-based retransmission (RFC 4585, RFC 4588) and keyframe
+%% requests (RFC 4585 PLI, RFC 5104 FIR).
+%%
+%% Media payloads are never decoded: the application sends and receives
+%% RTP payloads (or whole packets when forwarding).
+%%
+%% Incoming RTP is matched to a transceiver (mid) in this order
+%% (RFC 9143 §9.2): known SSRC, the MID header extension, then a payload
+%% type used by a single m= section.
+%%
+%% Actions: `{send, Datagram}' and `{event, Event}' with Event one of
+%% `{rtp, Mid, #rtp{}}', `{keyframe_request, Mid}', `{rtcp, Mid, Packet}'
+%% (feedback the application may act on, such as REMB or TWCC) and
+%% `{bye, Mid, Ssrc}'.
+-module(webrtc_media).
+
+-include("webrtc_rtp.hrl").
+-include("webrtc_rtp_rtcp.hrl").
+
+-export([
+    new/1,
+    configure/2,
+    set_srtp/5,
+    ready/1,
+    send/5,
+    send_packet/4,
+    request_keyframe/3,
+    handle_packet/3,
+    handle_timeout/2,
+    next_timeout/1,
+    stats/1
+]).
+
+-export_type([state/0]).
+
+-define(URI_MID, <<"urn:ietf:params:rtp-hdrext:sdes:mid">>).
+-define(RTCP_INTERVAL, 1000).
+-define(BUFFER_SIZE, 512).
+
+-record(snd, {
+    mid :: binary(),
+    kind :: audio | video,
+    ssrc :: non_neg_integer(),
+    rtx_ssrc :: non_neg_integer(),
+    codecs :: [map()],
+    %% Negotiated rtx payload type per primary payload type.
+    rtx :: #{0..127 => 0..127},
+    mid_ext :: undefined | pos_integer(),
+    seq :: 0..65535,
+    rtx_seq :: 0..65535,
+    last_ts = 0 :: non_neg_integer(),
+    last_ts_at :: undefined | integer(),
+    tx :: term(),
+    buffer :: term()
+}).
+
+-record(rcv, {
+    mid :: binary(),
+    clock_rate :: pos_integer(),
+    rx :: term(),
+    nack :: undefined | term()
+}).
+
+-record(media, {
+    cname :: binary(),
+    rtcp_ssrc :: non_neg_integer(),
+    out :: undefined | term(),
+    in :: undefined | term(),
+    senders = #{} :: #{binary() => #snd{}},
+    %% Incoming streams by SSRC.
+    receivers = #{} :: #{non_neg_integer() => #rcv{}},
+    %% Demultiplexing tables, rebuilt on every negotiation.
+    ssrc_mid = #{} :: #{non_neg_integer() => binary()},
+    rtx_ssrc = #{} :: #{non_neg_integer() => non_neg_integer()},
+    pt_mid = #{} :: #{0..127 => binary()},
+    mid_ext = #{} :: #{binary() => pos_integer()},
+    recv = #{} :: #{binary() => map()},
+    rtcp_at = infinity :: integer() | infinity,
+    counters = #{} :: map()
+}).
+
+-opaque state() :: #media{}.
+
+%%====================================================================
+%% Setup
+%%====================================================================
+
+-spec new(map()) -> state().
+new(Opts) ->
+    #media{cname = maps:get(cname, Opts, <<"webrtc">>), rtcp_ssrc = rand32()}.
+
+%% @doc Apply the negotiated media sections (`media' of
+%% `webrtc_jsep:negotiated/1'). Existing sequence numbers and statistics
+%% are kept for transceivers that remain.
+-spec configure([map()], state()) -> state().
+configure(Sections, #media{} = M) ->
+    Senders = maps:from_list([
+        {Mid, sender(S, maps:get(Mid, M#media.senders, undefined))}
+     || #{mid := Mid, direction := D} = S <- Sections, D =:= sendrecv orelse D =:= sendonly
+    ]),
+    Recv = maps:from_list([{Mid, S} || #{mid := Mid} = S <- Sections]),
+    SsrcMid = maps:from_list(
+        lists:append([
+            [{Ssrc, Mid} || #{ssrc := Ssrc} <- Rs] ++
+                [{X, Mid} || #{rtx_ssrc := X} <- Rs, is_integer(X)]
+         || #{mid := Mid, remote_ssrcs := Rs} <- Sections
+        ])
+    ),
+    RtxSsrc = maps:from_list(
+        [{X, P} || #{remote_ssrcs := Rs} <- Sections, #{ssrc := P, rtx_ssrc := X} <- Rs, is_integer(X)]
+    ),
+    PtOwners = lists:foldl(
+        fun(#{mid := Mid, recv_codecs := Cs}, Acc) ->
+            lists:foldl(fun(#{pt := Pt}, A) -> maps:update_with(Pt, fun(L) -> [Mid | L] end, [Mid], A) end, Acc, Cs)
+        end,
+        #{},
+        Sections
+    ),
+    PtMid = maps:from_list([{Pt, Mid} || {Pt, [Mid]} <- maps:to_list(PtOwners)]),
+    MidExt = maps:from_list([
+        {Mid, Id}
+     || #{mid := Mid, recv_extensions := #{?URI_MID := Id}} <- Sections
+    ]),
+    M#media{
+        senders = Senders,
+        recv = Recv,
+        ssrc_mid = maps:merge(M#media.ssrc_mid, SsrcMid),
+        rtx_ssrc = RtxSsrc,
+        pt_mid = PtMid,
+        mid_ext = MidExt
+    }.
+
+sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = Sec, Old) ->
+    Rtx = maps:from_list([
+        {binary_to_integer(Apt), Pt}
+     || #{name := N, pt := Pt, fmtp := F} <- Cs,
+        string:lowercase(N) =:= <<"rtx">>,
+        {<<"apt">>, Apt} <- F
+    ]),
+    MidExt = maps:get(?URI_MID, maps:get(send_extensions, Sec, #{}), undefined),
+    case Old of
+        #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt};
+        undefined ->
+            #snd{
+                mid = Mid,
+                kind = K,
+                ssrc = S,
+                rtx_ssrc = R,
+                codecs = Cs,
+                rtx = Rtx,
+                mid_ext = MidExt,
+                seq = rand16(),
+                rtx_seq = rand16(),
+                tx = webrtc_rtp_stats:tx_new(),
+                buffer = webrtc_nack_buffer:new(#{size => ?BUFFER_SIZE})
+            }
+    end.
+
+%% @doc Install the SRTP contexts from the DTLS-SRTP handshake.
+-spec set_srtp(webrtc_srtp:profile(), binary(), client | server, integer(), state()) -> state().
+set_srtp(Profile, Material, Role, Now, M) ->
+    {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{}),
+    M#media{out = Out, in = In, rtcp_at = Now + ?RTCP_INTERVAL}.
+
+-spec ready(state()) -> boolean().
+ready(#media{out = O}) -> O =/= undefined.
+
+%%====================================================================
+%% Sending
+%%====================================================================
+
+%% @doc Send a payload on a transceiver. `Opts': `timestamp' (RTP
+%% clock), `marker', `pt' or `codec' (name), defaulting to the first
+%% negotiated codec.
+-spec send(binary(), binary(), map(), integer(), state()) ->
+    {ok, [{send, binary()}], state()} | {error, term()}.
+send(Mid, Payload, Opts, Now, M) ->
+    case maps:find(Mid, M#media.senders) of
+        error ->
+            {error, not_sending};
+        {ok, S} ->
+            case pick_pt(Opts, S) of
+                {ok, Pt} ->
+                    Pkt = #rtp{
+                        pt = Pt,
+                        marker = maps:get(marker, Opts, false),
+                        ts = maps:get(timestamp, Opts, 0),
+                        payload = Payload
+                    },
+                    send_packet(Mid, Pkt, Now, M);
+                error ->
+                    {error, unknown_codec}
+            end
+    end.
+
+pick_pt(#{pt := Pt}, #snd{codecs = Cs}) ->
+    case [P || #{pt := P} <- Cs, P =:= Pt] of
+        [_] -> {ok, Pt};
+        [] -> error
+    end;
+pick_pt(#{codec := Name}, #snd{codecs = Cs}) ->
+    case [P || #{pt := P, name := N} <- Cs, string:lowercase(N) =:= string:lowercase(Name)] of
+        [P | _] -> {ok, P};
+        [] -> error
+    end;
+pick_pt(_, #snd{codecs = [#{pt := P} | _]}) ->
+    {ok, P};
+pick_pt(_, _) ->
+    error.
+
+%% @doc Send an RTP packet on a transceiver. The SSRC and sequence number
+%% are ours; payload type, timestamp, marker and payload come from the
+%% packet (forwarding rewrites only what identifies the stream).
+-spec send_packet(binary(), #rtp{}, integer(), state()) ->
+    {ok, [{send, binary()}], state()} | {error, term()}.
+send_packet(_Mid, _Pkt, _Now, #media{out = undefined}) ->
+    {error, not_ready};
+send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
+    case maps:find(Mid, M#media.senders) of
+        error ->
+            {error, not_sending};
+        {ok, S} ->
+            Ext = mid_ext(S),
+            Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs, ext = Ext},
+            Bin = webrtc_rtp:encode(Pkt),
+            case webrtc_srtp:protect_rtp(Bin, M#media.out) of
+                {ok, Srtp, Out} ->
+                    S1 = S#snd{
+                        seq = (S#snd.seq + 1) band 16#FFFF,
+                        last_ts = Pkt#rtp.ts,
+                        last_ts_at = Now,
+                        tx = webrtc_rtp_stats:tx_packet(byte_size(Pkt#rtp.payload), S#snd.tx),
+                        buffer = webrtc_nack_buffer:store(Pkt#rtp.seq, Pkt, Now, S#snd.buffer)
+                    },
+                    M1 = M#media{out = Out, senders = (M#media.senders)#{Mid := S1}},
+                    {ok, [{send, Srtp}], count(rtp_sent, M1)};
+                {error, _} = Err ->
+                    Err
+            end
+    end.
+
+%% RFC 9143 §9.1: carry the MID so the receiver can demultiplex before
+%% it has learned our SSRC.
+mid_ext(#snd{mid_ext = undefined}) -> undefined;
+mid_ext(#snd{mid_ext = Id, mid = Mid}) -> [{Id, webrtc_rtp_ext:sdes(Mid)}].
+
+%% @doc Ask the remote sender of a transceiver for a keyframe (PLI).
+-spec request_keyframe(binary(), integer(), state()) -> {[{send, binary()}], state()}.
+request_keyframe(Mid, _Now, M) ->
+    Ssrcs = [S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid],
+    Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
+    send_rtcp(Pkts, M).
+
+%%====================================================================
+%% Receiving
+%%====================================================================
+
+-spec handle_packet(binary(), integer(), state()) -> {state(), list()}.
+handle_packet(_Bin, _Now, #media{in = undefined} = M) ->
+    {M, []};
+handle_packet(Bin, Now, M) ->
+    case webrtc_rtp:classify(Bin) of
+        rtp -> rtp_in(Bin, Now, M);
+        rtcp -> rtcp_in(Bin, Now, M);
+        unknown -> {count(dropped, M), []}
+    end.
+
+rtp_in(Bin, Now, M) ->
+    case webrtc_srtp:unprotect_rtp(Bin, M#media.in) of
+        {ok, Plain, In} ->
+            M1 = M#media{in = In},
+            case webrtc_rtp:decode(Plain, #{extensions => parse}) of
+                {ok, Pkt} -> route(Pkt, Now, M1);
+                {error, _} -> {count(dropped, M1), []}
+            end;
+        {error, _} ->
+            {count(srtp_rejected, M), []}
+    end.
+
+route(#rtp{ssrc = Ssrc} = Pkt, Now, M) ->
+    case find_mid(Pkt, M) of
+        undefined ->
+            {count(unroutable, M), []};
+        Mid ->
+            M1 = M#media{ssrc_mid = (M#media.ssrc_mid)#{Ssrc => Mid}},
+            case maps:find(Ssrc, M1#media.rtx_ssrc) of
+                {ok, Primary} -> rtx_in(Mid, Primary, Pkt, Now, M1);
+                error -> deliver(Mid, Pkt, Now, M1)
+            end
+    end.
+
+find_mid(#rtp{ssrc = Ssrc, pt = Pt, ext = Ext}, M) ->
+    case maps:find(Ssrc, M#media.ssrc_mid) of
+        {ok, Mid} ->
+            Mid;
+        error ->
+            case mid_from_ext(Ext, M) of
+                undefined -> maps:get(Pt, M#media.pt_mid, undefined);
+                Mid -> Mid
+            end
+    end.
+
+mid_from_ext(Elems, M) when is_list(Elems) ->
+    Found = [
+        V
+     || {_Mid, Id} <- maps:to_list(M#media.mid_ext), {ok, V} <- [webrtc_rtp_ext:find(Id, Elems)]
+    ],
+    case Found of
+        [V | _] ->
+            case maps:is_key(V, M#media.recv) of
+                true -> V;
+                false -> undefined
+            end;
+        [] ->
+            undefined
+    end;
+mid_from_ext(_, _) ->
+    undefined.
+
+rtx_in(Mid, Primary, Pkt, Now, M) ->
+    Sec = maps:get(Mid, M#media.recv),
+    Apt = [
+        binary_to_integer(A)
+     || #{pt := P, name := N, fmtp := F} <- maps:get(recv_codecs, Sec),
+        P =:= Pkt#rtp.pt,
+        string:lowercase(N) =:= <<"rtx">>,
+        {<<"apt">>, A} <- F
+    ],
+    case Apt of
+        [OrigPt] ->
+            case webrtc_rtx:decapsulate(Pkt, #{ssrc => Primary, pt => OrigPt}) of
+                {ok, Orig} -> deliver(Mid, Orig, Now, count(rtx_received, M));
+                {error, _} -> {count(dropped, M), []}
+            end;
+        _ ->
+            {count(dropped, M), []}
+    end.
+
+deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
+    R0 =
+        case maps:find(Ssrc, M#media.receivers) of
+            {ok, R} -> R;
+            error -> new_receiver(Mid, Ssrc, Pkt#rtp.pt, M)
+        end,
+    {_, Rx} = webrtc_rtp_stats:rx_packet(Seq, Ts, Now, R0#rcv.rx),
+    {Nack, NackActions} =
+        case R0#rcv.nack of
+            undefined -> {undefined, []};
+            N -> webrtc_nack:packet(Seq, Now, N)
+        end,
+    R1 = R0#rcv{rx = Rx, nack = Nack},
+    M1 = M#media{receivers = (M#media.receivers)#{Ssrc => R1}},
+    {Out, M2} = nack_actions(Mid, Ssrc, NackActions, M1),
+    {count(rtp_received, M2), [{event, {rtp, Mid, Pkt}} | Out]}.
+
+new_receiver(Mid, Ssrc, Pt, M) ->
+    Sec = maps:get(Mid, M#media.recv, #{}),
+    Codecs = maps:get(recv_codecs, Sec, []),
+    Rate = hd([R || #{pt := P, clock_rate := R} <- Codecs, P =:= Pt] ++ [90000]),
+    Nackable = lists:any(
+        fun(#{rtcp_fb := Fb}) -> lists:member(#{type => <<"nack">>, param => undefined}, Fb) end,
+        Codecs
+    ),
+    #rcv{
+        mid = Mid,
+        clock_rate = Rate,
+        rx = webrtc_rtp_stats:rx_new(Ssrc, #{clock_rate => Rate, time_unit => 1000}),
+        nack =
+            case Nackable of
+                true -> webrtc_nack:new(#{});
+                false -> undefined
+            end
+    }.
+
+nack_actions(_Mid, _Ssrc, [], M) ->
+    {[], M};
+nack_actions(Mid, Ssrc, Actions, M) ->
+    Pkts = lists:flatmap(
+        fun
+            ({nack, Seqs}) ->
+                [#rtcp_nack{
+                    sender_ssrc = M#media.rtcp_ssrc,
+                    media_ssrc = Ssrc,
+                    items = webrtc_rtcp_fb:nack_items(Seqs)
+                }];
+            (request_keyframe) ->
+                [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = Ssrc}];
+            ({give_up, _}) ->
+                []
+        end,
+        Actions
+    ),
+    _ = Mid,
+    send_rtcp(Pkts, M).
+
+rtcp_in(Bin, Now, M) ->
+    case webrtc_srtp:unprotect_rtcp(Bin, M#media.in) of
+        {ok, Plain, In} ->
+            case webrtc_rtcp:decode(Plain) of
+                {ok, Pkts} ->
+                    lists:foldl(
+                        fun(P, {Acc, Act}) ->
+                            {Acc1, A} = rtcp_packet(P, Now, Acc),
+                            {Acc1, Act ++ A}
+                        end,
+                        {count(rtcp_received, M#media{in = In}), []},
+                        Pkts
+                    );
+                {error, _} ->
+                    {count(dropped, M#media{in = In}), []}
+            end;
+        {error, _} ->
+            {count(srtp_rejected, M), []}
+    end.
+
+rtcp_packet(#rtcp_nack{media_ssrc = Ssrc, items = Items}, Now, M) ->
+    case sender_by_ssrc(Ssrc, M) of
+        {ok, S} -> retransmit(S, webrtc_rtcp_fb:nack_seqs(Items), Now, M);
+        error -> {M, []}
+    end;
+rtcp_packet(#rtcp_pli{media_ssrc = Ssrc}, _Now, M) ->
+    keyframe(Ssrc, M);
+rtcp_packet(#rtcp_fir{entries = Entries}, _Now, M) ->
+    lists:foldl(
+        fun({Ssrc, _}, {Acc, Act}) ->
+            {Acc1, A} = keyframe(Ssrc, Acc),
+            {Acc1, Act ++ A}
+        end,
+        {M, []},
+        Entries
+    );
+rtcp_packet(#rtcp_sr{ssrc = Ssrc} = SR, Now, M) ->
+    case maps:find(Ssrc, M#media.receivers) of
+        {ok, R} ->
+            Rx = webrtc_rtp_stats:rx_sender_report(SR, Now, R#rcv.rx),
+            {M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{rx = Rx}}}, []};
+        error ->
+            {M, []}
+    end;
+rtcp_packet(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
+    {M, [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs]};
+rtcp_packet(P, _Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
+    {M, [{event, {rtcp, undefined, P}}]};
+rtcp_packet(_P, _Now, M) ->
+    {M, []}.
+
+keyframe(Ssrc, M) ->
+    case sender_by_ssrc(Ssrc, M) of
+        {ok, #snd{mid = Mid}} -> {M, [{event, {keyframe_request, Mid}}]};
+        error -> {M, []}
+    end.
+
+sender_by_ssrc(Ssrc, M) ->
+    case [S || S = #snd{ssrc = X} <- maps:values(M#media.senders), X =:= Ssrc] of
+        [S] -> {ok, S};
+        [] -> error
+    end.
+
+%% Resend NACKed packets, over RTX when negotiated (RFC 4588 §4).
+retransmit(#snd{mid = Mid} = S0, Seqs, Now, M) ->
+    {Found, Buf} = webrtc_nack_buffer:retransmit(Seqs, Now, S0#snd.buffer),
+    {Bins, S1, Out} = lists:foldl(
+        fun({_Seq, Pkt}, {Acc, S, O}) ->
+            {Wire, S2} = rtx_packet(Pkt, S),
+            case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Wire), O) of
+                {ok, B, O1} -> {[{send, B} | Acc], S2, O1};
+                {error, _} -> {Acc, S2, O}
+            end
+        end,
+        {[], S0#snd{buffer = Buf}, M#media.out},
+        Found
+    ),
+    M1 = M#media{out = Out, senders = (M#media.senders)#{Mid := S1}},
+    {count(retransmitted, length(Bins), M1), lists:reverse(Bins)}.
+
+rtx_packet(#rtp{pt = Pt} = Pkt, #snd{rtx = Rtx} = S) ->
+    case maps:find(Pt, Rtx) of
+        {ok, RtxPt} ->
+            Wire = webrtc_rtx:encapsulate(Pkt, #{ssrc => S#snd.rtx_ssrc, pt => RtxPt, seq => S#snd.rtx_seq}),
+            {Wire, S#snd{rtx_seq = (S#snd.rtx_seq + 1) band 16#FFFF}};
+        error ->
+            {Pkt, S}
+    end.
+
+%%====================================================================
+%% Timers: RTCP reports and NACK
+%%====================================================================
+
+-spec next_timeout(state()) -> integer() | infinity.
+next_timeout(#media{rtcp_at = R, receivers = Rs}) ->
+    lists:foldl(
+        fun
+            (#rcv{nack = undefined}, Acc) -> Acc;
+            (#rcv{nack = N}, Acc) -> tmin(webrtc_nack:next_timeout(N), Acc)
+        end,
+        R,
+        maps:values(Rs)
+    ).
+
+tmin(infinity, B) -> B;
+tmin(A, infinity) -> A;
+tmin(A, B) -> min(A, B).
+
+-spec handle_timeout(integer(), state()) -> {state(), list()}.
+handle_timeout(Now, #media{out = undefined} = M) ->
+    _ = Now,
+    {M, []};
+handle_timeout(Now, M0) ->
+    {M1, A1} = nack_timeouts(Now, M0),
+    case M1#media.rtcp_at =/= infinity andalso Now >= M1#media.rtcp_at of
+        true ->
+            {A2, M2} = reports(Now, M1),
+            %% RFC 3550 §6.3.5: randomize in [0.5, 1.5] of the interval.
+            Next = Now + round(?RTCP_INTERVAL * (0.5 + rand:uniform())),
+            {M2#media{rtcp_at = Next}, A1 ++ A2};
+        false ->
+            {M1, A1}
+    end.
+
+nack_timeouts(Now, M) ->
+    maps:fold(
+        fun
+            (_Ssrc, #rcv{nack = undefined}, Acc) ->
+                Acc;
+            (Ssrc, #rcv{nack = N, mid = Mid} = R, {MAcc, AAcc}) ->
+                {N1, Actions} = webrtc_nack:handle_timeout(Now, N),
+                MAcc1 = MAcc#media{receivers = (MAcc#media.receivers)#{Ssrc := R#rcv{nack = N1}}},
+                {Out, MAcc2} = nack_actions(Mid, Ssrc, Actions, MAcc1),
+                {MAcc2, AAcc ++ Out}
+        end,
+        {M, []},
+        M#media.receivers
+    ).
+
+%% One compound packet: SR per sender (or one RR), SDES CNAME
+%% (RFC 3550 §6.1, reduced-size not used for regular reports).
+reports(Now, M) ->
+    {Blocks, Rcvs} = maps:fold(
+        fun(Ssrc, R, {Bs, Acc}) ->
+            {B, Rx} = webrtc_rtp_stats:report_block(Now, R#rcv.rx),
+            {[B | Bs], Acc#{Ssrc => R#rcv{rx = Rx}}}
+        end,
+        {[], #{}},
+        M#media.receivers
+    ),
+    M1 = M#media{receivers = Rcvs},
+    Ntp = webrtc_rtp_stats:ntp_from_us(erlang:system_time(microsecond)),
+    Senders = maps:values(M1#media.senders),
+    Reports =
+        case Senders of
+            [] ->
+                [#rtcp_rr{ssrc = M1#media.rtcp_ssrc, reports = lists:sublist(Blocks, 31)}];
+            _ ->
+                [
+                    webrtc_rtp_stats:sender_report(
+                        S#snd.ssrc, Ntp, rtp_ts_now(S, Now), S#snd.tx, lists:sublist(Blocks, 31)
+                    )
+                 || S <- Senders
+                ]
+        end,
+    Ssrcs =
+        case Senders of
+            [] -> [M1#media.rtcp_ssrc];
+            _ -> [S#snd.ssrc || S <- Senders]
+        end,
+    Sdes = #rtcp_sdes{chunks = [{S, [{cname, M1#media.cname}]} || S <- Ssrcs]},
+    send_rtcp(Reports ++ [Sdes], M1).
+
+%% Extrapolate the RTP timestamp to now from the last packet sent.
+rtp_ts_now(#snd{last_ts_at = undefined, last_ts = Ts}, _Now) ->
+    Ts;
+rtp_ts_now(#snd{last_ts_at = At, last_ts = Ts, codecs = Cs}, Now) ->
+    Rate =
+        case Cs of
+            [#{clock_rate := R} | _] -> R;
+            [] -> 90000
+        end,
+    (Ts + ((Now - At) * Rate) div 1000) band 16#FFFFFFFF.
+
+send_rtcp([], M) ->
+    {[], M};
+send_rtcp(_Pkts, #media{out = undefined} = M) ->
+    {[], M};
+send_rtcp(Pkts, M) ->
+    case webrtc_srtp:protect_rtcp(webrtc_rtcp:encode(Pkts), M#media.out) of
+        {ok, B, Out} -> {[{send, B}], count(rtcp_sent, M#media{out = Out})};
+        {error, _} -> {[], M}
+    end.
+
+%%====================================================================
+%% Stats
+%%====================================================================
+
+-spec stats(state()) -> map().
+stats(#media{} = M) ->
+    #{
+        counters => M#media.counters,
+        senders => maps:map(
+            fun(_Mid, S) -> (webrtc_rtp_stats:tx_info(S#snd.tx))#{ssrc => S#snd.ssrc} end,
+            M#media.senders
+        ),
+        receivers => maps:map(
+            fun(_Ssrc, R) -> (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid} end,
+            M#media.receivers
+        )
+    }.
+
+count(Key, M) ->
+    count(Key, 1, M).
+
+count(Key, N, #media{counters = C} = M) ->
+    M#media{counters = maps:update_with(Key, fun(V) -> V + N end, N, C)}.
+
+rand32() ->
+    <<S:32>> = crypto:strong_rand_bytes(4),
+    S.
+
+rand16() ->
+    <<S:16>> = crypto:strong_rand_bytes(2),
+    S.

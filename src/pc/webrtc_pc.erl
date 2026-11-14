@@ -429,13 +429,28 @@ bundle_tag(St) ->
 close_now(#st{transport = undefined} = St) ->
     St;
 close_now(#st{transport = T} = St) ->
-    unlink(T),
-    _ = catch_stop(T),
+    ok = stop_transport(T),
     notify({connection_state, closed}, St),
     St#st{transport = undefined, jsep = webrtc_jsep:close(St#st.jsep), connection = closed}.
 
-catch_stop(T) ->
-    try webrtc_transport:stop(T) catch exit:_ -> ok end.
+%% Stop the linked transport; one that does not stop in time (stuck in a
+%% callback) is killed, so it can never survive with its sockets. The
+%% link stays until the transport is gone.
+stop_transport(T) ->
+    try
+        webrtc_transport:stop(T)
+    catch
+        exit:_ ->
+            exit(T, kill),
+            receive
+                {'EXIT', T, _} -> ok
+            after 5000 -> ok
+            end
+    end,
+    receive
+        {'EXIT', T, _} -> ok
+    after 0 -> ok
+    end.
 
 notify(Event, #st{app = App}) ->
     App ! {webrtc, self(), Event},

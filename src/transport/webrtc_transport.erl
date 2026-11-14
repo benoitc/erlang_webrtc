@@ -108,6 +108,9 @@ set_app(T, Pid) -> gen_server:call(T, {set_app, Pid}).
 %%====================================================================
 
 init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
+    %% The transport never outlives its peer connection, whatever the
+    %% reason it went away.
+    _ = monitor(process, Pc),
     IceOpts = maps:with(
         [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, consent, nomination], Opts
     ),
@@ -260,6 +263,8 @@ handle_cast(_Msg, St) ->
 handle_info({udp, Sock, IP, Port, Bin}, St) ->
     St1 = datagram(Sock, {IP, Port}, Bin, now_ms(), St),
     {noreply, arm(St1)};
+handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
+    {stop, normal, St};
 handle_info({delayed_send, Sock, Dest, Bin}, St) ->
     udp_send(Sock, Dest, Bin),
     {noreply, St};
@@ -458,7 +463,14 @@ ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     St;
 ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
-    {Out, FS1} = F(Dest, Bin, FS),
+    %% Test hook (impairment): it runs in this process and must not
+    %% block; a crashing filter lets the datagram through.
+    {Out, FS1} =
+        try F(Dest, Bin, FS) of
+            {O, S1} when is_list(O) -> {O, S1}
+        catch
+            _:_ -> {[{0, Bin}], FS}
+        end,
     lists:foreach(
         fun
             ({0, B}) -> udp_send(Sock, Dest, B);

@@ -14,7 +14,8 @@
     replayed_datagrams_dropped/1,
     teardown_during_traffic/1,
     resources_released_on_close/1,
-    owner_exit_closes/1
+    owner_exit_closes/1,
+    stuck_transport_killed_on_close/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -27,7 +28,8 @@ all() ->
         replayed_datagrams_dropped,
         teardown_during_traffic,
         resources_released_on_close,
-        owner_exit_closes
+        owner_exit_closes,
+        stuck_transport_killed_on_close
     ].
 
 init_per_suite(Config) ->
@@ -202,3 +204,32 @@ webrtc_transport_of(Pc) ->
 proc_memory(P) ->
     {memory, M} = process_info(P, memory),
     M.
+
+%% A transport stuck in a callback (here a blocking outbound filter)
+%% cannot outlive its peer connection: close kills it and its sockets are
+%% released.
+stuck_transport_killed_on_close(_Config) ->
+    Block = atomics:new(1, []),
+    Filter = {fun(_Dest, Bin, S) ->
+                  case atomics:get(Block, 1) of
+                      1 -> receive never -> ok end;
+                      0 -> ok
+                  end,
+                  {[{0, Bin}], S}
+              end, undefined},
+    {A, B, Id} = connected_pair(#{outbound_filter => Filter}),
+    T = webrtc_transport_of(A),
+    {links, Links} = process_info(T, links),
+    Ports = [P || P <- Links, is_port(P)],
+    ?assertNotEqual([], Ports),
+    Ref = monitor(process, T),
+    atomics:put(Block, 1, 1),
+    %% The next datagram A sends blocks its transport forever.
+    _ = spawn(fun() -> webrtc:send_data(A, Id, text, <<"x">>) end),
+    timer:sleep(300),
+    {Time, ok} = timer:tc(fun() -> webrtc:close(A) end),
+    ct:log("close took ~p ms", [Time div 1000]),
+    receive {'DOWN', Ref, process, T, _} -> ok after 1000 -> ct:fail(transport_survived) end,
+    webrtc:close(B),
+    %% The sockets of the killed transport are released.
+    ?assertEqual([], [P || P <- Ports, erlang:port_info(P) =/= undefined]).

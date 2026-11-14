@@ -133,19 +133,79 @@ const pageScript = () => {
   };
 };
 
-async function main() {
+// Playwright drives its own builds of Chromium, Firefox and WebKit.
+async function openPlaywright() {
   const browser = await pw[kind].launch({ headless: true, ...launchOpts[kind] });
   const context = await browser.newContext();
   if (kind === 'chromium' && !mdns) await context.grantPermissions(['camera', 'microphone']);
   const page = await context.newPage();
-  page.on('console', (m) => process.stderr.write(`[page] ${m.text()}\n`));
-  await page.exposeFunction('emit', (ev) => emit(ev));
   // A localhost origin is a secure context, required for getUserMedia.
   await page.route('http://localhost/**', (route) =>
     route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>peer</title>' }));
-  await page.goto('http://localhost/');
+  return { page, url: 'http://localhost/', version: browser.version(), close: () => browser.close() };
+}
+
+// The installed Firefox (kind 'firefox-system'), driven over WebDriver
+// BiDi with puppeteer-core. On macOS it is started through launchd
+// (`open`): a Firefox started as a child of a terminal inherits the
+// terminal's privacy restrictions and cannot read its own profile.
+async function openSystemFirefox() {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const http = require('http');
+  const { spawn, execFileSync } = require('child_process');
+  const puppeteer = require('puppeteer-core');
+  const bin = process.env.WEBRTC_FIREFOX || (process.platform === 'darwin'
+    ? '/Applications/Firefox.app' : 'firefox');
+  const base = process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Caches') : os.tmpdir();
+  const profile = fs.mkdtempSync(path.join(base, 'erlang-webrtc-ff-'));
+  fs.writeFileSync(path.join(profile, 'user.js'), [
+    'media.navigator.streams.fake', 'media.navigator.permission.disabled',
+    'media.peerconnection.ice.loopback'].map((k) => `user_pref("${k}", true);`).join('\n') +
+    '\nuser_pref("media.peerconnection.ice.obfuscate_host_addresses", false);\n');
+  const port = 20000 + Math.floor(Math.random() * 20000);
+  const args = ['--headless', '--no-remote', '--profile', profile, '--remote-debugging-port', String(port)];
+  let child = null;
+  if (process.platform === 'darwin' && bin.endsWith('.app')) {
+    execFileSync('open', ['-n', '-a', bin, '--args', ...args]);
+  } else {
+    child = spawn(bin, args, { stdio: 'ignore' });
+  }
+  const server = http.createServer((_, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>peer</title>');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  let browser;
+  for (let i = 0; i < 100 && !browser; i++) {
+    try {
+      browser = await puppeteer.connect({ browserWSEndpoint: `ws://127.0.0.1:${port}/session`, protocol: 'webDriverBiDi' });
+    } catch (e) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  if (!browser) throw new Error('system firefox did not start');
+  const page = await browser.newPage();
+  const close = async () => {
+    try { await browser.close(); } catch (e) { /* already gone */ }
+    if (child) child.kill();
+    else try { execFileSync('pkill', ['-f', profile]); } catch (e) { /* exited */ }
+    server.close();
+    fs.rmSync(profile, { recursive: true, force: true });
+  };
+  return { page, url: `http://localhost:${server.address().port}/`, version: await browser.version(), close };
+}
+
+async function main() {
+  const b = kind === 'firefox-system' ? await openSystemFirefox() : await openPlaywright();
+  const browser = { close: b.close };
+  const page = b.page;
+  page.on('console', (m) => process.stderr.write(`[page] ${m.text()}\n`));
+  await page.exposeFunction('emit', (ev) => emit(ev));
+  await page.goto(b.url);
   await page.evaluate(pageScript);
-  emit({ event: 'ready', implementation: mdns ? kind + '-mdns' : kind, version: browser.version() });
+  emit({ event: 'ready', implementation: mdns ? kind + '-mdns' : kind, version: b.version });
 
   const handlers = {
     init: (c) => page.evaluate((c) => window.init(c), c),

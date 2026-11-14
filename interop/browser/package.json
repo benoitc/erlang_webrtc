@@ -3,6 +3,7 @@
   "private": true,
   "description": "Headless browser peer adapter for the erlang_webrtc interop suite",
   "dependencies": {
-    "playwright": "1.59.1"
+    "playwright": "1.59.1",
+    "puppeteer-core": "24.10.0"
   }
 }

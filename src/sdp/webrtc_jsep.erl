@@ -39,6 +39,8 @@
     signaling_state/1,
     local_description/1,
     remote_description/1,
+    remote_view/1,
+    bundle_view/1,
     negotiated/1,
     close/1
 ]).
@@ -209,8 +211,10 @@ set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
             {ok, J1#jsep{
                 current_local = Sdp,
                 current_remote = J#jsep.pending_remote,
+                current_remote_orig = J#jsep.pending_remote_orig,
                 pending_local = undefined,
                 pending_remote = undefined,
+                pending_remote_orig = undefined,
                 snapshot = undefined,
                 signaling = stable,
                 ice_restart = false
@@ -224,20 +228,27 @@ set_local_description(_, _, _) ->
 -spec set_remote_description(sdp_type(), #sdp{} | undefined, state()) -> {ok, state()} | {error, term()}.
 set_remote_description(_, _, #jsep{signaling = closed}) ->
     {error, closed};
-set_remote_description(offer, Sdp, #jsep{signaling = S} = J) when
+set_remote_description(offer, Sdp0, #jsep{signaling = S} = J) when
     S =:= stable; S =:= have_remote_offer
 ->
+    Sdp = bundle_view(Sdp0),
     maybe
         ok ?= validate(offer, Sdp, J),
         J0 = restore(J),
         Snap = {J0#jsep.transceivers, J0#jsep.next_id, J0#jsep.data_mid, J0#jsep.data_mline},
         J1 = associate(Sdp, J0#jsep{snapshot = Snap}),
-        {ok, J1#jsep{pending_remote = Sdp, signaling = have_remote_offer, remote_ice = remote_ice(Sdp)}}
+        {ok, J1#jsep{
+            pending_remote = Sdp,
+            pending_remote_orig = Sdp0,
+            signaling = have_remote_offer,
+            remote_ice = remote_ice(Sdp)
+        }}
     end;
-set_remote_description(Type, Sdp, #jsep{signaling = S} = J) when
+set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
     (Type =:= answer orelse Type =:= pranswer),
     (S =:= have_local_offer orelse S =:= have_remote_pranswer)
 ->
+    Sdp = bundle_view(Sdp0),
     maybe
         ok ?= validate(answer, Sdp, J),
         ok ?= check_answer_mids(Sdp, J#jsep.pending_local),
@@ -245,13 +256,15 @@ set_remote_description(Type, Sdp, #jsep{signaling = S} = J) when
         J2 = J1#jsep{remote_ice = remote_ice(Sdp)},
         case Type of
             pranswer ->
-                {ok, J2#jsep{pending_remote = Sdp, signaling = have_remote_pranswer}};
+                {ok, J2#jsep{pending_remote = Sdp, pending_remote_orig = Sdp0, signaling = have_remote_pranswer}};
             answer ->
                 {ok, J2#jsep{
                     current_local = J#jsep.pending_local,
                     current_remote = Sdp,
+                    current_remote_orig = Sdp0,
                     pending_local = undefined,
                     pending_remote = undefined,
+                    pending_remote_orig = undefined,
                     signaling = stable,
                     ice_restart = false
                 }}
@@ -259,7 +272,7 @@ set_remote_description(Type, Sdp, #jsep{signaling = S} = J) when
     end;
 set_remote_description(rollback, _, #jsep{signaling = have_remote_offer} = J) ->
     J1 = restore(J),
-    {ok, J1#jsep{pending_remote = undefined, signaling = stable, snapshot = undefined}};
+    {ok, J1#jsep{pending_remote = undefined, pending_remote_orig = undefined, signaling = stable, snapshot = undefined}};
 set_remote_description(_, _, _) ->
     {error, invalid_state}.
 
@@ -276,7 +289,41 @@ signaling_state(#jsep{signaling = S}) -> S.
 local_description(#jsep{pending_local = P, current_local = C}) -> first_defined(P, C).
 
 -spec remote_description(state()) -> #sdp{} | undefined.
-remote_description(#jsep{pending_remote = P, current_remote = C}) -> first_defined(P, C).
+remote_description(#jsep{pending_remote_orig = P, current_remote_orig = C}) -> first_defined(P, C).
+
+%% @private The remote description as negotiation sees it.
+-spec remote_view(state()) -> #sdp{} | undefined.
+remote_view(#jsep{pending_remote = P, current_remote = C}) -> first_defined(P, C).
+
+%% @doc RFC 9143 §6, RFC 9429 §5.2.1: with the max-bundle policy an
+%% offerer gives every bundled m= section except the tagged one a zero
+%% port and `a=bundle-only'. Such a section is part of the BUNDLE group,
+%% not rejected: give it the port of the tagged section so the offer and
+%% answer rules treat it as accepted. Sections with port 0 and no
+%% bundle-only, or outside every BUNDLE group, stay rejected.
+-spec bundle_view(T) -> T when T :: #sdp{} | term().
+bundle_view(#sdp{media = Media} = Sdp) ->
+    Bundled = lists:append(webrtc_sdp_media:groups(<<"BUNDLE">>, Sdp)),
+    Port = case [M#sdp_media.port || M <- Media, M#sdp_media.port =/= 0,
+                                      lists:member(webrtc_sdp_media:mid(M), Bundled)] of
+        [P | _] -> P;
+        [] -> 9
+    end,
+    Sdp#sdp{media = [
+        case M of
+            #sdp_media{port = 0} ->
+                case webrtc_sdp_media:attr(bundle_only, M) =:= {ok, true} andalso
+                         lists:member(webrtc_sdp_media:mid(M), Bundled) of
+                    true -> M#sdp_media{port = Port};
+                    false -> M
+                end;
+            _ ->
+                M
+        end
+     || M <- Media
+    ]};
+bundle_view(Other) ->
+    Other.
 
 first_defined(undefined, B) -> B;
 first_defined(A, _) -> A.
@@ -453,7 +500,7 @@ negotiated(#jsep{} = J) ->
     {Local, Remote} =
         case J#jsep.signaling of
             S when S =:= have_local_pranswer; S =:= have_remote_pranswer ->
-                {local_description(J), remote_description(J)};
+                {local_description(J), remote_view(J)};
             _ ->
                 {J#jsep.current_local, J#jsep.current_remote}
         end,

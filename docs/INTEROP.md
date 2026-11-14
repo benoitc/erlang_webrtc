@@ -39,31 +39,32 @@ These runs connect independent implementations to each other through the control
 | Pion v4.2.26 | aiortc 1.16.0 | data channel echo | Pass |
 | Chromium 147 | Pion v4.2.26 | data channel echo | Pass |
 | Chromium 147 | Chromium 147 | audio and video, frames decoded | Pass |
-| Firefox 148 | any | | Skipped on macOS in the sandboxed dev environment (browser launch denied); runs in CI on Linux |
+| Firefox 160 | Pion v4.2.26 | data channel echo | Pass |
+| Firefox 160 | Firefox 160 | audio and video, frames decoded | Pass |
 
 ## Peer connection (webrtc_pc_interop_SUITE)
 
 The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) against independent implementations over UDP on the test host.
 
-| Scenario | Pion v4.2.26 | aiortc 1.16.0 | Chromium 147 | Firefox 148 |
+| Scenario | Pion v4.2.26 | aiortc 1.16.0 | Chromium 147 | Firefox 160 |
 |---|---|---|---|---|
-| Erlang offers, data channel, text echo | Pass | Pass | Pass | Not run (1) |
-| Peer offers, data channel, both directions | Pass | Pass | Pass | Not run (1) |
-| Unordered, max_retransmits 0 channel offered by the peer | Pass | Pass | Pass | Not run (1) |
-| 60 KB binary message and echo | Pass | Pass | Pass | Not run (1) |
-| Erlang sends Opus RTP (peer echoes or decodes) | Pass (echo verified) | Pass (decoded) | Pass (decoded) | Not run (1) |
-| Peer sends its own audio and video, Erlang forwards every packet back, peer decodes 10+ video frames | Skipped (2) | Pass | Pass | Not run (1) |
-| Peer closes, Erlang reports the connection closed | Pass | Pass | Pass | Not run (1) |
-| Erlang renegotiates: adds an audio section, data channel survives | Pass | Pass | Pass | Not run (1) |
-| ICE restart started by Erlang, DTLS and SCTP survive | Pass | Pass | Pass | Not run (1) |
-| ICE restart started by the peer | Pass | Pass | Pass | Not run (1) |
-| Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Not run (1) |
-| Peer sends three simulcast layers (rid q, h, f), Erlang receives 50+ packets on each and a keyframe request reaches one layer only | Skipped (3) | Skipped (3) | Pass | Not run (1) |
-| Erlang sends three simulcast layers, the peer receives each one by rid | Pass | Skipped (4) | Skipped (4) | Not run (1) |
+| Erlang offers, data channel, text echo | Pass | Pass | Pass | Pass |
+| Peer offers, data channel, both directions | Pass | Pass | Pass | Pass |
+| Unordered, max_retransmits 0 channel offered by the peer | Pass | Pass | Pass | Pass |
+| 60 KB binary message and echo | Pass | Pass | Pass | Pass |
+| Erlang sends Opus RTP (peer echoes or decodes) | Pass (echo verified) | Pass (decoded) | Pass (decoded) | Pass |
+| Peer sends its own audio and video, Erlang forwards every packet back, peer decodes 10+ video frames | Skipped (2) | Pass | Pass | Pass |
+| Peer closes, Erlang reports the connection closed | Pass | Pass | Pass | Pass |
+| Erlang renegotiates: adds an audio section, data channel survives | Pass | Pass | Pass | Pass |
+| ICE restart started by Erlang, DTLS and SCTP survive | Pass | Pass | Pass | Pass |
+| ICE restart started by the peer | Pass | Pass | Pass | Pass |
+| Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Pass |
+| Peer sends three simulcast layers (rid q, h, f), Erlang receives 50+ packets on each and a keyframe request reaches one layer only | Skipped (3) | Skipped (3) | Pass | Pass |
+| Erlang sends three simulcast layers, the peer receives each one by rid | Pass | Skipped (4) | Skipped (4) | Pass |
 | Peer offers with mDNS host candidates only, Erlang resolves them, data channel both ways | | | Pass (5) | |
 | Erlang offers, peer answers with mDNS host candidates only, Erlang's checks to the resolved addresses answered | | | Pass (5) | |
 
-1. Firefox cannot launch inside the sandbox of the development machine; the suite reports it as skipped. It runs in the CI interop job.
+1. Firefox is the installed release (160 on the development machine), driven over WebDriver BiDi with puppeteer-core. On macOS it is started through launchd: a Firefox started from a terminal inherits the terminal's privacy restrictions and cannot read its profile. Without an installed Firefox the suite falls back to Playwright's build.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
 3. The adapter has no simulcast encoder.
 4. Browsers do not receive simulcast (RFC 9429 §3.7); aiortc answers without it.
@@ -78,6 +79,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | aiortc 1.16.0 | Answering a re-offer raises `ValueError` in `and_direction` when a local transceiver created before the first negotiation is still unassociated (`_offerDirection` is `None`). | aiortc bug; our re-offer is valid (Pion and Chromium accept it). The renegotiation case gives aiortc no local track. |
 | Chromium | Discards remote candidates of the previous ICE generation on restart. | Our transport now signals its candidates again after `restart_ice` (RFC 8445 §9); this was a bug on our side, hidden by Pion keeping old candidates. |
 | Chromium | Its bandwidth estimate stays at the start value when transport-wide congestion control is negotiated but no feedback comes, so the top simulcast layer is never encoded. | Fixed by our transport-wide congestion control feedback: with it negotiated, Chromium encodes all three layers. With a 640x360 capture Chromium also limits itself to two layers; the case captures 1280x720. |
+| Firefox | Offers with the max-bundle policy: every bundled m= section but the first has port 0 and `a=bundle-only`. We treated port 0 as rejected and answered the video section rejected, so Firefox never sent video. | Our bug (RFC 9143 §6, RFC 9429 §5.2.1). Bundle-only sections of a BUNDLE group are now accepted (`webrtc_jsep_tests:bundle_only_section_accepted_test`). Chromium uses port 9 everywhere, which hid it. |
 | Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |
 | Chromium | Its mDNS responder ignores queries with more than one question and QU questions, and answers QM questions by multicast only. | The resolver sends A and AAAA in separate messages, retransmits as QM after 250 ms and listens on the group (SO_REUSEPORT) as well as on its query port. |
 | Chromium | When Chromium is controlling, ICE may complete through the peer-reflexive candidate its checks create before the names resolve. | Expected (draft section 6.3); the resolved candidates are still added. |

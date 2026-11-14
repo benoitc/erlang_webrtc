@@ -278,3 +278,40 @@ answer_sample(Name) ->
         end,
         lists:zip(Offer#sdp.media, A#sdp.media)
     ).
+
+%% RFC 9143 §6, RFC 9429 §5.2.1: a max-bundle offerer (Firefox) gives the
+%% non-tagged bundled sections port 0 and a=bundle-only. They are part of
+%% the BUNDLE group and must be accepted, not rejected.
+max_bundle_offer(BundleOnly) ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A1),
+    [MA, MV] = Offer#sdp.media,
+    Extra = [{bundle_only, true} || BundleOnly],
+    wire(Offer#sdp{media = [MA, MV#sdp_media{port = 0, attributes = MV#sdp_media.attributes ++ Extra}]}).
+
+bundle_only_section_accepted_test() ->
+    Offer = max_bundle_offer(true),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, Offer, B1),
+    {ok, Answer, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(answer, Answer, B3),
+    [_, AV] = (wire(Answer))#sdp.media,
+    ?assertEqual(9, AV#sdp_media.port),
+    %% bundle-only is never used in an answer (RFC 9143 §7.3).
+    ?assertEqual(error, ?M:attr(bundle_only, AV)),
+    ?assertEqual(sendrecv, ?M:direction(AV, wire(Answer))),
+    ?assertEqual([[<<"0">>, <<"1">>]], ?M:groups(<<"BUNDLE">>, wire(Answer))),
+    ?assertEqual([audio, video], [K || #{kind := K} <- maps:get(media, webrtc_jsep:negotiated(B4))]),
+    %% The application still sees the description it set.
+    #sdp{media = [_, RV]} = webrtc_jsep:remote_description(B4),
+    ?assertEqual(0, RV#sdp_media.port).
+
+port_zero_without_bundle_only_rejected_test() ->
+    Offer = max_bundle_offer(false),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, Offer, B0),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    [_, AV] = (wire(Answer))#sdp.media,
+    ?assertEqual(0, AV#sdp_media.port).

@@ -53,6 +53,10 @@
     current_remote :: undefined | tuple(),
     pending_local :: undefined | tuple(),
     pending_remote :: undefined | tuple(),
+    %% Remote descriptions as received; pending_remote and current_remote
+    %% hold the bundle view (see webrtc_jsep:bundle_view/1).
+    pending_remote_orig :: undefined | tuple(),
+    current_remote_orig :: undefined | tuple(),
     %% DTLS role once negotiated (RFC 8842 §5).
     dtls_role :: undefined | client | server,
     local_candidates = [] :: list(),

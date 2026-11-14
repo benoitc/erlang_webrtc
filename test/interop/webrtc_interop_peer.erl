@@ -31,8 +31,13 @@ find(chromium_mdns) ->
 find(Browser) when Browser =:= chromium; Browser =:= firefox; Browser =:= webkit ->
     Dir = filename:join([root(), "interop", "browser"]),
     Node = os:find_executable("node"),
+    %% Prefer the installed Firefox over Playwright's patched build.
+    Kind = case Browser =:= firefox andalso system_firefox(Dir) of
+        true -> "firefox-system";
+        false -> atom_to_list(Browser)
+    end,
     case Node =/= false andalso filelib:is_dir(filename:join(Dir, "node_modules/playwright")) of
-        true -> {ok, Node ++ " " ++ filename:join(Dir, "peer.js") ++ " " ++ atom_to_list(Browser)};
+        true -> {ok, Node ++ " " ++ filename:join(Dir, "peer.js") ++ " " ++ Kind};
         false -> {skip, "playwright missing: run npm ci in interop/browser"}
     end.
 
@@ -170,3 +175,10 @@ short(T) -> io_lib:format("~p", [T]).
 %% match it again.
 forget(#peer{events = Es} = P, Ev) ->
     P#peer{events = lists:delete(Ev, Es)}.
+
+system_firefox(Dir) ->
+    Installed =
+        os:getenv("WEBRTC_FIREFOX") =/= false orelse
+            filelib:is_dir("/Applications/Firefox.app") orelse
+            os:find_executable("firefox") =/= false,
+    Installed andalso filelib:is_dir(filename:join(Dir, "node_modules/puppeteer-core")).

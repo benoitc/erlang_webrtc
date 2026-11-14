@@ -315,11 +315,33 @@ peer_sends_media(Config) ->
         _ ->
             Loop = spawn_link(fun() -> echo_loop(Pc, 0) end),
             ok = webrtc:controlling_process(Pc, Loop),
-            {ok, P2, _} = ?P:wait(P1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>,
-                                            <<"count">> := N}) -> N >= 10;
-                                         (_) -> false end, 20000),
-            put(peer, P2)
+            case ?P:wait(P1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>,
+                                     <<"count">> := N}) -> N >= 10;
+                                  (_) -> false end, 20000) of
+                {ok, P2, _} ->
+                    put(peer, P2);
+                {error, P2, R} ->
+                    log_rtp_stats(Pc, P2),
+                    ct:fail({no_decoded_video, R})
+            end
     end.
+
+%% Diagnostics: RTP statistics of both sides.
+log_rtp_stats(Pc, P0) ->
+    P1 = ?P:cmd(P0, #{cmd => stats}),
+    case ?P:wait_event(P1, <<"stats">>, #{}) of
+        {ok, _, #{<<"stats">> := Stats}} ->
+            Rtp = [maps:with([<<"type">>, <<"kind">>, <<"packetsReceived">>, <<"packetsSent">>,
+                              <<"framesDecoded">>, <<"framesEncoded">>, <<"keyFramesDecoded">>,
+                              <<"pliCount">>, <<"nackCount">>, <<"firCount">>, <<"packetsLost">>,
+                              <<"codecId">>, <<"decoderImplementation">>], S)
+                   || S <- maps:values(Stats), is_map(S),
+                      lists:member(maps:get(<<"type">>, S, undefined), [<<"inbound-rtp">>, <<"outbound-rtp">>])],
+            ct:log("peer rtp stats: ~p", [Rtp]);
+        Other ->
+            ct:log("no peer stats: ~p", [Other])
+    end,
+    ct:log("erlang media stats: ~p", [maps:get(media, maps:get(transport, webrtc:get_stats(Pc)))]).
 
 echo_loop(Pc, N) ->
     receive

@@ -132,7 +132,7 @@ handle_call({set_remote_description, Type, Sdp}, _From, St) ->
             {reply, E, St}
     end;
 handle_call({add_ice_candidate, Cand}, _From, St) ->
-    case webrtc_jsep:remote_description(St#st.jsep) of
+    case webrtc_jsep:remote_view(St#st.jsep) of
         %% RFC 9429 §4.1.17: candidates need a remote description.
         undefined -> {reply, {error, no_remote_description}, St};
         _ -> add_candidate(Cand, St)
@@ -238,7 +238,7 @@ ensure_transport(rollback, St) ->
 ensure_transport(Type, #st{transport = undefined} = St) ->
     Lite = maps:get(ice_lite, St#st.opts, false),
     RemoteLite =
-        case webrtc_jsep:remote_description(St#st.jsep) of
+        case webrtc_jsep:remote_view(St#st.jsep) of
             undefined -> false;
             R -> webrtc_sdp_media:ice_lite(R)
         end,
@@ -287,7 +287,7 @@ ensure_transport(_Type, St) ->
 push_remote_ice(#st{transport = undefined} = St) ->
     St;
 push_remote_ice(#st{transport = T} = St) ->
-    case webrtc_jsep:remote_description(St#st.jsep) of
+    case webrtc_jsep:remote_view(St#st.jsep) of
         undefined ->
             St;
         #sdp{media = Media} = R ->

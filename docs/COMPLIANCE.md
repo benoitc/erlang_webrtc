@@ -41,7 +41,6 @@ Known gaps that matter for a full WebRTC deployment:
 | ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |
 | Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |
 | SCTP priorities, PMTUD | Round robin scheduling between streams, fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
-| Firefox interop | Runs in CI only; not verified on the development machine | [INTEROP.md](INTEROP.md) |
 
 Codec encoding and decoding are not part of the library. Opus, G.711, VP8 and H.264 are negotiated and their RTP payloads are transported and forwarded; producing or consuming the media is the application's job.
 

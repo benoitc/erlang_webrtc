@@ -23,7 +23,7 @@
 ]).
 
 -record(net, {
-    mod :: module(),
+    mod :: module() | {module(), module()},
     now = 0 :: integer(),
     a :: term(),
     b :: term(),
@@ -44,9 +44,10 @@
 -opaque net() :: #net{}.
 -export_type([net/0]).
 
-%% @doc `Opts': seed, loss, dup, reorder (probabilities), delay, jitter
-%% (ms), mtu, filter.
--spec new(module(), {term(), term()}, map()) -> net().
+%% @doc `Mod' is the engine module of both sides or `{ModA, ModB}'.
+%% `Opts': seed, loss, dup, reorder (probabilities), delay, jitter (ms),
+%% mtu, filter.
+-spec new(module() | {module(), module()}, {term(), term()}, map()) -> net().
 new(Mod, {A, B}, Opts) ->
     N = #net{mod = Mod, a = A, b = B, rand = rand:seed_s(exsss, maps:get(seed, Opts, 1))},
     apply_opts(maps:to_list(Opts), N).
@@ -126,22 +127,26 @@ until(Pred, Deadline, N) ->
             end
     end.
 
-next_time(#net{mod = M, a = A, b = B, q = Q}) ->
+next_time(#net{a = A, b = B, q = Q} = N) ->
     QT =
         case Q of
             [] -> infinity;
             [{T, _, _, _} | _] -> T
         end,
-    lists:min([QT, M:next_timeout(A), M:next_timeout(B)]).
+    lists:min([QT, (mod(a, N)):next_timeout(A), (mod(b, N)):next_timeout(B)]).
+
+mod(a, #net{mod = {M, _}}) -> M;
+mod(b, #net{mod = {_, M}}) -> M;
+mod(_, #net{mod = M}) -> M.
 
 step(#net{now = Now, q = [{T, _, To, Bin} | Rest]} = N) when T =< Now ->
     N1 = bump(delivered, N#net{q = Rest}),
     E = engine(To, N1),
-    {E1, Acts} = (N1#net.mod):handle_packet(Bin, Now, E),
+    {E1, Acts} = (mod(To, N1)):handle_packet(Bin, Now, E),
     step(actions(To, Acts, set_engine(To, E1, N1)));
-step(#net{now = Now, mod = M} = N) ->
-    N1 = timeout(a, M, Now, N),
-    timeout(b, M, Now, N1).
+step(#net{now = Now} = N) ->
+    N1 = timeout(a, mod(a, N), Now, N),
+    timeout(b, mod(b, N), Now, N1).
 
 timeout(Side, M, Now, N) ->
     E = engine(Side, N),

@@ -536,3 +536,46 @@ attribute_helpers_test() ->
         ?M:ice_credentials(NoCreds, S2)
     ),
     ?assertEqual(error, ?M:setup(?M:delete_attrs(setup, A), Sdp)).
+
+misc_attributes_test() ->
+    Fp1 = webrtc_sdp_samples:fp_sha256(),
+    Lower = webrtc_sdp_lex:lower(Fp1),
+    Sha1 = <<"4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB">>,
+    Bin = lines(
+        header() ++
+            [
+                <<"m=video 0 UDP/TLS/RTP/SAVPF 96">>,
+                <<"a=bundle-only">>,
+                <<"a=ice-mismatch">>,
+                <<"a=fingerprint:sha-256 ", Fp1/binary>>,
+                <<"a=fingerprint:sha-1 ", Sha1/binary>>,
+                <<"a=fingerprint:SHA-256 ", Lower/binary>>,
+                <<"a=rtcp-fb:96 ccm tmmbr smaxpr=120">>,
+                <<"a=rtcp-fb:96 trr-int 100">>,
+                <<"a=identity:eyJpZHAiOnt9fQ== ext1 ext2">>,
+                <<"a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:WVNfX19zZW1jdGwgKCkgewkyMjA7fQp9CnVubGVz">>
+            ]
+    ),
+    Sdp = parse(Bin),
+    [M] = Sdp#sdp.media,
+    ?assertEqual(0, M#sdp_media.port),
+    ?assertEqual({ok, true}, ?M:attr(bundle_only, M)),
+    ?assertEqual({ok, true}, ?M:attr(ice_mismatch, M)),
+    %% several fingerprints are kept in order; lowercase hex is accepted
+    [#{hash := sha256, value := V}, #{hash := sha, value := V1}, #{hash := sha256, value := V}] =
+        ?M:fingerprints(M, Sdp),
+    ?assertEqual(20, byte_size(V1)),
+    ?assertMatch(
+        [#{type := <<"ccm">>, param := <<"tmmbr smaxpr=120">>}, #{type := <<"trr-int">>, param := <<"100">>}],
+        ?M:attrs(rtcp_fb, M)
+    ),
+    ?assertEqual(
+        {ok, #{assertion => <<"eyJpZHAiOnt9fQ==">>, extensions => [<<"ext1">>, <<"ext2">>]}},
+        ?M:attr(identity, M)
+    ),
+    ?assertMatch({ok, <<"1 AES_CM_128_HMAC_SHA1_80 inline:", _/binary>>}, ?M:attr(<<"crypto">>, M)),
+    %% the lowercase fingerprint is written back in canonical form
+    ?assertEqual(
+        binary:replace(Bin, <<"a=fingerprint:SHA-256 ", Lower/binary>>, <<"a=fingerprint:sha-256 ", Fp1/binary>>),
+        webrtc_sdp:encode(Sdp)
+    ).

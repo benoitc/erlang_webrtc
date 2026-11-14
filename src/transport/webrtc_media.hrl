@@ -12,6 +12,9 @@
 -define(RECV_IDLE, 60000).
 -define(MAX_MID_STREAMS, 16).
 -define(MAX_STREAMS, 256).
+%% Size limit of an RTCP compound before SRTCP (tag and index), so the
+%% protected packet stays within a 1200 byte path MTU.
+-define(RTCP_BUDGET, 1150).
 
 -record(snd, {
     mid :: binary(),
@@ -67,6 +70,8 @@
     twcc_ids = [] :: [pos_integer()],
     cc :: webrtc_cc:state(),
     rtcp_at = infinity :: integer() | infinity,
+    %% First source to report next when they do not all fit.
+    rtcp_rot = 0 :: non_neg_integer(),
     counters = #{} :: map()
 }).
 

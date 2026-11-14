@@ -265,3 +265,63 @@ bye_removes_stream_test() ->
     {SB4, A4} = webrtc_media:handle_packet(Bin2, 0, SB3),
     ?assertMatch([{rtp, <<"0">>, #rtp{ssrc = 77, seq = 2}}], events(A4)),
     ?assertEqual(1, receivers(SB4)).
+
+%%--------------------------------------------------------------------
+%% RTCP with more sources than one report holds (RFC 3550 §6.4)
+%%--------------------------------------------------------------------
+
+%% B receives from 80 SSRCs over 5 video transceivers.
+many_sources() ->
+    Add = fun(J0) -> lists:foldl(fun(_, J) -> {ok, _, J1} = webrtc_jsep:add_transceiver(video, #{}, J), J1 end, J0, lists:seq(1, 5)) end,
+    A1 = Add(jsep(#{})),
+    B1 = Add(jsep(#{})),
+    {ok, O, A2} = webrtc_jsep:create_offer(#{}, A1),
+    {ok, _} = webrtc_jsep:set_local_description(offer, O, A2),
+    {ok, B2} = webrtc_jsep:set_remote_description(offer, wire(O), B1),
+    {ok, Ans, B3} = webrtc_jsep:create_answer(#{}, B2),
+    {ok, B4} = webrtc_jsep:set_local_description(answer, Ans, B3),
+    #{media := MB} = webrtc_jsep:negotiated(B4),
+    MB1 = [M#{remote_ssrcs => []} || M <- MB],
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SB0 = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{cname => <<"b">>}))),
+    {Tx0, Rx} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    {SB, _} = lists:foldl(
+        fun({#{mid := Mid, recv_extensions := #{?URI_MID := MidId}, recv_codecs := [#{pt := Pt} | _]}, I}, {S, Tx}) ->
+            lists:foldl(
+                fun(K, {S1, Tx1}) ->
+                    Pkt = #rtp{pt = Pt, seq = 1, ts = 1, ssrc = I * 100 + K, ext = [{MidId, Mid}], payload = <<"x">>},
+                    {ok, Bin, Tx2} = webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), Tx1),
+                    {S2, _} = webrtc_media:handle_packet(Bin, 10, S1),
+                    {S2, Tx2}
+                end,
+                {S, Tx},
+                lists:seq(1, 16)
+            )
+        end,
+        {SB0, Tx0},
+        lists:zip(MB1, lists:seq(1, length(MB1)))
+    ),
+    {SB, Rx}.
+
+many_sources_reported_test() ->
+    {SB, Rx} = many_sources(),
+    ?assertEqual(80, receivers(SB)),
+    All = lists:sort(maps:keys(maps:get(receivers, webrtc_media:stats(SB)))),
+    {Seen, Sizes, _} = lists:foldl(
+        fun(_, {Seen0, Sizes0, S0}) ->
+            Now = webrtc_media:next_timeout(S0),
+            {S1, Acts} = webrtc_media:handle_timeout(Now, S0),
+            Pkts = lists:append([P || {send, Bin} <- Acts, {ok, Plain, _} <- [webrtc_srtp:unprotect_rtcp(Bin, Rx)], {ok, P} <- [webrtc_rtcp:decode(Plain)]]),
+            Blocks = lists:append([Rbs || #rtcp_rr{reports = Rbs} <- Pkts] ++ [Rbs || #rtcp_sr{reports = Rbs} <- Pkts]),
+            %% No source is reported twice in one compound.
+            Ssrcs = [S || #rtcp_rb{ssrc = S} <- Blocks],
+            ?assertEqual(length(Ssrcs), length(lists:usort(Ssrcs))),
+            {Seen0 ++ Ssrcs, Sizes0 ++ [byte_size(B) || {send, B} <- Acts], S1}
+        end,
+        {[], [], SB},
+        lists:seq(1, 3)
+    ),
+    %% 80 blocks do not fit one compound; three intervals cover them all.
+    ?assertEqual(All, lists:usort(Seen)),
+    ?assert(lists:all(fun(Sz) -> Sz =< 1200 end, Sizes)).

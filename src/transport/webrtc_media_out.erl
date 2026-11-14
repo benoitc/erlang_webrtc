@@ -257,38 +257,81 @@ nack_timeouts(Now, M) ->
 %% One compound packet: SR per sender (or one RR), SDES CNAME, then
 %% feedback (RFC 3550 §6.1, RFC 4585 §3.1; reduced-size not used for
 %% regular reports).
+%% The compound holds an SR per sent stream (or one RR), the SDES and
+%% the feedback, then as many report blocks as fit in ?RTCP_BUDGET:
+%% 31 in the first report, the others in RR packets that follow it
+%% (RFC 3550 §6.4.2). When not every source fits, the first one reported
+%% rotates so each is reported in turn; a source's interval statistics
+%% only advance when it is reported.
 reports(Now, Feedback, M) ->
-    {Blocks, Rcvs} = maps:fold(
-        fun(Ssrc, R, {Bs, Acc}) ->
-            {B, Rx} = webrtc_rtp_stats:report_block(Now, R#rcv.rx),
-            {[B | Bs], Acc#{Ssrc => R#rcv{rx = Rx}}}
-        end,
-        {[], #{}},
-        M#media.receivers
-    ),
-    M1 = M#media{receivers = Rcvs},
     Ntp = webrtc_rtp_stats:ntp_from_us(erlang:system_time(microsecond)),
-    Senders = maps:values(M1#media.senders),
-    Reports =
+    Senders = maps:values(M#media.senders),
+    {Reporter, Heads} =
         case Senders of
             [] ->
-                [#rtcp_rr{ssrc = M1#media.rtcp_ssrc, reports = lists:sublist(Blocks, 31)}];
-            _ ->
-                [
-                    webrtc_rtp_stats:sender_report(
-                        S#snd.ssrc, Ntp, rtp_ts_now(S, Now), S#snd.tx, lists:sublist(Blocks, 31)
-                    )
+                {M#media.rtcp_ssrc, [#rtcp_rr{ssrc = M#media.rtcp_ssrc}]};
+            [#snd{ssrc = First} | _] ->
+                {First, [
+                    webrtc_rtp_stats:sender_report(S#snd.ssrc, Ntp, rtp_ts_now(S, Now), S#snd.tx, [])
                  || S <- Senders
-                ]
+                ]}
         end,
-    Cname = {cname, M1#media.cname},
+    Cname = {cname, M#media.cname},
     Chunks =
         case Senders of
-            [] -> [{M1#media.rtcp_ssrc, [Cname]}];
+            [] -> [{M#media.rtcp_ssrc, [Cname]}];
             _ -> [{S#snd.ssrc, [Cname | layer_sdes(S)]} || S <- Senders]
         end,
     Sdes = #rtcp_sdes{chunks = Chunks},
-    send_rtcp(Reports ++ [Sdes | Feedback], M1).
+    Fixed = byte_size(webrtc_rtcp:encode(Heads ++ [Sdes | Feedback])),
+    {Picked, M1} = pick_sources(blocks_fitting(?RTCP_BUDGET - Fixed), M),
+    {Blocks, M2} = lists:foldl(
+        fun(Ssrc, {Bs, Acc}) ->
+            R = maps:get(Ssrc, Acc#media.receivers),
+            {B, Rx} = webrtc_rtp_stats:report_block(Now, R#rcv.rx),
+            {[B | Bs], Acc#media{receivers = (Acc#media.receivers)#{Ssrc := R#rcv{rx = Rx}}}}
+        end,
+        {[], M1},
+        Picked
+    ),
+    {InHead, Extra} = lists:split(min(31, length(Blocks)), lists:reverse(Blocks)),
+    [Head | Others] = Heads,
+    Reports =
+        [with_blocks(Head, InHead) | Others] ++
+            [#rtcp_rr{ssrc = Reporter, reports = Bs} || Bs <- chunks(Extra, 31)],
+    send_rtcp(Reports ++ [Sdes | Feedback], M2).
+
+with_blocks(#rtcp_sr{} = SR, Bs) -> SR#rtcp_sr{reports = Bs};
+with_blocks(#rtcp_rr{} = RR, Bs) -> RR#rtcp_rr{reports = Bs}.
+
+chunks([], _N) -> [];
+chunks(L, N) when length(L) =< N -> [L];
+chunks(L, N) ->
+    {H, T} = lists:split(N, L),
+    [H | chunks(T, N)].
+
+%% Report blocks (24 bytes) fitting in Room bytes: 31 in the first
+%% report, then 8 bytes of header for every further RR packet.
+blocks_fitting(Room) when Room < 24 -> 0;
+blocks_fitting(Room) when Room < 31 * 24 -> Room div 24;
+blocks_fitting(Room) -> 31 + extra_blocks(Room - 31 * 24).
+
+extra_blocks(Room) when Room < 8 + 24 -> 0;
+extra_blocks(Room) ->
+    N = min(31, (Room - 8) div 24),
+    N + extra_blocks(Room - 8 - N * 24).
+
+pick_sources(Max, #media{receivers = Rs} = M) ->
+    Ssrcs = lists:sort(maps:keys(Rs)),
+    N = length(Ssrcs),
+    case N =< Max of
+        true ->
+            {Ssrcs, M};
+        false ->
+            Off = M#media.rtcp_rot rem N,
+            {A, B} = lists:split(Off, Ssrcs),
+            {lists:sublist(B ++ A, Max), M#media{rtcp_rot = Off + Max}}
+    end.
 
 %% RFC 8852 §4: the RtpStreamId (and MID) SDES items of a layer, so the
 %% receiver learns its SSRC even when no RTP flows.

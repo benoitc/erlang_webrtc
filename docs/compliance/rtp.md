@@ -44,6 +44,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTCP-18 | 6.3.6 | Timer reconsideration on expiry | webrtc_rtcp_interval | reconsider_test_ | Unit tested |
 | RTCP-19 | 6.3.4 | Reverse reconsideration after BYE | webrtc_rtcp_interval | reverse_reconsider_test_ | Unit tested |
 | RTCP-20 | 6.3 | RTCP scheduler state (members, senders, tp, tn, BYE back-off of 6.3.7) | | | Not implemented (transport process) |
+| RTCP-21 | 6.4, 6.4.2 | Report blocks for every received source: 31 in the first SR or RR, more in RR packets that follow it, each source once per compound, the compound kept under 1150 bytes before SRTCP; when not all fit, the first source reported rotates and a source's interval statistics only advance when it is reported | webrtc_media_out | webrtc_media_tests:many_sources_reported_test | Unit tested |
 
 ## RFC 8834: RTP usage in WebRTC
 

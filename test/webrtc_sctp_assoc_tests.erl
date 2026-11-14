@@ -784,6 +784,11 @@ init_validation_test() ->
     {ok, #sctp_packet{vtag = 1, chunks = [#sctp_init{ack = true, params = Ps}]}} =
         webrtc_sctp_chunk:decode(Bin),
     ?assert(lists:keymember(state_cookie, 1, Ps)),
+    %% RFC 8261 §6.1: no addresses over DTLS.
+    ?assertEqual(
+        [],
+        [P || P <- Ps, is_tuple(P), lists:member(element(1, P), [ipv4_address, ipv6_address, supported_address_types])]
+    ),
     ?assertEqual(
         [{unrecognized_param, webrtc_sctp_param:encode_param(Unknown)}],
         [P || {unrecognized_param, _} = P <- Ps]

@@ -5,10 +5,24 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
--export([all/0, init_per_testcase/2, end_per_testcase/2]).
--export([pion_to_pion_datachannel/1, pion_to_pion_media/1, pion_to_aiortc_datachannel/1]).
+-export([all/0, groups/0, init_per_group/2, end_per_group/2, init_per_testcase/2, end_per_testcase/2]).
+-export([pion_to_pion_datachannel/1, pion_to_pion_media/1, pion_to_aiortc_datachannel/1,
+         browser_to_pion_datachannel/1, browser_to_pion_media/1]).
 
-all() -> [pion_to_pion_datachannel, pion_to_pion_media, pion_to_aiortc_datachannel].
+all() -> [pion_to_pion_datachannel, pion_to_pion_media, pion_to_aiortc_datachannel,
+          {group, chromium}, {group, firefox}].
+
+groups() ->
+    Cases = [browser_to_pion_datachannel, browser_to_pion_media],
+    [{chromium, [], Cases}, {firefox, [], Cases}].
+
+init_per_group(B, Config) ->
+    case webrtc_interop_peer:find(B) of
+        {ok, _} -> [{browser, B} | Config];
+        {skip, R} -> {skip, R}
+    end.
+
+end_per_group(_, _) -> ok.
 
 init_per_testcase(TC, Config) ->
     Needed = case TC of pion_to_aiortc_datachannel -> [pion, aiortc]; _ -> [pion] end,
@@ -69,3 +83,29 @@ pion_to_aiortc_datachannel(Config) ->
     {ok, A4, _} = webrtc_interop_peer:wait_event(A3, <<"message">>, #{<<"data">> => <<"echo:hi">>}),
     webrtc_interop_peer:stop(A4),
     webrtc_interop_peer:stop(B2).
+
+browser_to_pion_datachannel(Config) ->
+    Dir = ?config(priv_dir, Config),
+    {ok, A} = webrtc_interop_peer:start(?config(browser, Config), filename:join(Dir, "a")),
+    {ok, B} = webrtc_interop_peer:start(pion, filename:join(Dir, "b")),
+    {A1, B1} = connect(A, B, #{channels => [#{label => <<"chat">>}]}, #{}),
+    {ok, A2, _} = webrtc_interop_peer:wait_event(A1, <<"channel_open">>, #{<<"label">> => <<"chat">>}),
+    A3 = webrtc_interop_peer:cmd(A2, #{cmd => send, label => <<"chat">>, data => <<"hi">>}),
+    {ok, B2, _} = webrtc_interop_peer:wait_event(B1, <<"message">>, #{<<"data">> => <<"hi">>}),
+    {ok, A4, _} = webrtc_interop_peer:wait_event(A3, <<"message">>, #{<<"data">> => <<"echo:hi">>}),
+    webrtc_interop_peer:stop(A4),
+    webrtc_interop_peer:stop(B2).
+
+%% The browser sends fake camera/microphone media, Pion echoes the RTP,
+%% the browser decodes it.
+browser_to_pion_media(Config) ->
+    Dir = ?config(priv_dir, Config),
+    {ok, A} = webrtc_interop_peer:start(?config(browser, Config), filename:join(Dir, "a")),
+    {ok, B} = webrtc_interop_peer:start(pion, filename:join(Dir, "b")),
+    Media = #{media => [<<"audio">>, <<"video">>]},
+    {A1, B1} = connect(A, B, Media, Media),
+    {ok, A2, _} = webrtc_interop_peer:wait(A1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>,
+                                                     <<"count">> := N}) -> N >= 10;
+                                                  (_) -> false end, 20000),
+    webrtc_interop_peer:stop(A2),
+    webrtc_interop_peer:stop(B1).

@@ -8,7 +8,7 @@
 
 %% @doc Locate an adapter executable. Returns `{ok, Cmd}' or
 %% `{skip, Reason}' so suites report missing peers as skipped.
--spec find(pion | aiortc) -> {ok, string()} | {skip, string()}.
+-spec find(pion | aiortc | chromium | firefox | webkit) -> {ok, string()} | {skip, string()}.
 find(pion) ->
     Bin = filename:join([root(), "interop", "pion", "bin", "pion-peer"]),
     case filelib:is_regular(Bin) of
@@ -21,6 +21,13 @@ find(aiortc) ->
     case filelib:is_regular(Py) of
         true -> {ok, Py ++ " -I " ++ Script};
         false -> {skip, "aiortc venv missing: run make -C interop aiortc"}
+    end;
+find(Browser) when Browser =:= chromium; Browser =:= firefox; Browser =:= webkit ->
+    Dir = filename:join([root(), "interop", "browser"]),
+    Node = os:find_executable("node"),
+    case Node =/= false andalso filelib:is_dir(filename:join(Dir, "node_modules/playwright")) of
+        true -> {ok, Node ++ " " ++ filename:join(Dir, "peer.js") ++ " " ++ atom_to_list(Browser)};
+        false -> {skip, "playwright missing: run npm ci in interop/browser"}
     end.
 
 root() ->
@@ -42,7 +49,11 @@ start(Name, LogDir) ->
     Wrapped = Cmd ++ " 2>>" ++ Log,
     Port = open_port({spawn, Wrapped}, [binary, {line, 1 bsl 20}, exit_status, use_stdio]),
     P = #peer{port = Port, name = Name, log = Log},
-    {ok, P1, _} = wait(P, fun(#{<<"event">> := <<"ready">>}) -> true; (_) -> false end, 10000),
+    P1 = case wait(P, fun(#{<<"event">> := E}) -> E =:= <<"ready">> orelse E =:= <<"error">>; (_) -> false end, 30000) of
+        {ok, Ready, #{<<"event">> := <<"ready">>}} -> Ready;
+        {ok, _, #{<<"message">> := Msg}} -> error({peer_start_failed, Name, Msg});
+        {error, _, R} -> error({peer_start_failed, Name, R})
+    end,
     {ok, P1}.
 
 cmd(#peer{port = Port} = P, Map) ->

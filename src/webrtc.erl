@@ -97,6 +97,10 @@ new_peer_connection() ->
 %% <li>`certificate': `webrtc_dtls_cert:generate/1' result, default a
 %%     fresh ECDSA P-256 certificate.</li>
 %% <li>`max_message_size': data channel limit announced in SDP.</li>
+%% <li>`codecs', `extensions': the codecs and RTP header extensions to
+%%     negotiate, as maps keyed by `audio' and `video' (default
+%%     `webrtc_jsep_caps:default_codecs/1' and
+%%     `webrtc_jsep_caps:default_extensions/1').</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
 new_peer_connection(Opts) ->

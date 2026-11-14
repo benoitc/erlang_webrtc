@@ -105,9 +105,23 @@ const pageScript = () => {
     }, 250);
     const media = c.media || [];
     if (media.length) {
+      // Simulcast: three layers of a 1280x720 camera (RFC 8853), sent
+      // only, with bitrates that fit the initial bandwidth estimate.
+      const video = !media.includes('video') ? false
+        : c.simulcast ? { width: 1280, height: 720 } : true;
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: media.includes('audio'), video: media.includes('video') });
-      for (const t of stream.getTracks()) pc.addTrack(t, stream);
+        audio: media.includes('audio'), video });
+      for (const t of stream.getTracks()) {
+        if (t.kind === 'video' && c.simulcast) {
+          pc.addTransceiver(t, { direction: 'sendonly', streams: [stream], sendEncodings: [
+            { rid: 'q', scaleResolutionDownBy: 4, maxBitrate: 40000 },
+            { rid: 'h', scaleResolutionDownBy: 2, maxBitrate: 80000 },
+            { rid: 'f', scaleResolutionDownBy: 1, maxBitrate: 150000 },
+          ] });
+        } else {
+          pc.addTrack(t, stream);
+        }
+      }
     }
     for (const spec of c.channels || []) window.makeChannel(spec);
   };

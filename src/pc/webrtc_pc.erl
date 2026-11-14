@@ -44,13 +44,13 @@ init(#{owner := App} = Opts) ->
     process_flag(trap_exit, true),
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
-    Jsep = webrtc_jsep:new(#{
+    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions], Opts), #{
         ice_ufrag => ice_string(8),
         ice_pwd => ice_string(24),
         fingerprints => [FP],
         ice_lite => maps:get(ice_lite, Opts, false),
         max_message_size => maps:get(max_message_size, Opts, 262144)
-    }),
+    })),
     {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep}}.
 
 handle_call({add_transceiver, Kind, TOpts}, _From, St) ->

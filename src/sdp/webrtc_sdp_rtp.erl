@@ -31,8 +31,9 @@
 }.
 %% A parameter is `Key=Value' or a bare value such as `0-15'.
 -type fmtp_param() :: {binary(), binary()} | binary().
-%% `raw' is the parameter text as received. It is written back when it
-%% still parses to `params', so unmodified input round trips byte exact.
+%% `raw' holds the parameter text as received when it differs from the
+%% canonical `k=v;k=v' form. It is written back while it still parses to
+%% `params', so unmodified input round trips byte exact.
 -type fmtp() :: #{fmt := pt() | binary(), params := [fmtp_param()], raw => binary()}.
 -type rtcp_fb() :: #{pt := pt() | '*', type := binary(), param := binary() | undefined}.
 -type extmap() :: #{
@@ -73,7 +74,7 @@ parse(fmtp, V) ->
             maybe
                 {ok, Fmt} ?= fmt(FmtB),
                 {ok, Params} ?= parse_fmtp_params(Raw),
-                {ok, #{fmt => Fmt, params => Params, raw => Raw}}
+                {ok, with_raw(#{fmt => Fmt, params => Params}, Raw, fun() -> encode_fmtp_params(Params) end)}
             else
                 _ -> error
             end;
@@ -119,7 +120,9 @@ parse(msid_semantic, V) ->
     case webrtc_sdp_lex:split_sp(webrtc_sdp_lex:trim_sp(V)) of
         {ok, [Sem | Ids]} ->
             case lists:all(fun webrtc_sdp_lex:is_token/1, [Sem | Ids]) of
-                true -> {ok, #{semantic => Sem, ids => Ids, raw => V}};
+                true ->
+                    M = #{semantic => Sem, ids => Ids},
+                    {ok, with_raw(M, V, fun() -> iolist_to_binary(encode(msid_semantic, M)) end)};
                 false -> error
             end;
         error ->
@@ -204,6 +207,15 @@ ext_direction(<<"sendonly">>) -> {ok, sendonly};
 ext_direction(<<"recvonly">>) -> {ok, recvonly};
 ext_direction(<<"inactive">>) -> {ok, inactive};
 ext_direction(_) -> error.
+
+%% Keep the received text only when it differs from the canonical form.
+with_raw(M, Raw, Canon) ->
+    try Canon() of
+        Raw -> M;
+        _ -> M#{raw => Raw}
+    catch
+        error:{invalid_sdp, _} -> M#{raw => Raw}
+    end.
 
 msid(S, T) ->
     case msid_id(S) andalso (T =:= undefined orelse msid_id(T)) of

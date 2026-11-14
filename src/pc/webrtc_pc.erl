@@ -54,9 +54,13 @@ init(#{owner := App} = Opts) ->
     {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep}}.
 
 handle_call({add_transceiver, Kind, TOpts}, _From, St) ->
-    {ok, Id, J} = webrtc_jsep:add_transceiver(Kind, TOpts, St#st.jsep),
-    notify(negotiation_needed, St),
-    {reply, {ok, Id}, St#st{jsep = J}};
+    case webrtc_jsep:add_transceiver(Kind, TOpts, St#st.jsep) of
+        {ok, Id, J} ->
+            notify(negotiation_needed, St),
+            {reply, {ok, Id}, St#st{jsep = J}};
+        {error, _} = E ->
+            {reply, E, St}
+    end;
 handle_call({set_direction, Id, Dir}, _From, St) ->
     reply_jsep(webrtc_jsep:set_direction(Id, Dir, St#st.jsep), St);
 handle_call({stop_transceiver, Id}, _From, St) ->

@@ -15,7 +15,8 @@
     match_remote/2,
     answer_extensions/2,
     extension_map/1,
-    fmtp/2
+    fmtp/2,
+    same_codec/2
 ]).
 
 -export_type([extension/0]).
@@ -168,6 +169,8 @@ find_match(O, Local) ->
         [] -> error
     end.
 
+%% @doc Same codec in the RFC 3264 sense (see the module doc).
+-spec same_codec(codec(), codec()) -> boolean().
 same_codec(#{name := N1, clock_rate := R1} = A, #{name := N2, clock_rate := R2} = B) ->
     string:uppercase(N1) =:= string:uppercase(N2) andalso R1 =:= R2 andalso
         channels(A) =:= channels(B) andalso same_params(string:uppercase(N1), A, B).

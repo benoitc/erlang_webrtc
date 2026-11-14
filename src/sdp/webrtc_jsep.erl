@@ -81,14 +81,26 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
 
 %% @doc Add a transceiver (RTCPeerConnection.addTransceiver). Returns a
 %% handle that stays valid for the life of the connection.
--spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()}.
+%%
+%% `send_encodings' is a list of `#{rid => Rid, restrictions => [{Name,
+%% Value}]}' maps, one per simulcast layer (RFC 8853), most preferred
+%% first. Rids are offered as given, or generated when missing (RFC 9429
+%% §5.2.1); `restrictions' are RFC 8851 §5 restrictions such as
+%% `{<<"max-width">>, <<"640">>}'.
+-spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()} | {error, term()}.
 add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
     T = new_tr(Kind, maps:get(direction, Opts, sendrecv), J),
-    T1 = T#tr{
-        stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
-        track_id = maps:get(track_id, Opts, T#tr.track_id)
-    },
-    {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}}.
+    case webrtc_jsep_simulcast:encodings(maps:get(send_encodings, Opts, []), {T#tr.ssrc, T#tr.rtx_ssrc}) of
+        {ok, Encs} ->
+            T1 = T#tr{
+                stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
+                track_id = maps:get(track_id, Opts, T#tr.track_id),
+                encodings = Encs
+            },
+            {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}};
+        {error, _} = E ->
+            E
+    end.
 
 new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps}) ->
     {Codecs, Exts} = maps:get(Kind, Caps),
@@ -131,7 +143,8 @@ transceivers(#jsep{transceivers = Trs}) ->
             current_direction => T#tr.current_direction,
             stopped => T#tr.stopped,
             ssrc => T#tr.ssrc,
-            rtx_ssrc => T#tr.rtx_ssrc
+            rtx_ssrc => T#tr.rtx_ssrc,
+            send_encodings => [maps:with([rid, ssrc, rtx_ssrc], E) || E <- T#tr.encodings]
         }
      || T <- Trs
     ].
@@ -318,7 +331,9 @@ validate_sections([M | Rest], Sdp) ->
         {webrtc_sdp_media:setup(M, Sdp) =/= error, missing_setup},
         {webrtc_sdp_media:setup(M, Sdp) =/= {ok, holdconn}, unsupported_setup},
         %% RFC 8834 §4.5 and the JSEP require policy: rtcp-mux.
-        {(not Rtp) orelse webrtc_sdp_media:attr(rtcp_mux, M) =:= {ok, true}, missing_rtcp_mux}
+        {(not Rtp) orelse webrtc_sdp_media:attr(rtcp_mux, M) =:= {ok, true}, missing_rtcp_mux},
+        %% RFC 9429 §5.8.3: rid-ids of a=simulcast exist as a=rid lines.
+        {(not Rtp) orelse webrtc_jsep_simulcast:validate(M) =:= ok, unknown_rid}
     ],
     case [R || {false, R} <- Checks] of
         [] -> validate_sections(Rest, Sdp);
@@ -495,7 +510,8 @@ media_params(_T, _L, #sdp_media{port = 0}, _Remote) ->
 media_params(T, L, R, _Remote) ->
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
-    #{
+    Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R),
+    Layers#{
         id => T#tr.id,
         mid => T#tr.mid,
         kind => T#tr.kind,

@@ -28,10 +28,14 @@ run(Opts) ->
     PayloadLen = maps:get(payload, Opts, 1200),
     Rounds = maps:get(rounds, Opts, 200),
     Payload = crypto:strong_rand_bytes(PayloadLen),
-    Plain = [<<16#80, 96, Seq:16, (Seq * 960):32, 16#1234ABCD:32, Payload/binary>>
-             || Seq <- lists:seq(0, ?BATCH - 1)],
-    io:format("~s, ~b-octet payload, ~b packets per run~n",
-              [erlang:system_info(system_version) -- "\n", PayloadLen, ?BATCH * Rounds]),
+    Plain = [
+        <<16#80, 96, Seq:16, (Seq * 960):32, 16#1234ABCD:32, Payload/binary>>
+     || Seq <- lists:seq(0, ?BATCH - 1)
+    ],
+    io:format(
+        "~s, ~b-octet payload, ~b packets per run~n",
+        [erlang:system_info(system_version) -- "\n", PayloadLen, ?BATCH * Rounds]
+    ),
     io:format("~-30s ~16s ~16s~n", ["profile", "protect pkt/s", "unprotect pkt/s"]),
     lists:foreach(
         fun(Profile) -> bench_profile(Profile, Plain, Rounds) end,

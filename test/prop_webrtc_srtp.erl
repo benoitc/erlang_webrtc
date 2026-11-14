@@ -32,12 +32,18 @@ rtp_packet() ->
         {u(1), u(1), u(7), u(16), u(32), u(32), resize(15, list(u(32))), ext(), binary()},
         begin
             CC = length(Csrcs),
-            X = if Ext =:= none -> 0; true -> 1 end,
-            CsrcBin = << <<C:32>> || C <- Csrcs >>,
+            X =
+                if
+                    Ext =:= none -> 0;
+                    true -> 1
+                end,
+            CsrcBin = <<<<C:32>> || C <- Csrcs>>,
             ExtBin =
                 case Ext of
-                    none -> <<>>;
-                    {Prof, Words} -> <<Prof:16, (length(Words)):16, << <<W:32>> || W <- Words >>/binary>>
+                    none ->
+                        <<>>;
+                    {Prof, Words} ->
+                        <<Prof:16, (length(Words)):16, <<<<W:32>> || W <- Words>>/binary>>
                 end,
             <<2:2, P:1, X:1, CC:4, M:1, PT:7, Seq:16, TS:32, SSRC:32, CsrcBin/binary, ExtBin/binary,
                 Payload/binary>>

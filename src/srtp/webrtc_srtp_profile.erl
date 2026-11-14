@@ -131,8 +131,7 @@ key_material_length(Profile) ->
 %% client_key | server_key | client_salt | server_salt (RFC 5764 §4.2).
 %% Raises `badarg' when the size does not match the profile.
 -spec split_keying_material(profile(), binary()) ->
-    {ClientKey :: binary(), ClientSalt :: binary(), ServerKey :: binary(),
-        ServerSalt :: binary()}.
+    {ClientKey :: binary(), ClientSalt :: binary(), ServerKey :: binary(), ServerSalt :: binary()}.
 split_keying_material(Profile, Bin) when is_binary(Bin) ->
     #{master_key_len := K, master_salt_len := S} = params(Profile),
     case Bin of

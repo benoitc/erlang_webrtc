@@ -27,12 +27,12 @@ b3_cipher_salt_test() ->
 
 b3_auth_key_test() ->
     Expected = b(
-        "CEBE321F6FF7716B6FD4AB49AF256A15
-         6D38BAA48F0A0ACF3C34E2359E6CDBCE
-         E049646C43D9327AD175578EF7227098
-         6371C10C9A369AC2F94A8C5FBCDDDC25
-         6D6E919A48B610EF17C2041E47403576
-         6B68642C59BBFC2F34DB60DBDFB2"
+        "CEBE321F6FF7716B6FD4AB49AF256A15\n"
+        "         6D38BAA48F0A0ACF3C34E2359E6CDBCE\n"
+        "         E049646C43D9327AD175578EF7227098\n"
+        "         6371C10C9A369AC2F94A8C5FBCDDDC25\n"
+        "         6D6E919A48B610EF17C2041E47403576\n"
+        "         6B68642C59BBFC2F34DB60DBDFB2"
     ),
     ?assertEqual(94, byte_size(Expected)),
     ?assertEqual(Expected, webrtc_srtp_kdf:derive(16#01, b3_master_key(), b3_master_salt(), 94)).
@@ -46,15 +46,23 @@ b3_prf_input_test() ->
     ).
 
 session_keys_cm_test() ->
-    K = webrtc_srtp_kdf:session_keys(srtp_aes128_cm_hmac_sha1_80, b3_master_key(), b3_master_salt()),
+    K = webrtc_srtp_kdf:session_keys(
+        srtp_aes128_cm_hmac_sha1_80, b3_master_key(), b3_master_salt()
+    ),
     ?assertEqual(b("C61E7A93744F39EE10734AFE3FF7A087"), maps:get(rtp_key, K)),
     ?assertEqual(b("30CBBC08863D8C85D49DB34A9AE1"), maps:get(rtp_salt, K)),
     <<A20:20/binary, _/binary>> = webrtc_srtp_kdf:derive(1, b3_master_key(), b3_master_salt(), 94),
     ?assertEqual(A20, maps:get(rtp_auth_key, K)),
     %% SRTCP keys use labels 3, 4, 5 (RFC 3711 §4.3.2).
-    ?assertEqual(webrtc_srtp_kdf:derive(3, b3_master_key(), b3_master_salt(), 16), maps:get(rtcp_key, K)),
-    ?assertEqual(webrtc_srtp_kdf:derive(4, b3_master_key(), b3_master_salt(), 20), maps:get(rtcp_auth_key, K)),
-    ?assertEqual(webrtc_srtp_kdf:derive(5, b3_master_key(), b3_master_salt(), 14), maps:get(rtcp_salt, K)),
+    ?assertEqual(
+        webrtc_srtp_kdf:derive(3, b3_master_key(), b3_master_salt(), 16), maps:get(rtcp_key, K)
+    ),
+    ?assertEqual(
+        webrtc_srtp_kdf:derive(4, b3_master_key(), b3_master_salt(), 20), maps:get(rtcp_auth_key, K)
+    ),
+    ?assertEqual(
+        webrtc_srtp_kdf:derive(5, b3_master_key(), b3_master_salt(), 14), maps:get(rtcp_salt, K)
+    ),
     ?assertNotEqual(maps:get(rtp_key, K), maps:get(rtcp_key, K)).
 
 session_keys_gcm_test() ->
@@ -72,7 +80,9 @@ session_keys_gcm_test() ->
 
 session_keys_bad_length_test() ->
     ?assertError(badarg, webrtc_srtp_kdf:session_keys(srtp_aead_aes_128_gcm, <<0:128>>, <<0:112>>)),
-    ?assertError(badarg, webrtc_srtp_kdf:session_keys(srtp_aes128_cm_hmac_sha1_80, <<0:256>>, <<0:112>>)).
+    ?assertError(
+        badarg, webrtc_srtp_kdf:session_keys(srtp_aes128_cm_hmac_sha1_80, <<0:256>>, <<0:112>>)
+    ).
 
 %%--------------------------------------------------------------------
 %% RFC 3711 B.2
@@ -82,16 +92,16 @@ b2_key() -> b("2B7E151628AED2A6ABF7158809CF4F3C").
 
 b2_first() ->
     b(
-        "E03EAD0935C95E80E166B16DD92B4EB4
-         D23513162B02D0F72A43A2FE4A5F97AB
-         41E95B3BB0A2E8DD477901E4FCA894C0"
+        "E03EAD0935C95E80E166B16DD92B4EB4\n"
+        "         D23513162B02D0F72A43A2FE4A5F97AB\n"
+        "         41E95B3BB0A2E8DD477901E4FCA894C0"
     ).
 
 b2_last() ->
     b(
-        "EC8CDF7398607CB0F2D21675EA9EA1E4
-         362B7C3C6773516318A077D7FC5073AE
-         6A2CC3787889374FBEB4C81B17BA6C44"
+        "EC8CDF7398607CB0F2D21675EA9EA1E4\n"
+        "         362B7C3C6773516318A077D7FC5073AE\n"
+        "         6A2CC3787889374FBEB4C81B17BA6C44"
     ).
 
 b2_keystream_test() ->
@@ -168,12 +178,24 @@ split_layout_test() ->
     CS = binary:copy(<<3>>, 14),
     SS = binary:copy(<<4>>, 14),
     Bin = <<CK/binary, SK/binary, CS/binary, SS/binary>>,
-    ?assertEqual({CK, CS, SK, SS}, webrtc_srtp:split_dtls_keying_material(srtp_aes128_cm_hmac_sha1_80, Bin)),
-    G = <<(binary:copy(<<1>>, 32))/binary, (binary:copy(<<2>>, 32))/binary,
-          (binary:copy(<<3>>, 12))/binary, (binary:copy(<<4>>, 12))/binary>>,
+    ?assertEqual(
+        {CK, CS, SK, SS}, webrtc_srtp:split_dtls_keying_material(srtp_aes128_cm_hmac_sha1_80, Bin)
+    ),
+    G = <<
+        (binary:copy(<<1>>, 32))/binary,
+        (binary:copy(<<2>>, 32))/binary,
+        (binary:copy(<<3>>, 12))/binary,
+        (binary:copy(<<4>>, 12))/binary
+    >>,
     {GCK, GCS, GSK, GSS} = webrtc_srtp:split_dtls_keying_material(srtp_aead_aes_256_gcm, G),
     ?assertEqual({32, 12, 32, 12}, {byte_size(GCK), byte_size(GCS), byte_size(GSK), byte_size(GSS)}),
-    ?assertEqual({<<1>>, <<3>>, <<2>>, <<4>>},
-                 {binary:part(GCK, 0, 1), binary:part(GCS, 0, 1),
-                  binary:part(GSK, 0, 1), binary:part(GSS, 0, 1)}),
+    ?assertEqual(
+        {<<1>>, <<3>>, <<2>>, <<4>>},
+        {
+            binary:part(GCK, 0, 1),
+            binary:part(GCS, 0, 1),
+            binary:part(GSK, 0, 1),
+            binary:part(GSS, 0, 1)
+        }
+    ),
     ?assertError(badarg, webrtc_srtp:split_dtls_keying_material(srtp_aead_aes_128_gcm, Bin)).

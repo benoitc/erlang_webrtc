@@ -52,6 +52,12 @@
 %%     outgoing RTCP. Incoming RTCP is accepted with either flag.</li>
 %% </ul>
 %%
+%% Stream state helpers: `roc/3' reads the rollover counter of an SSRC,
+%% `set_roc/4' sets it (a receiver joining a running stream, or keeping
+%% the ROC across a rekey) and `set_rtcp_index/3' sets the next SRTCP
+%% index to send. `estimate_index/3' is the RFC 3711 Appendix A index
+%% estimate used for every packet.
+%%
 %% A context holds precomputed crypto states for the AEAD profiles: use
 %% it from one process at a time.
 -module(webrtc_srtp).
@@ -199,8 +205,7 @@ exporter_label() -> webrtc_srtp_profile:exporter_label().
 key_material_length(Profile) -> webrtc_srtp_profile:key_material_length(Profile).
 
 -spec split_dtls_keying_material(profile(), binary()) ->
-    {ClientKey :: binary(), ClientSalt :: binary(), ServerKey :: binary(),
-        ServerSalt :: binary()}.
+    {ClientKey :: binary(), ClientSalt :: binary(), ServerKey :: binary(), ServerSalt :: binary()}.
 split_dtls_keying_material(Profile, Bin) ->
     webrtc_srtp_profile:split_keying_material(Profile, Bin).
 
@@ -338,7 +343,11 @@ set_roc(Dir, SSRC, ROC, #srtp{window = Size} = C) when
 %% increasing across a rekey (RFC 3711 §3.4); 2^31 means exhausted.
 -spec set_rtcp_index(ssrc(), 0..16#80000000, ctx()) -> ctx().
 set_rtcp_index(SSRC, Index, #srtp{rtcp_tx = Tx} = C) when
-    is_integer(SSRC), SSRC >= 0, SSRC =< 16#FFFFFFFF, is_integer(Index), Index >= 0,
+    is_integer(SSRC),
+    SSRC >= 0,
+    SSRC =< 16#FFFFFFFF,
+    is_integer(Index),
+    Index >= 0,
     Index =< ?MAX_RTCP_INDEX + 1
 ->
     C#srtp{rtcp_tx = Tx#{SSRC => Index}}.

@@ -80,28 +80,28 @@ gcm_ctx(Profile, Key, Opts) ->
 
 rfc7714_rtp() ->
     b(
-        "8040f17b 8041f8d3 5501a0b2 47616c6c
-         69612065 7374206f 6d6e6973 20646976
-         69736120 696e2070 61727465 73207472
-         6573"
+        "8040f17b 8041f8d3 5501a0b2 47616c6c\n"
+        "         69612065 7374206f 6d6e6973 20646976\n"
+        "         69736120 696e2070 61727465 73207472\n"
+        "         6573"
     ).
 
 rfc7714_16_1_srtp() ->
     b(
-        "8040f17b 8041f8d3 5501a0b2 f24de3a3
-         fb34de6c acba861c 9d7e4bca be633bd5
-         0d294e6f 42a5f47a 51c7d19b 36de3adf
-         8833899d 7f27beb1 6a9152cf 765ee439
-         0cce"
+        "8040f17b 8041f8d3 5501a0b2 f24de3a3\n"
+        "         fb34de6c acba861c 9d7e4bca be633bd5\n"
+        "         0d294e6f 42a5f47a 51c7d19b 36de3adf\n"
+        "         8833899d 7f27beb1 6a9152cf 765ee439\n"
+        "         0cce"
     ).
 
 rfc7714_16_2_srtp() ->
     b(
-        "8040f17b 8041f8d3 5501a0b2 32b1de78
-         a822fe12 ef9f78fa 332e33aa b1801238
-         9a58e2f3 b50b2a02 76ffae0f 1ba63799
-         b87b7aa3 db36dfff d6b0f9bb 7878d7a7
-         6c13"
+        "8040f17b 8041f8d3 5501a0b2 32b1de78\n"
+        "         a822fe12 ef9f78fa 332e33aa b1801238\n"
+        "         9a58e2f3 b50b2a02 76ffae0f 1ba63799\n"
+        "         b87b7aa3 db36dfff d6b0f9bb 7878d7a7\n"
+        "         6c13"
     ).
 
 rfc7714_16_1_encrypt_test() ->
@@ -129,7 +129,9 @@ rfc7714_16_2_decrypt_test() ->
 rfc7714_16_tampered_test() ->
     Ctx = gcm_ctx(srtp_aead_aes_128_gcm, gcm_key128(), #{}),
     <<H, Rest/binary>> = rfc7714_16_1_srtp(),
-    ?assertEqual({error, auth_failed}, webrtc_srtp:unprotect_rtp(<<(H bxor 16#01), Rest/binary>>, Ctx)),
+    ?assertEqual(
+        {error, auth_failed}, webrtc_srtp:unprotect_rtp(<<(H bxor 16#01), Rest/binary>>, Ctx)
+    ),
     Ctx256 = gcm_ctx(srtp_aead_aes_256_gcm, gcm_key256(), #{}),
     ?assertEqual({error, auth_failed}, webrtc_srtp:unprotect_rtp(rfc7714_16_1_srtp(), Ctx256)).
 
@@ -139,46 +141,46 @@ rfc7714_16_tampered_test() ->
 
 rfc7714_rtcp() ->
     b(
-        "81c8000d 4d617273 4e545031 4e545032
-         52545020 0000042a 0000e930 4c756e61
-         deadbeef deadbeef deadbeef deadbeef
-         deadbeef"
+        "81c8000d 4d617273 4e545031 4e545032\n"
+        "         52545020 0000042a 0000e930 4c756e61\n"
+        "         deadbeef deadbeef deadbeef deadbeef\n"
+        "         deadbeef"
     ).
 
 rfc7714_17_1_srtcp() ->
     b(
-        "81c8000d 4d617273 63e94885 dcdab67c
-         a727d766 2f6b7e99 7ff5c0f7 6c06f32d
-         c676a5f1 730d6fda 4ce09b46 86303ded
-         0bb9275b c84aa458 96cf4d2f c5abf872
-         45d9eade 800005d4"
+        "81c8000d 4d617273 63e94885 dcdab67c\n"
+        "         a727d766 2f6b7e99 7ff5c0f7 6c06f32d\n"
+        "         c676a5f1 730d6fda 4ce09b46 86303ded\n"
+        "         0bb9275b c84aa458 96cf4d2f c5abf872\n"
+        "         45d9eade 800005d4"
     ).
 
 rfc7714_17_2_srtcp() ->
     b(
-        "81c8000d 4d617273 d50ae4d1 f5ce5d30
-         4ba297e4 7d470c28 2c3ece5d bffe0a50
-         a2eaa5c1 110555be 8415f658 c61de047
-         6f1b6fad 1d1eb30c 4446839f 57ff6f6c
-         b26ac3be 800005d4"
+        "81c8000d 4d617273 d50ae4d1 f5ce5d30\n"
+        "         4ba297e4 7d470c28 2c3ece5d bffe0a50\n"
+        "         a2eaa5c1 110555be 8415f658 c61de047\n"
+        "         6f1b6fad 1d1eb30c 4446839f 57ff6f6c\n"
+        "         b26ac3be 800005d4"
     ).
 
 rfc7714_17_3_srtcp() ->
     b(
-        "81c8000d 4d617273 4e545031 4e545032
-         52545020 0000042a 0000e930 4c756e61
-         deadbeef deadbeef deadbeef deadbeef
-         deadbeef 841dd968 3dd78ec9 2ae58790
-         125f62b3 000005d4"
+        "81c8000d 4d617273 4e545031 4e545032\n"
+        "         52545020 0000042a 0000e930 4c756e61\n"
+        "         deadbeef deadbeef deadbeef deadbeef\n"
+        "         deadbeef 841dd968 3dd78ec9 2ae58790\n"
+        "         125f62b3 000005d4"
     ).
 
 rfc7714_17_4_srtcp() ->
     b(
-        "81c8000d 4d617273 4e545031 4e545032
-         52545020 0000042a 0000e930 4c756e61
-         deadbeef deadbeef deadbeef deadbeef
-         deadbeef 91db4afb feee5a97 8fab4393
-         ed2615fe 000005d4"
+        "81c8000d 4d617273 4e545031 4e545032\n"
+        "         52545020 0000042a 0000e930 4c756e61\n"
+        "         deadbeef deadbeef deadbeef deadbeef\n"
+        "         deadbeef 91db4afb feee5a97 8fab4393\n"
+        "         ed2615fe 000005d4"
     ).
 
 rtcp_vector_ssrc() -> 16#4d617273.
@@ -225,10 +227,14 @@ rfc7714_17_eflag_test() ->
     Bin = rfc7714_17_1_srtcp(),
     N = byte_size(Bin) - 4,
     <<Head:N/binary, _:1, Idx:31>> = Bin,
-    ?assertEqual({error, auth_failed}, webrtc_srtp:unprotect_rtcp(<<Head/binary, 0:1, Idx:31>>, Ctx)),
+    ?assertEqual(
+        {error, auth_failed}, webrtc_srtp:unprotect_rtcp(<<Head/binary, 0:1, Idx:31>>, Ctx)
+    ),
     Bin3 = rfc7714_17_3_srtcp(),
     <<Head3:N/binary, _:1, Idx3:31>> = Bin3,
-    ?assertEqual({error, auth_failed}, webrtc_srtp:unprotect_rtcp(<<Head3/binary, 1:1, Idx3:31>>, Ctx)).
+    ?assertEqual(
+        {error, auth_failed}, webrtc_srtp:unprotect_rtcp(<<Head3/binary, 1:1, Idx3:31>>, Ctx)
+    ).
 
 %%--------------------------------------------------------------------
 %% libsrtp reference vectors (test/srtp_driver.c). Full packets keyed
@@ -250,8 +256,8 @@ libsrtp_cm_ctx() ->
 
 libsrtp_aes_cm_rtp_test() ->
     Want = b(
-        "800f1234 decafbad cafebabe 4e55dc4c e79978d8 8ca4d215 949d2402
-         b78d6acc 99ea179b 8dbb"
+        "800f1234 decafbad cafebabe 4e55dc4c e79978d8 8ca4d215 949d2402\n"
+        "         b78d6acc 99ea179b 8dbb"
     ),
     {ok, Out, _} = webrtc_srtp:protect_rtp(libsrtp_rtp_plain(), libsrtp_cm_ctx()),
     ?assertEqual(Want, Out),
@@ -262,8 +268,8 @@ libsrtp_aes_cm_rtp_test() ->
 libsrtp_aes_cm_rtcp_test() ->
     Plain = b("81c8000b cafebabe abababab abababab abababab abababab"),
     Want = b(
-        "81c8000b cafebabe 7128035b e487b9bd bef89041 f977a5a8 80000001
-         993e08cd 54d6c123 0798"
+        "81c8000b cafebabe 7128035b e487b9bd bef89041 f977a5a8 80000001\n"
+        "         993e08cd 54d6c123 0798"
     ),
     Ctx = webrtc_srtp:set_rtcp_index(16#cafebabe, 1, libsrtp_cm_ctx()),
     {ok, Out, _} = webrtc_srtp:protect_rtcp(Plain, Ctx),
@@ -279,8 +285,8 @@ libsrtp_aes_gcm_rtp_test() ->
         #{}
     ),
     Want = b(
-        "800f1234 decafbad cafebabe c5002ede 04cfdd2e b91159e0 880aa06e
-         d2976826 f796b201 df3131a1 27e8a392"
+        "800f1234 decafbad cafebabe c5002ede 04cfdd2e b91159e0 880aa06e\n"
+        "         d2976826 f796b201 df3131a1 27e8a392"
     ),
     {ok, Out, _} = webrtc_srtp:protect_rtp(libsrtp_rtp_plain(), Ctx),
     ?assertEqual(Want, Out),
@@ -590,7 +596,9 @@ forged_does_not_move_window_test() ->
     {ok, _, Rx1} = webrtc_srtp:unprotect_rtp(Good, Rx),
     ?assertEqual({error, auth_failed}, webrtc_srtp:unprotect_rtp(Forged, Rx1)),
     %% The window did not move to 5000: seq 11 is still accepted.
-    {ok, Next, _} = webrtc_srtp:protect_rtp(rtp(11), element(3, webrtc_srtp:protect_rtp(rtp(10), Tx))),
+    {ok, Next, _} = webrtc_srtp:protect_rtp(
+        rtp(11), element(3, webrtc_srtp:protect_rtp(rtp(10), Tx))
+    ),
     ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(Next, Rx1)).
 
 %%--------------------------------------------------------------------
@@ -609,8 +617,11 @@ tamper(Profile, Kind) ->
     {Prot, Unprot, Pkt} =
         case Kind of
             rtp ->
-                {fun webrtc_srtp:protect_rtp/2, fun webrtc_srtp:unprotect_rtp/2,
-                    <<16#91, 96, 1:16, 0:32, 7:32, 9:32, 16#BEDE:16, 1:16, 16#10, 1, 0, 0, "data">>};
+                {
+                    fun webrtc_srtp:protect_rtp/2,
+                    fun webrtc_srtp:unprotect_rtp/2,
+                    <<16#91, 96, 1:16, 0:32, 7:32, 9:32, 16#BEDE:16, 1:16, 16#10, 1, 0, 0, "data">>
+                };
             rtcp ->
                 {fun webrtc_srtp:protect_rtcp/2, fun webrtc_srtp:unprotect_rtcp/2, rtcp(3)}
         end,
@@ -694,21 +705,39 @@ malformed_test_() ->
         %% CC = 15 but no room for the CSRCs
         ?_assertEqual({error, malformed}, webrtc_srtp:unprotect_rtp(<<16#8F, 0:(31 * 8)>>, Rx)),
         %% Extension length past the end
-        ?_assertEqual({error, malformed},
-                      webrtc_srtp:protect_rtp(<<16#90, 0, 0:16, 0:64, 0:16, 100:16, 0:32>>, Tx)),
+        ?_assertEqual(
+            {error, malformed},
+            webrtc_srtp:protect_rtp(<<16#90, 0, 0:16, 0:64, 0:16, 100:16, 0:32>>, Tx)
+        ),
         ?_assertEqual({error, malformed}, webrtc_srtp:unprotect_rtcp(<<16#40, 0:(40 * 8)>>, Rx)),
         ?_assertEqual({error, malformed}, webrtc_srtp:protect_rtcp(<<16#81, 200, 0, 1>>, Tx)),
         ?_assertEqual({error, malformed}, webrtc_srtp:unprotect_rtp(not_a_binary, Rx)),
         ?_assertEqual({error, malformed}, webrtc_srtp:unprotect_rtcp(not_a_binary, Rx))
     ].
 
+%% AES-CM must not produce more than 2^16 keystream blocks per IV
+%% (RFC 3711 §4.1.1): larger payloads are refused, the limit itself works.
+cm_keystream_limit_test() ->
+    {Tx, Rx} = pair(srtp_aes128_cm_hmac_sha1_80),
+    Max = 1 bsl 20,
+    ?assertEqual({error, malformed}, webrtc_srtp:protect_rtp(rtp(1, 1, <<0:((Max + 1) * 8)>>), Tx)),
+    {ok, S, _} = webrtc_srtp:protect_rtp(rtp(1, 1, <<0:(Max * 8)>>), Tx),
+    ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(S, Rx)),
+    ?assertEqual(
+        {error, malformed}, webrtc_srtp:protect_rtcp(<<(rtcp(1))/binary, 0:(Max * 8)>>, Tx)
+    ).
+
 bad_options_test() ->
     K = <<0:128>>,
     S = <<0:112>>,
     P = srtp_aes128_cm_hmac_sha1_80,
     ?assertError({badarg, {replay_window, 10}}, webrtc_srtp:new(P, K, S, #{replay_window => 10})),
-    ?assertError({badarg, {rtcp_replay_window, x}}, webrtc_srtp:new(P, K, S, #{rtcp_replay_window => x})),
+    ?assertError(
+        {badarg, {rtcp_replay_window, x}}, webrtc_srtp:new(P, K, S, #{rtcp_replay_window => x})
+    ),
     ?assertError({badarg, {encrypt_rtcp, 1}}, webrtc_srtp:new(P, K, S, #{encrypt_rtcp => 1})),
     ?assertError(badarg, webrtc_srtp:new(P, <<0:120>>, S, #{})),
-    ?assertError({unsupported_profile, srtp_null_hmac_sha1_80},
-                 webrtc_srtp:new(srtp_null_hmac_sha1_80, K, S, #{})).
+    ?assertError(
+        {unsupported_profile, srtp_null_hmac_sha1_80},
+        webrtc_srtp:new(srtp_null_hmac_sha1_80, K, S, #{})
+    ).

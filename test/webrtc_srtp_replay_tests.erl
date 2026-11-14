@@ -81,8 +81,10 @@ model_test() ->
             I = max(0, Top + rand:uniform(80) - 70),
             Expected =
                 if
-                    I > Top -> ok;
-                    Top - I >= Size -> {error, too_old};
+                    I > Top ->
+                        ok;
+                    Top - I >= Size ->
+                        {error, too_old};
                     true ->
                         case sets:is_element(I, Seen) of
                             true -> {error, replay};

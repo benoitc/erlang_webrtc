@@ -1,0 +1,62 @@
+%% Private state of the JSEP engine (webrtc_jsep, webrtc_jsep_build).
+
+-record(tr, {
+    %% Stable handle given to the application.
+    id :: pos_integer(),
+    kind :: audio | video,
+    mid :: undefined | binary(),
+    mline :: undefined | non_neg_integer(),
+    %% Desired direction (RTCRtpTransceiver.direction).
+    direction = sendrecv :: webrtc_sdp_rtp:direction(),
+    %% Negotiated direction (RTCRtpTransceiver.currentDirection).
+    current_direction :: undefined | webrtc_sdp_rtp:direction(),
+    stopped = false :: boolean(),
+    codecs :: [webrtc_sdp_media:codec()],
+    extensions :: [webrtc_jsep_caps:extension()],
+    ssrc :: 0..16#FFFFFFFF,
+    rtx_ssrc :: 0..16#FFFFFFFF,
+    stream_id :: binary(),
+    track_id :: binary(),
+    %% Created by applying a remote offer (RFC 9429 §5.10).
+    from_remote = false :: boolean()
+}).
+
+-record(jsep, {
+    signaling = stable ::
+        stable
+        | have_local_offer
+        | have_remote_offer
+        | have_local_pranswer
+        | have_remote_pranswer
+        | closed,
+    ice_ufrag :: binary(),
+    ice_pwd :: binary(),
+    ice_lite = false :: boolean(),
+    fingerprints :: [webrtc_dtls_cert:fingerprint()],
+    cname :: binary(),
+    session_id :: non_neg_integer(),
+    session_version = 0 :: non_neg_integer(),
+    caps :: #{audio := {list(), list()}, video := {list(), list()}},
+    transceivers = [] :: [#tr{}],
+    next_id = 1 :: pos_integer(),
+    %% Data channel m= section.
+    want_data = false :: boolean(),
+    data_mid :: undefined | binary(),
+    data_mline :: undefined | non_neg_integer(),
+    sctp_port = 5000 :: inet:port_number(),
+    max_message_size = 262144 :: non_neg_integer(),
+    %% Descriptions (RFC 9429 §4.1.14 - §4.1.17).
+    current_local :: undefined | tuple(),
+    current_remote :: undefined | tuple(),
+    pending_local :: undefined | tuple(),
+    pending_remote :: undefined | tuple(),
+    %% DTLS role once negotiated (RFC 8842 §5).
+    dtls_role :: undefined | client | server,
+    local_candidates = [] :: list(),
+    local_eoc = false :: boolean(),
+    %% State saved when a remote offer is applied, for rollback.
+    snapshot :: undefined | {[#tr{}], pos_integer(), undefined | binary(), undefined | non_neg_integer()},
+    %% Remote ICE credentials of the current remote description.
+    remote_ice :: undefined | #{ufrag := binary(), pwd := binary()},
+    ice_restart = false :: boolean()
+}).

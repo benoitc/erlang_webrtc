@@ -49,7 +49,7 @@
 
 -export_type([state/0, action/0, event/0]).
 
--opaque state() :: #dtls{}.
+-type state() :: #dtls{}.
 -type action() :: {send, binary()} | {event, event()}.
 -type event() ::
     {connected, map()}

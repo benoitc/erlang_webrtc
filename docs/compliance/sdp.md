@@ -131,3 +131,27 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 |---|---|---|---|---|---|
 | SDP-API-1 | | Codecs of a section merging rtpmap, fmtp and rtcp-fb, and the inverse | webrtc_sdp_media | codecs_inverse_test_, codec_attributes_order_test | Unit tested |
 | SDP-API-2 | | Attribute lookup at media level with session-level fallback | webrtc_sdp_media | attribute_helpers_test | Unit tested |
+
+## JSEP (RFC 9429), offer/answer (RFC 3264), BUNDLE (RFC 9143)
+
+| ID | Spec | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| JSEP-1 | 9429 §3.2 | Signaling state machine, invalid transitions refused | webrtc_jsep | invalid_states_test | Unit tested |
+| JSEP-2 | 9429 §4.1.10.2 | Local rollback; remote rollback removes transceivers created by the offer | webrtc_jsep | glare_rollback_test, remote_rollback_removes_created_transceivers_test | Unit tested |
+| JSEP-3 | 9429 §4.1.10 | pranswer in both directions | webrtc_jsep | pranswer_test | Unit tested |
+| JSEP-4 | 9429 §5.2.1 | Offer: mid per m= section, BUNDLE group, rtcp-mux, rtcp-rsize, ice-options trickle, fingerprint, setup actpass | webrtc_jsep_build | basic_test | Unit tested |
+| JSEP-5 | 9429 §5.2.2 | Subsequent offers keep m= section order and mids | webrtc_jsep_build | renegotiation_keeps_order_and_role_test | Unit tested |
+| JSEP-6 | 9429 §5.2.2 | Stopped transceiver rejected with port 0 and removed from BUNDLE | webrtc_jsep_build | stop_transceiver_test | Unit tested |
+| JSEP-7 | 9429 §5.3.1 | Answer: one m= section per offered section, same order and mids | webrtc_jsep_build | browser_offer_test_ | Unit tested |
+| JSEP-8 | 3264 §6.1 | Direction negotiation | webrtc_jsep_build | directions_test_ | Unit tested |
+| JSEP-9 | 3264 §6.1 | Codec intersection with the offerer's payload types; rtx follows its apt | webrtc_jsep_caps | codec_intersection_test, rtx_follows_primary_test | Unit tested |
+| JSEP-10 | 3264 §6 | No common codec: section rejected | webrtc_jsep_build | no_common_codec_rejects_section_test | Unit tested |
+| JSEP-11 | 9429 §5.10 | Transceiver association, recvonly transceivers created for unmatched offered sections | webrtc_jsep | answer_creates_recvonly_transceiver_test | Unit tested |
+| JSEP-12 | 9429 §5.8 | Remote description validation: mid, ICE credentials, fingerprint, setup, rtcp-mux | webrtc_jsep | validation_test_ | Unit tested |
+| JSEP-13 | 8842 §5.3, §5.5 | Answer setup active; established DTLS role kept on renegotiation | webrtc_jsep, webrtc_jsep_build | basic_test, renegotiation_keeps_order_and_role_test | Unit tested |
+| JSEP-14 | 9429 §5.2.1, 8445 §9 | ICE restart with new credentials | webrtc_jsep | ice_restart_test | Unit tested |
+| JSEP-15 | 8285 §5 | Header extension ids from the offer reused in the answer | webrtc_jsep_caps | basic_test | Unit tested |
+| JSEP-16 | 9143 | Media not covered by one BUNDLE group | webrtc_jsep | unbundled_media_rejected_test | Non-compliant / known limitation: one transport per peer connection; offers with several unbundled active sections are refused. Browsers bundle by default. |
+| JSEP-17 | 8841 §6 | max-message-size defaults to 64 KiB when absent | webrtc_jsep | | Implemented, untested |
+| JSEP-18 | 9429 §5.2.1 | Simulcast and rid negotiation | | | Not implemented |
+| JSEP-19 | 7874, 7742 | Mandatory codecs offered: Opus, PCMU, PCMA, VP8, H.264 constrained baseline | webrtc_jsep_caps | basic_test | Unit tested (negotiation only; payloads are forwarded, not decoded) |

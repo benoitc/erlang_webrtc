@@ -15,6 +15,17 @@ Run it with `make test-interop` after building the adapters (`make -C interop al
 | OpenSSL 4.1 s_server | client | yes | negotiated | printed only by s_client | to OpenSSL | Pass |
 | OpenSSL 4.1 s_client | server | yes | negotiated | yes | from OpenSSL | Pass |
 
+## TURN relay (webrtc_turn_interop_SUITE)
+
+Erlang peers against the pion/turn v5 server (`interop/turn`). A filter drops every datagram not addressed to the server, so only relayed pairs can work.
+
+| Scenario | Selected pair | Status |
+|---|---|---|
+| Both peers relay-only, data channel | relay / relay | Pass |
+| Both peers relay-only, RTP | relay / relay | Pass |
+| One peer relay-only, the other direct | relay / host | Pass |
+| Wrong TURN password: no relay candidate, no connection | | Pass |
+
 ## Harness control (webrtc_harness_SUITE)
 
 These runs connect independent implementations to each other through the controller, to prove the harness before it is used against this stack.

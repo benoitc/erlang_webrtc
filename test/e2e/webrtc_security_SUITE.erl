@@ -134,7 +134,7 @@ garbage_flood(_Config) ->
 %% §4.1.2.6), SRTP (RFC 3711 §3.3.2) and SCTP TSN tracking must make
 %% each message and packet arrive exactly once.
 replayed_datagrams_dropped(_Config) ->
-    Replay = {fun(Bin, S) -> {[{0, Bin}, {300, Bin}], S} end, undefined},
+    Replay = {fun(_Dest, Bin, S) -> {[{0, Bin}, {300, Bin}], S} end, undefined},
     {A, B, Id} = connected_pair(#{outbound_filter => Replay}),
     [ok = webrtc:send_data(A, Id, binary, <<I:32>>) || I <- lists:seq(1, 50)],
     [ok = webrtc:send_rtp(A, <<"0">>, <<I:32>>, #{timestamp => I}) || I <- lists:seq(1, 50)],

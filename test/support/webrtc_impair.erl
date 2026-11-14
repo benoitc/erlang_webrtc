@@ -11,7 +11,9 @@
 %% (probability that a datagram is held back by `reorder_delay' ms),
 %% `delay' and `jitter' (ms), `max_size' (datagrams above are dropped,
 %% like a path MTU), `blackhole' (an atomics ref: drop everything while
-%% its first slot is 1), `seed'.
+%% its first slot is 1), `only_to' (a list of `{IP, Port}': datagrams to
+%% any other destination are dropped, a firewall that only lets a relay
+%% through), `seed'.
 -module(webrtc_impair).
 
 -export([filter/1, blackhole/0, set_blackhole/2]).
@@ -19,7 +21,7 @@
 filter(Opts) ->
     Seed = maps:get(seed, Opts, 1),
     State = #{rand => rand:seed_s(exsss, {Seed, Seed + 1, Seed + 2}), bad => false},
-    {fun(Bin, S) -> apply_filter(Bin, Opts, S) end, State}.
+    {fun(Dest, Bin, S) -> apply_filter(Dest, Bin, Opts, S) end, State}.
 
 blackhole() ->
     atomics:new(1, []).
@@ -27,8 +29,8 @@ blackhole() ->
 set_blackhole(Ref, On) ->
     atomics:put(Ref, 1, case On of true -> 1; false -> 0 end).
 
-apply_filter(Bin, Opts, S0) ->
-    case blackholed(Opts) orelse too_big(Bin, Opts) of
+apply_filter(Dest, Bin, Opts, S0) ->
+    case blackholed(Opts) orelse too_big(Bin, Opts) orelse firewalled(Dest, Opts) of
         true ->
             {[], S0};
         false ->
@@ -41,6 +43,9 @@ apply_filter(Bin, Opts, S0) ->
 
 blackholed(#{blackhole := Ref}) -> atomics:get(Ref, 1) =:= 1;
 blackholed(_) -> false.
+
+firewalled(Dest, #{only_to := Allowed}) -> not lists:member(Dest, Allowed);
+firewalled(_, _) -> false.
 
 too_big(Bin, #{max_size := Max}) -> byte_size(Bin) > Max;
 too_big(_, _) -> false.

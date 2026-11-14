@@ -63,7 +63,7 @@
     srtp_profiles :: [non_neg_integer()],
     connected = false :: boolean(),
     %% Optional outbound filter used by impairment tests:
-    %% fun((Bin, FState) -> {[{DelayMs, Bin}], FState}).
+    %% fun((Dest, Bin, FState) -> {[{DelayMs, Bin}], FState}).
     filter :: undefined | {fun(), term()}
 }).
 
@@ -358,7 +358,7 @@ ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     St;
 ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
-    {Out, FS1} = F(Bin, FS),
+    {Out, FS1} = F(Dest, Bin, FS),
     lists:foreach(
         fun
             ({0, B}) -> udp_send(Sock, Dest, B);

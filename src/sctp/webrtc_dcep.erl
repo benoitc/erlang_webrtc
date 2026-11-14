@@ -20,6 +20,8 @@
 %% - `{channel_closed, Id}': both directions of the stream were reset
 %%   (RFC 8831 §6.7), the id can be reused.
 %% - `{buffered_amount_low, Id}'.
+%% - `{channel_error, Id, message_too_large}': the peer sent a message
+%%   over our max-message-size; the channel is being closed.
 %% - `{closed, Reason}' and `{restarted, Info}' from the association;
 %%   every channel is reported closed first.
 %%
@@ -500,6 +502,11 @@ assoc_event({stream_reset_failed, Ids, _}, _Now, #dc{channels = Chs} = D) ->
         D,
         Ids
     );
+assoc_event({message_too_large, Id}, Now, #dc{channels = Chs} = D) ->
+    case Chs of
+        #{Id := Ch} -> too_large(Ch, Now, D);
+        _ -> D
+    end;
 assoc_event({buffered_amount_low, Id}, _Now, D) ->
     event({buffered_amount_low, Id}, D);
 assoc_event({Ev, _} = E, _Now, #dc{channels = Chs} = D) when Ev =:= closed; Ev =:= restarted ->
@@ -546,6 +553,10 @@ dcep_message(Id, {error, _}, Now, #dc{channels = Chs} = D) ->
         _ -> reset_unknown(Id, Now, D)
     end.
 
+user_message(Ch, _Ppid, Data, Now, #dc{local_max = Max} = D) when
+    byte_size(Data) + Ch#ch.partial_bytes > Max
+->
+    too_large(Ch, Now, D);
 user_message(Ch, Ppid, Data, Now, D) ->
     Id = Ch#ch.id,
     case Ppid of
@@ -582,6 +593,12 @@ deliver(#ch{partial = Parts} = Ch, Type, Data, D) ->
 %%====================================================================
 %% Closing (RFC 8831 §6.7)
 %%====================================================================
+
+%% The peer sent more than the max-message-size we announced (RFC 8841
+%% §6): close this channel only, the association and the other channels
+%% go on.
+too_large(#ch{id = Id} = Ch, Now, D) ->
+    reset_out(Ch#ch{partial = [], partial_bytes = 0}, Now, event({channel_error, Id, message_too_large}, D)).
 
 reset_out(#ch{out_reset = true} = Ch, _Now, D) ->
     maybe_closed(Ch#ch{state = closing}, D);

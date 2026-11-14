@@ -565,12 +565,17 @@ media_actions(Acts, St) ->
 
 %% RFC 8841: SCTP runs over the DTLS association once it is up.
 start_sctp(#st{data = Data, dtls_role = Role} = St) ->
+    LocalMax = maps:get(local_max_message_size, Data, 262144),
     D0 = webrtc_dcep:new(#{
         role => Role,
         max_message_size => maps:get(remote_max_message_size, Data, 65536),
         sctp => #{
             local_port => maps:get(local_port, Data, 5000),
             remote_port => maps:get(remote_port, Data, 5000),
+            %% The limit we announced in SDP bounds incoming messages
+            %% (RFC 8841 §6); the window holds at least two of them.
+            max_message_size => LocalMax,
+            receive_buffer => max(1048576, 2 * LocalMax),
             %% 1200 byte datagrams minus the DTLS record overhead (13 byte
             %% header, 8 byte explicit nonce, 16 byte tag), so SCTP
             %% packets never need IP fragmentation (RFC 8261 §5).

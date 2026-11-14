@@ -585,11 +585,30 @@ receive_window_test() ->
     ?assertEqual([{0, 53, M} || M <- Msgs], received(b, N2)),
     ?assertEqual(0, stat(b, dropped_chunks, N2)).
 
-too_large_message_test() ->
-    N0 = established(#{}, #{max_message_size => 10000}, #{}),
-    N1 = ?NET:run(1000, send(a, 0, payload(1, 20000), #{}, N0)),
-    ?assertMatch([{protocol_violation, _}], closed(b, N1)),
-    ?assertMatch([{peer_abort, _}], closed(a, N1)).
+%% RFC 8841 §6: a message over the receiver's max-message-size is
+%% dropped and reported; the stream stays discarded until reset, the
+%% association and the other streams go on. Every receive path: a
+%% single chunk, fragmented ordered, fragmented unordered (DATA).
+too_large(Size, Max, Opts) ->
+    N0 = established(#{}, #{max_message_size => Max}, #{}),
+    N1 = ?NET:run(1000, send(a, 0, payload(1, Size), Opts, N0)),
+    N2 = wait_messages(b, 1, send(a, 1, <<"other stream">>, #{}, N1)),
+    ?assertEqual([], closed(b, N2)),
+    ?assertEqual([], closed(a, N2)),
+    ?assert(lists:member({message_too_large, 0}, ?NET:events(b, N2))),
+    ?assertEqual([{1, 53, <<"other stream">>}], received(b, N2)),
+    %% Later data on the discarded stream is dropped too.
+    N3 = ?NET:run(1000, send(a, 0, <<"small">>, #{}, N2)),
+    ?assertEqual([{1, 53, <<"other stream">>}], received(b, N3)).
+
+too_large_single_chunk_test() ->
+    too_large(800, 500, #{}).
+
+too_large_fragmented_test() ->
+    too_large(20000, 10000, #{}).
+
+too_large_unordered_test() ->
+    too_large(20000, 10000, #{ordered => false}).
 
 %%====================================================================
 %% Many streams

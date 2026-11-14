@@ -152,6 +152,9 @@
     %% Deferred incoming resets (RFC 6525 §5.2.2 E2): {LastTsnU, Sids, ReqSeq}.
     deferred = [] :: [{integer(), [0..65535], non_neg_integer()}],
     held = [] :: [{integer(), #sctp_data{}}],
+    %% Streams that received a message over max_msg: their user data is
+    %% dropped until the stream is reset (RFC 8841 §6).
+    discard = #{} :: #{0..65535 => true},
     %% SACK scheduling.
     got_data = false :: boolean(),
     only_dups = true :: boolean(),

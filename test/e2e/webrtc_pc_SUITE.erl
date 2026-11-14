@@ -22,6 +22,7 @@
     concurrent_peer_connections/1,
     candidates_before_local_description/1,
     fingerprint_change_refused/1,
+    max_message_size_wired/1,
     fingerprint_change_ends_association/1,
     simulcast_layers/1,
     simulcast_sfu_forward/1
@@ -46,6 +47,7 @@ all() ->
         concurrent_peer_connections,
         candidates_before_local_description,
         fingerprint_change_refused,
+        max_message_size_wired,
         fingerprint_change_ends_association,
         simulcast_layers,
         simulcast_sfu_forward
@@ -446,5 +448,27 @@ fingerprint_change_ends_association(_Config) ->
     ok = webrtc:set_remote_description(A, answer, Answer),
     {ok, _} = ?S:wait(B, fun(E) -> E =:= {datachannel_closed, IdB} end, 10000),
     ?assertMatch({error, _}, webrtc:send_data(B, IdB, text, <<"old keys">>)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% RFC 8841 §6: the max-message-size we announce is what SCTP accepts;
+%% the peer honours the one it was given.
+max_message_size_wired(_Config) ->
+    {error, {badarg, max_message_size}} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 0}),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 10000}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, max_message_size => 300000}),
+    ok = webrtc:create_data_channel(A, <<"m">>, #{}),
+    ?S:connect(A, B),
+    IdA = channel_id(A, <<"m">>),
+    IdB = channel_id(B, <<"m">>),
+    %% A may send B up to 300000 bytes, more than the 262144 SCTP default.
+    Big = crypto:strong_rand_bytes(290000),
+    ok = webrtc:send_data(A, IdA, binary, Big),
+    {_, binary, Big} = message(B, Big),
+    %% B may only send A 10000 bytes.
+    ?assertEqual({error, message_too_large}, webrtc:send_data(B, IdB, binary, crypto:strong_rand_bytes(10001))),
+    Small = crypto:strong_rand_bytes(10000),
+    ok = webrtc:send_data(B, IdB, binary, Small),
+    {_, binary, Small} = message(A, Small),
     webrtc:close(A),
     webrtc:close(B).

@@ -424,3 +424,17 @@ bad_options_test() ->
     ?assertEqual({error, badarg}, ?D:open_channel(<<"x">>, #{priority => 70000}, 0, D)),
     ?assertEqual({error, unknown_channel}, ?D:send(3, text, <<"x">>, 0, D)),
     ?assertEqual({error, unknown_channel}, ?D:close_channel(3, 0, D)).
+
+%% RFC 8841 §6: a message over the max-message-size we announced closes
+%% that channel only.
+oversize_closes_channel_only_test() ->
+    N0 = pair(#{max_message_size => 0},
+              #{sctp => #{random_seed => 2, heartbeat_interval => infinity, max_message_size => 5000}}, #{}),
+    {Big, N1} = open_ch(a, <<"big">>, #{}, N0),
+    {Ok, N2} = open_ch(a, <<"ok">>, #{}, N1),
+    N3 = send(a, Big, binary, binary:copy(<<7>>, 20000), N2),
+    N4 = wait(fun(X) -> (has(b, {channel_error, Big, message_too_large}))(X) andalso
+                            (has(a, {channel_closed, Big}))(X) end, N3),
+    N5 = send(a, Ok, text, <<"still here">>, N4),
+    N6 = wait(fun(X) -> lists:member({Ok, text, <<"still here">>}, msgs(b, X)) end, N5),
+    ?assertNot(lists:keymember(Big, 1, msgs(b, N6))).

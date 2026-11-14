@@ -20,6 +20,8 @@
 %%   `stream_reconfig', `zero_checksum', `outbound_streams',
 %%   `inbound_streams', `peer_rwnd'.
 %% - `{message, StreamId, Ppid, Data}': a complete user message.
+%% - `{message_too_large, StreamId}': a message over `max_message_size'
+%%   was dropped; later data on the stream is dropped until it is reset.
 %% - `{stream_reset, [StreamId]}': the peer reset these incoming streams
 %%   (`[]' means all). The next message starts at sequence number 0.
 %% - `{outgoing_stream_reset, [StreamId]}': a reset requested with
@@ -78,6 +80,7 @@
     {connected, map()}
     | {restarted, map()}
     | {message, 0..65535, 0..16#FFFFFFFF, binary()}
+    | {message_too_large, 0..65535}
     | {stream_reset, [0..65535]}
     | {outgoing_stream_reset, [0..65535]}
     | {stream_reset_failed, [0..65535], term()}

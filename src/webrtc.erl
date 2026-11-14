@@ -35,6 +35,8 @@
 %% <li>`{datachannel_open, Id, Label, Protocol, Opts}'</li>
 %% <li>`{channel_message, Id, text | binary, Data}'</li>
 %% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
+%% <li>`{datachannel_error, Id, message_too_large}': the peer sent a
+%%     message over our `max_message_size'; the channel is closed.</li>
 %% <li>`{dtls_error, Reason}'</li>
 %% </ul>
 %%
@@ -124,6 +126,10 @@ new_peer_connection() ->
 %%     `schedule', `group', `listen', ...).</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
+new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
+    %% RFC 8841 §6 gives 0 the meaning "any size"; we always have a
+    %% memory bound, so a positive limit is required.
+    {error, {badarg, max_message_size}};
 new_peer_connection(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 

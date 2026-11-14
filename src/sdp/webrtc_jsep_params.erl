@@ -101,6 +101,7 @@ data_params(J, R) ->
     #{
         mid => J#jsep.data_mid,
         local_port => J#jsep.sctp_port,
+        local_max_message_size => J#jsep.max_message_size,
         remote_port =>
             case webrtc_sdp_media:attr(sctp_port, R) of
                 {ok, P} -> P;

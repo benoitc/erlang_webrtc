@@ -21,7 +21,7 @@ Data channels are implemented by `webrtc_dcep`: the DCEP codec and a sans-IO man
 | DC-13 | 6.6 | Without interleaving the sender SHOULD keep messages under 16 KB | | | Non-compliant / known limitation: not enforced, the application chooses the message size |
 | DC-14 | 6.7 | Closing resets the outgoing stream; a peer reset is answered with our own reset; the channel is closed once both directions are reset and the id can be reused | webrtc_dcep | dcep:close_test, dcep:remote_close_test, dcep:close_lossy_test | Unit tested |
 | DC-15 | 6.7 | Messages sent before the close are delivered before it | webrtc_dcep, webrtc_sctp_reconfig | dcep:close_test, dcep:close_lossy_test | Unit tested |
-| DC-16 | 7 | A receiver copes with arbitrarily large messages: incoming messages are bounded by the SCTP `max_message_size` option and the association is aborted beyond it | webrtc_sctp_recv | webrtc_sctp_assoc_tests:too_large_message_test | Unit tested |
+| DC-16 | 7 | A receiver copes with arbitrarily large messages: incoming messages are bounded by the SCTP `max_message_size` option (the advertised limit); a larger one closes its channel only, see MMS-5 | webrtc_sctp_recv, webrtc_dcep | webrtc_sctp_assoc_tests:too_large_*_test | Unit tested |
 
 ## RFC 8832 (DCEP)
 
@@ -44,5 +44,6 @@ Data channels are implemented by `webrtc_dcep`: the DCEP codec and a sans-IO man
 |---|---|---|---|---|---|
 | MMS-1 | 6.1 | Never send a message larger than the peer's max-message-size | webrtc_dcep | dcep:max_message_size_test | Unit tested |
 | MMS-2 | 6.1 | Default of 64K when the attribute is absent, 0 means no limit | webrtc_dcep | dcep:max_message_size_test | Unit tested |
-| MMS-3 | 6.1 | Our own limit advertised in SDP matches what the association accepts (`max_message_size` SCTP option) | webrtc_sctp_assoc | webrtc_sctp_assoc_tests:too_large_message_test | Unit tested |
+| MMS-3 | 6.1 | Our own limit advertised in SDP is the one the SCTP association enforces; the receive window holds at least two such messages; 0 is never advertised (we always have a memory bound) | webrtc_transport, webrtc_jsep, webrtc_sctp_assoc | webrtc_pc_SUITE:max_message_size_wired | E2E tested |
+| MMS-5 | 6.1 | A received message over our limit, on any receive path (single chunk, fragmented, unordered DATA, PPID-based partial), closes that channel only (stream reset, `datachannel_error` event); later data on the stream is dropped until the reset | webrtc_sctp_recv, webrtc_dcep | webrtc_sctp_assoc_tests:too_large_*_test, webrtc_dcep_tests:oversize_closes_channel_only_test | Unit tested |
 | MMS-4 | 6.2 | SDP attribute syntax | webrtc_sdp | | Not implemented |

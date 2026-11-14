@@ -386,6 +386,9 @@ transport_event({datachannel, {channel_open, Id, Label, Proto, Opts}}, St) ->
 transport_event({datachannel, {channel_closed, Id}}, St) ->
     notify({datachannel_closed, Id}, St),
     St;
+transport_event({datachannel, {channel_error, Id, Reason}}, St) ->
+    notify({datachannel_error, Id, Reason}, St),
+    St;
 transport_event({datachannel, {buffered_amount_low, Id}}, St) ->
     notify({buffered_amount_low, Id}, St),
     St;

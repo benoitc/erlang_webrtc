@@ -28,6 +28,27 @@ These runs connect independent implementations to each other through the control
 | Chromium 147 | Chromium 147 | audio and video, frames decoded | Pass |
 | Firefox 148 | any | | Skipped on macOS in the sandboxed dev environment (browser launch denied); runs in CI on Linux |
 
-## Peer connection (Erlang stack against independent peers)
+## Peer connection (webrtc_pc_interop_SUITE)
 
-Not run yet: the transport and peer connection layers are being integrated. Rows will be added per scenario (offerer and answerer roles, data channels reliable and partially reliable, audio and video, renegotiation, ICE restart, teardown).
+The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) against independent implementations over UDP on the test host.
+
+| Scenario | Pion v4.2.26 | aiortc 1.16.0 | Chromium 147 | Firefox 148 |
+|---|---|---|---|---|
+| Erlang offers, data channel, text echo | Pass | Pass | Pass | Not run (1) |
+| Peer offers, data channel, both directions | Pass | Pass | Pass | Not run (1) |
+| Unordered, max_retransmits 0 channel offered by the peer | Pass | Pass | Pass | Not run (1) |
+| 60 KB binary message and echo | Pass | Pass | Pass | Not run (1) |
+| Erlang sends Opus RTP (peer echoes or decodes) | Pass (echo verified) | Pass (decoded) | Pass (decoded) | Not run (1) |
+| Peer sends its own audio and video, Erlang forwards every packet back, peer decodes 10+ video frames | Skipped (2) | Pass | Pass | Not run (1) |
+| Peer closes, Erlang reports the connection closed | Pass | Pass | Pass | Not run (1) |
+
+1. Firefox cannot launch inside the sandbox of the development machine; the suite reports it as skipped. It runs in the CI interop job.
+2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
+
+### Interoperability findings
+
+| Peer | Finding | Resolution |
+|---|---|---|
+| Pion | Sends DATA_CHANNEL_ACK padded to 4 bytes (`02 00 00 00`). We rejected it and reset the stream. | RFC 8832 §5.2 defines the message by its type byte; libwebrtc reads only that byte. Trailing bytes are now ignored (`webrtc_dcep_tests:ack_test`). |
+| OTP ssl | No RFC 7627 extended master secret. | Kept required by default; the OTP DTLS tests opt out explicitly. |
+| Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |

@@ -238,7 +238,10 @@ erlang_sends_media(Config) ->
     {ok, _} = webrtc:add_transceiver(Pc, video, #{}),
     Media = [<<"audio">>, <<"video">>],
     P1 = erlang_offer(Pc, P0, #{media => Media}),
-    Payloads = [<<"rtp-payload-", (integer_to_binary(N))/binary>> || N <- lists:seq(1, 50)],
+    %% Valid Opus frames (20 ms CELT silence, RFC 6716) so decoding
+    %% peers accept them; a counter octet makes each one unique for the
+    %% echo check (the decoder ignores padding after a code 0 frame).
+    Payloads = [<<16#F8, 16#FF, 16#FE>> || _ <- lists:seq(1, 50)],
     lists:foreach(
         fun({N, Pl}) -> ok = webrtc:send_rtp(Pc, <<"0">>, Pl, #{timestamp => N * 960}) end,
         lists:zip(lists:seq(1, 50), Payloads)
@@ -258,6 +261,10 @@ erlang_sends_media(Config) ->
 %% forwards every packet back, and decoding peers report decoded frames.
 peer_sends_media(Config) ->
     {Pc, P0} = start(Config),
+    %% Our transceivers are associated with the offered m= sections
+    %% (RFC 9429 §5.10), so we answer sendrecv and can echo.
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{}),
     Media = [<<"audio">>, <<"video">>],
     P1 = peer_offer(Pc, P0, #{media => Media}),
     case ?config(peer, Config) of

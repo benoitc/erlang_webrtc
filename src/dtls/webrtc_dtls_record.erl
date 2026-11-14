@@ -149,6 +149,9 @@ replay_check(Seq, {Max, Bits}) ->
 
 %% @doc Mark `Seq' as received. Only call after the record authenticated.
 -spec replay_update(non_neg_integer(), replay()) -> replay().
+replay_update(Seq, {Max, _Bits}) when Seq - Max >= ?WINDOW ->
+    %% A jump beyond the window leaves only the new record in it.
+    {Seq, 1};
 replay_update(Seq, {Max, Bits}) when Seq > Max ->
     Shift = Seq - Max,
     Mask = (1 bsl ?WINDOW) - 1,

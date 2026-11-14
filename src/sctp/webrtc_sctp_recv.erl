@@ -531,9 +531,15 @@ replay([{U, C} | Rest], R, Acc) ->
         {abort, _} -> replay(Rest, R0, Acc)
     end.
 
+%% RFC 6525 §5.2.2 E3: an empty list means every incoming stream. It is
+%% expanded once into the streams that have state (possibly none), never
+%% re-entered with an empty list.
 do_reset([], #rcv{streams = M} = R) ->
-    do_reset(maps:keys(M) ++ [Sid || {Sid, _, _} <- maps:keys(R#rcv.ra)], R);
+    reset_streams(maps:keys(M) ++ [Sid || {Sid, _, _} <- maps:keys(R#rcv.ra)], R);
 do_reset(Sids, R) ->
+    reset_streams(Sids, R).
+
+reset_streams(Sids, R) ->
     lists:foldl(
         fun(Sid, Acc) ->
             #istream{pending = P} = istream(Sid, Acc),

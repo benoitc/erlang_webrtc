@@ -85,6 +85,7 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | RC-9 | 5.2.6 | Add Incoming Streams | webrtc_sctp_reconfig | assoc:reconf_requests_test | Non-compliant / known limitation: always answered "Denied" |
 | RC-10 | 5.2.7 | Responses: success resets the streams, "In progress" restarts the timer without counting an error, failures release held data | webrtc_sctp_reconfig | assoc:stream_reset_deferred_test | Unit tested |
 | RC-11 | 5.1.3 | Sending Incoming SSN Reset, SSN/TSN Reset and Add Streams requests | | | Not implemented (WebRTC only needs outgoing resets) |
+| RC-12 | 5.2.2 E3 | An Outgoing SSN Reset Request with no stream numbers resets every incoming stream, including when no stream has state | webrtc_sctp_recv | webrtc_sctp_recv_tests:reset_all_without_state_test_, assoc:reconf_reset_all_streams_empty_test_, reconf_reset_all_streams_with_state_test_ | Unit tested |
 
 ## RFC 8260 (message interleaving)
 

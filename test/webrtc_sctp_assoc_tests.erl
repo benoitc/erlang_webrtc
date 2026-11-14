@@ -956,3 +956,24 @@ reconf_deferred_requests_test() ->
     ),
     {_, Out3, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Ahead, [1]}]}], N1),
     ?assertEqual([{reconf_response, Seq, in_progress, undefined}], reconf_out(Out3)).
+
+%% RFC 6525 §5.2.2 E3: an Outgoing SSN Reset Request with no stream
+%% numbers resets every incoming stream. With no stream state at all it
+%% must still complete (it used to recurse forever).
+reconf_reset_all_streams_empty_test_() ->
+    {timeout, 5, fun() ->
+        {V, Seq, N} = reconf_pair(#{}),
+        Last = (Seq - 1) band 16#FFFFFFFF,
+        {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Last, []}]}], N),
+        ?assertEqual([{reconf_response, Seq, success_performed, undefined}], reconf_out(Out))
+    end}.
+
+reconf_reset_all_streams_with_state_test_() ->
+    {timeout, 5, fun() ->
+        {V, Seq, N0} = reconf_pair(#{}),
+        %% b received one message on stream 3: the first data TSN is the
+        %% initial TSN, which is also the first request sequence number.
+        N1 = wait_messages(b, 1, send(a, 3, <<"x">>, #{}, N0)),
+        {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Seq, []}]}], N1),
+        ?assertEqual([{reconf_response, Seq, success_performed, undefined}], reconf_out(Out))
+    end}.

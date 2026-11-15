@@ -97,6 +97,10 @@
 -define(CHAN_REFRESH, 540000).
 -define(MAX_STALE, 3).
 
+%% A failed ChannelBind may still be installed on the server for its
+%% lifetime (10 min); its number and peer then wait 5 more (§12).
+-define(CHANNEL_QUARANTINE, (15 * 60000)).
+
 -record(perm, {
     state = pending :: pending | installed,
     expires = 0 :: integer(),
@@ -133,6 +137,9 @@
     chans = #{} :: #{address() => #chan{}},
     by_num = #{} :: #{16#4000..16#4FFF => address()},
     next_chan = 16#4000 :: 16#4000..16#4FFF,
+    %% Numbers of failed bindings, and their peer, until they may go to
+    %% another binding.
+    reserved = #{} :: #{16#4000..16#4FFF => {address(), integer()}},
     queue_limit = 64 :: non_neg_integer()
 }).
 
@@ -231,16 +238,18 @@ send_permission(IP, Now, C) ->
 %% @doc Bind a channel to `Peer' (RFC 8656 §12.1). Data keeps flowing
 %% through Send indications until the binding is confirmed.
 -spec bind_channel(address(), integer(), client()) -> {client(), [action()]}.
-bind_channel(Peer, Now, #turn{state = allocated, chans = Ch} = C) ->
+bind_channel(Peer, Now, #turn{state = allocated, chans = Ch} = C0) ->
+    C = expire_reserved(Now, C0),
     case maps:is_key(Peer, Ch) of
         true ->
             {C, []};
         false ->
-            case free_channel(C) of
+            case free_channel(Peer, C) of
                 {ok, N} ->
                     C1 = C#turn{
                         chans = Ch#{Peer => #chan{num = N}},
                         by_num = (C#turn.by_num)#{N => Peer},
+                        reserved = maps:remove(N, C#turn.reserved),
                         next_chan = next_num(N)
                     },
                     send_bind(Peer, N, Now, C1);
@@ -254,16 +263,24 @@ bind_channel(_Peer, _Now, C) ->
 send_bind(Peer, N, Now, C) ->
     request({channel, Peer, N}, [{channel_number, N}, {xor_peer_address, Peer}], Now, C).
 
-free_channel(#turn{by_num = B, next_chan = Start}) ->
-    free_channel(Start, B, 16#1000).
-
-free_channel(_N, _B, 0) ->
-    error;
-free_channel(N, B, Left) ->
-    case maps:is_key(N, B) of
-        false -> {ok, N};
-        true -> free_channel(next_num(N), B, Left - 1)
+%% A peer whose binding failed recently gets its number back (binding
+%% the same pair again refreshes it); other peers skip reserved numbers.
+free_channel(Peer, #turn{by_num = B, reserved = R, next_chan = Start}) ->
+    case [N || N := {P, _} <- R, P =:= Peer] of
+        [N | _] -> {ok, N};
+        [] -> free_channel(Start, B, R, 16#1000)
     end.
+
+free_channel(_N, _B, _R, 0) ->
+    error;
+free_channel(N, B, R, Left) ->
+    case maps:is_key(N, B) orelse maps:is_key(N, R) of
+        false -> {ok, N};
+        true -> free_channel(next_num(N), B, R, Left - 1)
+    end.
+
+expire_reserved(Now, #turn{reserved = R} = C) ->
+    C#turn{reserved = maps:filter(fun(_, {_, Until}) -> Until > Now end, R)}.
 
 next_num(16#4FFF) -> 16#4000;
 next_num(N) -> N + 1.
@@ -454,7 +471,7 @@ error_response(Kind, Attrs, 401, M, Now, C) when Kind =:= allocate ->
     %% Retry only when the credentials change (RFC 8489 §9.2.5).
     case C#turn.realm of
         undefined -> challenge(Kind, Attrs, M, Now, C);
-        _ -> fail(Kind, {error, 401}, C)
+        _ -> fail(Kind, {error, 401}, Now, C)
     end;
 error_response(Kind, Attrs, 438, M, Now, #turn{stale = S} = C) when S < ?MAX_STALE ->
     case webrtc_stun:get(nonce, M) of
@@ -462,19 +479,24 @@ error_response(Kind, Attrs, 438, M, Now, #turn{stale = S} = C) when S < ?MAX_STA
             Realm = webrtc_stun:get(realm, M, C#turn.realm),
             C1 = C#turn{nonce = Nonce, realm = Realm, stale = S + 1},
             case C1#turn.integrity of
-                undefined -> fail(Kind, {error, 438}, C);
+                undefined -> fail(Kind, {error, 438}, Now, C);
                 _ -> request(Kind, Attrs, Now, set_key(C1))
             end;
         error ->
-            fail(Kind, {error, 438}, C)
+            fail(Kind, {error, 438}, Now, C)
     end;
 error_response(refresh, _Attrs, 437, _M, _Now, #turn{state = closing} = C) ->
     %% Deleting an allocation that no longer exists succeeded (§8.3).
     {closed_state(C), [{event, closed}]};
 error_response(Kind, _Attrs, 437, _M, _Now, C) when Kind =/= allocate ->
     {lost_state(C), [{event, {allocation_lost, {error, 437}}}]};
-error_response(Kind, _Attrs, Code, _M, _Now, C) ->
-    fail(Kind, {error, Code}, C).
+error_response({channel, _, _}, _Attrs, 400, _M, Now, C) ->
+    %% The bindings of client and server are out of sync (§12.3): the
+    %% allocation cannot be trusted any more, delete it.
+    {C1, Acts} = close(Now, C),
+    {C1, [{event, {allocation_lost, channel_out_of_sync}} | Acts]};
+error_response(Kind, _Attrs, Code, _M, Now, C) ->
+    fail(Kind, {error, Code}, Now, C).
 
 challenge(Kind, Attrs, M, Now, C) ->
     Realm = webrtc_stun:get(realm, M, undefined),
@@ -487,25 +509,29 @@ challenge(Kind, Attrs, M, Now, C) ->
                     C1 = C#turn{realm = R, nonce = N, pw_algs = Algs, pw_alg = Alg},
                     request(Kind, Attrs, Now, set_key(C1));
                 {error, Why} ->
-                    fail(Kind, Why, C)
+                    fail(Kind, Why, Now, C)
             end;
         _ ->
-            fail(Kind, {error, 401}, C)
+            fail(Kind, {error, 401}, Now, C)
     end.
 
 set_key(#turn{username = U, realm = R, password = P, pw_alg = Alg} = C) ->
     C#turn{integrity = webrtc_turn_auth:integrity(U, R, P, Alg)}.
 
-fail(allocate, Reason, C) ->
+fail(allocate, Reason, _Now, C) ->
     fail_allocate(Reason, C);
-fail(refresh, _Reason, #turn{state = closing} = C) ->
+fail(refresh, _Reason, _Now, #turn{state = closing} = C) ->
     {closed_state(C), [{event, closed}]};
-fail(refresh, Reason, C) ->
+fail(refresh, Reason, _Now, C) ->
     {lost_state(C), [{event, {allocation_lost, Reason}}]};
-fail({permission, IP}, Reason, #turn{perms = P} = C) ->
+fail({permission, IP}, Reason, _Now, #turn{perms = P} = C) ->
     {C#turn{perms = maps:remove(IP, P)}, [{event, {permission, IP, Reason}}]};
-fail({channel, Peer, N}, Reason, #turn{chans = Ch, by_num = B} = C) ->
-    {C#turn{chans = maps:remove(Peer, Ch), by_num = maps:remove(N, B)},
+fail({channel, Peer, N}, Reason, Now, #turn{chans = Ch, by_num = B} = C) ->
+    %% The server may hold the binding anyway (a lost response): neither
+    %% the number nor the peer goes to another binding before it would
+    %% have expired, plus five minutes (§12).
+    Reserved = (C#turn.reserved)#{N => {Peer, Now + ?CHANNEL_QUARANTINE}},
+    {C#turn{chans = maps:remove(Peer, Ch), by_num = maps:remove(N, B), reserved = Reserved},
         [{event, {channel, Peer, Reason}}]}.
 
 fail_allocate(Reason, C) ->
@@ -523,7 +549,7 @@ handle_timeout(Now, C) ->
             ({send, _, B}, {CA, AA}) ->
                 {CA, AA ++ [{send, B}]};
             ({timeout, _, _, {Kind, _}}, {CA, AA}) ->
-                {CB, AB} = fail(Kind, timeout, CA),
+                {CB, AB} = fail(Kind, timeout, Now, CA),
                 {CB, AA ++ AB}
         end,
         {C#turn{tx = Tx}, []},

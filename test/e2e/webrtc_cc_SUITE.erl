@@ -18,7 +18,8 @@
     probing_fills_link_at_start/1,
     probing_on_raised_maximum/1,
     ccfb_without_transport_cc/1,
-    ccfb_tracks_bottleneck/1
+    ccfb_tracks_bottleneck/1,
+    ccfb_ce_marking/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -34,7 +35,8 @@ all() ->
         probing_fills_link_at_start,
         probing_on_raised_maximum,
         ccfb_without_transport_cc,
-        ccfb_tracks_bottleneck
+        ccfb_tracks_bottleneck,
+        ccfb_ce_marking
     ].
 
 init_per_suite(Config) ->
@@ -251,8 +253,8 @@ ccfb_without_transport_cc(Config) ->
     ?assertMatch(#{ecn := on}, CcA),
     close(A, B).
 
-%% The same over a 1 Mbps bottleneck: the estimate tracks it. (The
-%% impairment filter sends without the marks: ECN is found cleared.)
+%% The same over a 1 Mbps bottleneck: the estimate tracks it, and the
+%% marks still get through the bottleneck.
 ccfb_tracks_bottleneck(Config) ->
     {A, B} = pair_ccfb(Config, #{rate => 1000000, queue_ms => 300}),
     {Est, _} = stream(A, B, 15000, fun(_) -> ok end),
@@ -261,7 +263,23 @@ ccfb_tracks_bottleneck(Config) ->
     ?assert(Late =/= []),
     ?assert(lists:all(fun(X) -> X =< 1500000 end, Late)),
     ?assert(lists:max(Late) >= 500000),
-    ?assertMatch(#{ecn := failed}, stats_target(A)),
+    ?assertMatch(#{ecn := on}, stats_target(A)),
+    close(A, B).
+
+%% A 1 Mbps bottleneck that marks CE (a RED-like AQM from 20 ms of
+%% queue): the receiver reports the marks, they count as congestion and
+%% ECN stays in use.
+ccfb_ce_marking(Config) ->
+    {A, B} = pair_ccfb(Config, #{rate => 1000000, queue_ms => 300, ecn_ms => 20}),
+    {Est, _} = stream(A, B, 15000, fun(_) -> ok end),
+    #{ccfb := #{receive_stats := #{ce_received := Ce}}} = stats_target(B),
+    ct:log("estimates ~p~nCE received ~p", [Est, Ce]),
+    ?assert(Ce > 0),
+    ?assertMatch(#{ecn := on}, stats_target(A)),
+    Late = window(Est, 8000, 15000),
+    ?assert(Late =/= []),
+    ?assert(lists:all(fun(X) -> X =< 1300000 end, Late)),
+    ?assert(lists:max(Late) >= 400000),
     close(A, B).
 
 %% With pacing off every packet leaves at once and nothing is queued.

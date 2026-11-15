@@ -374,3 +374,51 @@ probing_with_media_in_flight_test_() ->
         ?assert(At >= 2000000),
         ?assert(lists:all(fun({_, R}) -> R =:= failed orelse R =< 1.1 * 3000000 end, Rs))
     end}.
+
+%%====================================================================
+%% RFC 8888 feedback and ECN in simulation
+%%====================================================================
+
+%% A flow on RFC 8888 feedback converges like one on transport-cc, and
+%% its ECT(0) marks come back: ECN is validated.
+ccfb_converges_test_() ->
+    {timeout, 120, fun() ->
+        Sim = sim(#{link => bottleneck(2000000), flows => [#{feedback => ccfb}], duration_ms => 20000}),
+        #{samples := S, flows := #{1 := #{cc := Cc}}} = Sim,
+        Avg = webrtc_cc_sim:average(S, 1, 10000, 20000),
+        ?debugFmt("RFC 8888 on 2 Mbps: average ~.3f of capacity", [Avg / 2000000]),
+        ?assert(Avg >= 0.6 * 2000000),
+        ?assert(Avg =< 1.1 * 2000000),
+        ?assertMatch(#{ecn := on, ccfb := #{send := true}}, webrtc_cc:stats(Cc))
+    end}.
+
+%% Probing works on RFC 8888 feedback: the link fills as fast as with
+%% transport-cc.
+ccfb_probing_startup_test_() ->
+    {timeout, 120, fun() ->
+        Run = fun(Flow) ->
+            #{samples := S} = sim(#{link => bottleneck(2000000), flows => [Flow], duration_ms => 6000}),
+            webrtc_cc_sim:reached(S, 1, 1400000)
+        end,
+        With = Run(#{feedback => ccfb}),
+        Without = Run(#{feedback => ccfb, probing => false}),
+        ?debugFmt("RFC 8888 to 1.4 Mbps: ~p ms probing, ~p ms without", [With, Without]),
+        ?assert(is_integer(With)),
+        ?assert(Without =:= never orelse With < Without)
+    end}.
+
+%% A bottleneck that marks CE instead of dropping (an AQM at 10 ms): the
+%% marks are reported, ECN stays validated, the queue stays short.
+ce_marking_bottleneck_test_() ->
+    {timeout, 120, fun() ->
+        Sim = sim(#{link => (bottleneck(2000000))#{ecn_ms => 10}, flows => [#{feedback => ccfb}], duration_ms => 20000}),
+        #{samples := S, flows := #{1 := #{cc := Cc}}, link := L} = Sim,
+        #{marked := Marked} = webrtc_cc_link:stats(L),
+        Avg = webrtc_cc_sim:average(S, 1, 10000, 20000),
+        Q = avg_queue(S, 10000, 20000),
+        ?debugFmt("CE marking at 10 ms: ~p marked, average ~.3f of capacity, queue ~.1f ms", [Marked, Avg / 2000000, Q]),
+        ?assert(Marked > 0),
+        ?assertMatch(#{ecn := on}, webrtc_cc:stats(Cc)),
+        ?assert(Avg >= 0.5 * 2000000),
+        ?assert(Q < 100)
+    end}.

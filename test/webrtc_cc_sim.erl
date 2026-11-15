@@ -8,7 +8,8 @@
 %% current target bitrate (frame sizes vary by +-10%), cut into packets
 %% of at most 1200 bytes. A flow's `media_cap' ([{AtMs, Bps | unlimited}])
 %% makes it application limited: frames are sized for the smaller of
-%% the target and the cap.
+%% the target and the cap. With `feedback => ccfb' a flow uses RFC 8888
+%% feedback and ECN instead of transport-wide feedback.
 -module(webrtc_cc_sim).
 
 -include("webrtc_rtp_rtcp.hrl").
@@ -33,12 +34,13 @@ run(Opts) ->
     loop(maps:get(duration_ms, Opts), Sim).
 
 new_flow(I, Opts, Seed) ->
+    Ccfb = maps:get(feedback, Opts, twcc) =:= ccfb,
     Cc = webrtc_cc:configure(
-        #{twcc_send => true, twcc_recv => false, sender_ssrc => I},
-        webrtc_cc:new(maps:without([start_ms, media_cap], Opts))
+        #{twcc_send => not Ccfb, twcc_recv => false, sender_ssrc => I, ccfb => Ccfb, ecn => Ccfb},
+        webrtc_cc:new(maps:without([start_ms, media_cap, feedback], Opts))
     ),
     Rx = webrtc_cc:configure(
-        #{twcc_send => false, twcc_recv => true, sender_ssrc => 1000 + I},
+        #{twcc_send => false, twcc_recv => not Ccfb, sender_ssrc => 1000 + I, ccfb => Ccfb},
         webrtc_cc:new(#{twcc_interval => maps:get(twcc_interval, Opts, 100)})
     ),
     #{
@@ -46,6 +48,8 @@ new_flow(I, Opts, Seed) ->
         cc => Cc,
         rx => Rx,
         start => maps:get(start_ms, Opts, 0),
+        ccfb => Ccfb,
+        rtp_seq => 0,
         cap => lists:keysort(1, maps:get(media_cap, Opts, [])),
         next_frame => float(maps:get(start_ms, Opts, 0)),
         rand => rand:seed_s(exsss, {Seed, I, 99})
@@ -111,6 +115,22 @@ split(B) ->
     Each = B div N,
     [Each + (case I =< B rem N of true -> 1; false -> 0 end) || I <- lists:seq(1, N)].
 
+egress(Sizes, T, #{id := Id, ccfb := true} = F, #{link := L0} = Sim) ->
+    %% RFC 8888: the packet's own sequence number, ECT(0) when marking.
+    {Cc, L, Next} = lists:foldl(
+        fun(Item, {C, L1, Seq}) ->
+            Ecn = case webrtc_cc:ecn_mark(C) of true -> 2; false -> 0 end,
+            {C1, Sz} =
+                case Item of
+                    {probe, Cluster, PSz} -> {webrtc_cc:sent_probe_rtp(Id, Id, Seq, PSz, T, Cluster, C), PSz};
+                    Sz0 -> {webrtc_cc:video_sent(T, webrtc_cc:sent_rtp(Id, Id, Seq, Sz0, T, C)), Sz0}
+                end,
+            {C1, webrtc_cc_link:send({Id, Seq, Sz, Ecn}, Sz, T * 1000, L1), (Seq + 1) band 16#FFFF}
+        end,
+        {maps:get(cc, F), L0, maps:get(rtp_seq, F)},
+        Sizes
+    ),
+    {F#{cc := Cc, rtp_seq := Next}, Sim#{link := L}};
 egress(Sizes, T, #{id := Id} = F, #{link := L0} = Sim) ->
     {Cc, L} = lists:foldl(
         fun
@@ -132,8 +152,11 @@ link_step(T, #{link := L0, flows := Fs0} = Sim) ->
     {Arrived, L} = webrtc_cc_link:deliver(T * 1000, L0),
     Fs = lists:foldl(
         fun({_At, {Id, Seq, _}}, Acc) ->
-            F = maps:get(Id, Acc),
-            Acc#{Id := F#{rx := webrtc_cc:arrival(Seq, Id, T, maps:get(rx, F))}}
+                F = maps:get(Id, Acc),
+                Acc#{Id := F#{rx := webrtc_cc:arrival(Seq, Id, T, maps:get(rx, F))}};
+           ({_At, {Id, Seq, _, Ecn}}, Acc) ->
+                F = maps:get(Id, Acc),
+                Acc#{Id := F#{rx := webrtc_cc:ccfb_arrival(Id, Seq, Ecn, T, maps:get(rx, F))}}
         end,
         Fs0,
         Arrived

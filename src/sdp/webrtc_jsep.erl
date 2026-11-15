@@ -98,7 +98,8 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         max_message_size = maps:get(max_message_size, Opts, 262144),
         bundle = maps:get(bundle, Opts, true),
         encrypt_offer = EncryptMode =:= offer,
-        cryptex = maps:get(cryptex, Opts, true)
+        cryptex = maps:get(cryptex, Opts, true),
+        rtcp_mux_only = maps:get(rtcp_mux_policy, Opts, negotiate) =:= require
     }.
 
 %% @doc Add a transceiver (RTCPeerConnection.addTransceiver). Returns a
@@ -595,6 +596,11 @@ answer_section(OM, O, AM, A, J) ->
             direction_allowed(webrtc_sdp_media:direction(OM, O), webrtc_sdp_media:direction(AM, A)),
             direction_mismatch},
         {not Active orelse not Rtp orelse offered_formats(OM, AM), payload_type_mismatch},
+        %% RFC 5761 §4: payload types 64..95 clash with RTCP when muxed.
+        {not Active orelse not Rtp orelse
+            lists:all(fun(F) -> case string:to_integer(F) of {N, <<>>} -> N < 64 orelse N > 95; _ -> true end end,
+                      AM#sdp_media.fmts),
+            payload_type_conflicts_with_rtcp},
         %% RFC 6904 §4.1: never both the clear and the encrypted form.
         {not Active orelse webrtc_jsep_caps:single_forms(webrtc_sdp_media:attrs(extmap, AM)), both_extension_forms}
     ],

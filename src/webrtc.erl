@@ -136,6 +136,10 @@ new_peer_connection() ->
 %%     `[{cacerts, [Der]}]'.</li>
 %% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
 %%     address).</li>
+%% <li>`rtcp_mux_policy': `negotiate' (default) or `require', which
+%%     adds `a=rtcp-mux-only' to offers (RFC 8858). RTP and RTCP are
+%%     always multiplexed; codecs on payload types 64..95 are refused
+%%     (RFC 5761 §4).</li>
 %% <li>`ice_auto_restart': restart ICE when the selected path stops
 %%     working, since RFC 8445 §8.1.1 allows no second nomination in an
 %%     ICE session. `disconnected' (default) restarts after
@@ -216,6 +220,13 @@ new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
     {error, {badarg, max_message_size}};
 new_peer_connection(#{congestion_control := C}) when not is_map(C) ->
     {error, {badarg, congestion_control}};
+new_peer_connection(#{codecs := Codecs} = Opts) when is_map(Codecs) ->
+    %% RFC 5761 §4: with RTP and RTCP on one port, payload types 64..95
+    %% would read as RTCP packet types.
+    case [Pt || _ := Cs <- Codecs, is_list(Cs), #{pt := Pt} <- Cs, Pt >= 64, Pt =< 95] of
+        [] -> webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts));
+        [Pt | _] -> {error, {badarg, {payload_type, Pt}}}
+    end;
 new_peer_connection(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 

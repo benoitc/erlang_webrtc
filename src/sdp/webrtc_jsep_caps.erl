@@ -134,7 +134,10 @@ default_extensions(video) ->
 %% parameters describe what we receive, except H.264 where the offered
 %% profile-level-id is kept.
 -spec answer_codecs([codec()], [codec()]) -> [codec()].
-answer_codecs(Offered, Local) ->
+answer_codecs(Offered0, Local) ->
+    %% RFC 5761 §4: we always multiplex RTP and RTCP, so payload types
+    %% 64..95 are never answered.
+    Offered = [O || #{pt := Pt} = O <- Offered0, Pt < 64 orelse Pt > 95],
     Primary = [
         answer_codec(O, L)
      || O <- Offered, not is_rtx(O), {ok, L} <- [find_match(O, Local)]

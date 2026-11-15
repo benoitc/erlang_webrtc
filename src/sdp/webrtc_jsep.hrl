@@ -85,6 +85,8 @@
     answerer = false :: boolean(),
     %% Offer and accept encrypted CSRCs and header extensions (RFC 9335).
     cryptex = true :: boolean(),
+    %% RFC 8858: offers say rtcp-mux-only (`rtcp_mux_policy => require').
+    rtcp_mux_only = false :: boolean(),
     %% Offer the encrypted forms of header extensions (RFC 6904).
     encrypt_offer = false :: boolean()
 }).

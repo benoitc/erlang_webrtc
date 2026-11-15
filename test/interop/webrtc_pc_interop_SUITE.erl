@@ -166,7 +166,8 @@ pump(_Pc, P, true, true, _Deadline) ->
     P;
 pump(Pc, P0, Ours, Theirs, Deadline) ->
     case erlang:monotonic_time(millisecond) > Deadline of
-        true -> ct:fail({not_connected, #{erlang => Ours, peer => Theirs, events => ?P:events(P0)}});
+        true -> ct:fail({not_connected, #{erlang => Ours, peer => Theirs, events => ?P:events(P0),
+                                          transports => transport_states(Pc)}});
         false -> ok
     end,
     {P1, Theirs1} = forward_peer(Pc, P0, Theirs),
@@ -194,6 +195,17 @@ forward_peer(Pc, P0, Theirs) ->
         {error, P1, timeout} ->
             {P1, Theirs}
     end.
+
+%% ICE and DTLS state of every transport, for failure reports.
+transport_states(Pc) ->
+    #{transport := T, transports := Ts} = webrtc:get_stats(Pc),
+    [{K, transport_state(S)} || {K, S} <- [{primary, T} | maps:to_list(Ts)]].
+
+transport_state(#{ice := Ice, dtls := Dtls} = T) ->
+    #{ice => maps:without([pairs, local, remote], Ice), dtls => Dtls, dropped => maps:get(dropped, T, #{}),
+      pairs => [{St, maps:get(responses_received, P, 0)} || #{state := St} = P <- maps:get(pairs, Ice, [])]};
+transport_state(Other) ->
+    Other.
 
 peer_candidates() ->
     case get(peer_candidates) of

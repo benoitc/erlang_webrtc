@@ -15,6 +15,8 @@ init([]) ->
     webrtc_transports = ets:new(webrtc_transports, [set, public, named_table, {read_concurrency, true}]),
     %% DTLS 1.3 session tickets (client cache, 0-RTT anti-replay).
     ok = webrtc_dtls_tickets:ensure(),
+    %% Host addresses found public among mDNS-hidden candidates.
+    ok = webrtc_mdns_public:ensure(),
     Children = [
         #{
             id => webrtc_pc_sup,

@@ -156,6 +156,11 @@ new_peer_connection() ->
 %%     `<uuid>.local' name answered by multicast DNS instead of the
 %%     address (draft-ietf-mmusic-mdns-ice-candidates), default
 %%     `false'. Remote `.local' and DNS names are always resolved.</li>
+%% <li>`mdns_expose_public': with `mdns_host_candidates', a host address
+%%     a STUN server mapped to itself is public and later gatherings
+%%     signal it as it is (draft-ietf-mmusic-mdns-ice-candidates
+%%     §3.1.2.2), default `true'; the finding is dropped when the STUN
+%%     servers change.</li>
 %% <li>`mdns': resolver options, see `webrtc_mdns' (`max_pending',
 %%     `schedule', `group', `listen', `group6', `listen6', ...).</li>
 %% <li>`bundle': offer every m= section in one BUNDLE group (RFC 9143),

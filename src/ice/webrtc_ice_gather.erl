@@ -263,9 +263,13 @@ add_srflx(HostId, #ice_cand{} = Host, {SIP, _}, Idx, {MIP, MPort}, S) ->
     add_derived(Cand, HostId, S).
 
 %% Trickle ICE: a redundant candidate is ignored regardless of its
-%% priority (RFC 8838 §9).
+%% priority (RFC 8838 §9). A server-reflexive candidate is not
+%% redundant with a host candidate signaled under an mDNS name: the
+%% host address is hidden, the server-reflexive one is not
+%% (draft-ietf-mmusic-mdns-ice-candidates §3.1.2.2).
 add_derived(Cand, BaseId, S) ->
-    case webrtc_ice_candidate:is_redundant(Cand, maps:values(S#ice.local)) of
+    Others = [O || O <- maps:values(S#ice.local), not hidden(Cand, O, S)],
+    case webrtc_ice_candidate:is_redundant(Cand, Others) of
         true ->
             {S, []};
         false ->
@@ -273,6 +277,9 @@ add_derived(Cand, BaseId, S) ->
             S2 = S1#ice{base_of = (S1#ice.base_of)#{Id => BaseId}},
             {webrtc_ice_checklist:pair_new_local(Id, S2), [{event, {local_candidate, Cand}}]}
     end.
+
+hidden(#ice_cand{type = srflx}, #ice_cand{type = host}, #ice{hidden_hosts = true}) -> true;
+hidden(_Cand, _Other, _S) -> false.
 
 -spec srflx_timeout(tuple(), integer(), #ice{}) -> {#ice{}, [term()]}.
 srflx_timeout(Job, _Now, S) ->

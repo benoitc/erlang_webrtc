@@ -14,6 +14,7 @@
 -export([
     remote_mdns_candidates/1,
     hidden_host_candidates/1,
+    public_host_address/1,
     fqdn_candidates/1,
     pending_candidates_bounded/1
 ]).
@@ -23,7 +24,7 @@
 -define(UNKNOWN, <<"deadbeef-0000-4000-8000-000000000000.local">>).
 
 all() ->
-    [remote_mdns_candidates, hidden_host_candidates, fqdn_candidates, pending_candidates_bounded].
+    [remote_mdns_candidates, hidden_host_candidates, public_host_address, fqdn_candidates, pending_candidates_bounded].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -140,6 +141,86 @@ hidden_host_candidates(_Config) ->
     ok = data_works(A, B),
     webrtc:close(A),
     webrtc:close(B).
+
+%% draft §3.1.2.2 on loopback, where a STUN server maps the host
+%% address to itself: the first gathering hides it and keeps the
+%% server-reflexive candidate; later ones signal it as it is, unless
+%% `mdns_expose_public' is false.
+public_host_address(_Config) ->
+    GP = webrtc_test_mdns:free_port(),
+    Stun = stun_server(),
+    ok = webrtc_mdns_public:ensure(),
+    true = ets:delete(webrtc_mdns_public, ?LO),
+    Round = fun(Extra) ->
+        A = pc(#{mdns => #{group => {?LO, GP}, listen => false}}),
+        B = pc(Extra#{mdns_host_candidates => true, stun_servers => [Stun],
+                      mdns => #{group => {?LO, GP}, listen => {?LO, GP}}}),
+        ok = webrtc:create_data_channel(A, <<"m">>, #{}),
+        _ = negotiate(A, B, fun(C) -> C end),
+        Signaled = all_candidates(A, B, []),
+        ct:log("candidates: ~p", [Signaled]),
+        ok = data_works(A, B),
+        webrtc:close(A),
+        webrtc:close(B),
+        {[C || C <- Signaled, binary:match(C, <<" typ host">>) =/= nomatch],
+         [C || C <- Signaled, binary:match(C, <<" typ srflx">>) =/= nomatch]}
+    end,
+    {Hosts1, Srflx1} = Round(#{}),
+    ?assertMatch([_ | _], Hosts1),
+    [?assertNotEqual(nomatch, binary:match(C, <<".local ">>)) || C <- Hosts1],
+    ?assertMatch([_ | _], [C || C <- Srflx1, binary:match(C, <<" 127.0.0.1 ">>) =/= nomatch]),
+    [?assertNotEqual(nomatch, binary:match(C, <<"raddr 0.0.0.0 rport 9">>)) || C <- Srflx1],
+    {Hosts2, _} = Round(#{}),
+    ?assertMatch([_ | _], [C || C <- Hosts2, binary:match(C, <<" 127.0.0.1 ">>) =/= nomatch]),
+    {Hosts3, _} = Round(#{mdns_expose_public => false}),
+    ?assertMatch([_ | _], Hosts3),
+    [?assertNotEqual(nomatch, binary:match(C, <<".local ">>)) || C <- Hosts3].
+
+%% B's candidates go to A until end-of-candidates and both are connected.
+all_candidates(A, B, Seen) ->
+    all_candidates(A, B, Seen, false, [], erlang:monotonic_time(millisecond) + 15000).
+
+all_candidates(_A, _B, Seen, true, Done, _Deadline) when length(Done) =:= 2 ->
+    lists:reverse(Seen);
+all_candidates(A, B, Seen, Eoc, Done, Deadline) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {webrtc, B, {ice_candidate, end_of_candidates, _}} ->
+            ok = webrtc:add_ice_candidate(A, end_of_candidates),
+            all_candidates(A, B, Seen, true, Done, Deadline);
+        {webrtc, B, {ice_candidate, C, _}} ->
+            ok = webrtc:add_ice_candidate(A, C),
+            all_candidates(A, B, [C | Seen], Eoc, Done, Deadline);
+        {webrtc, P, {connection_state, connected}} when P =:= A; P =:= B ->
+            all_candidates(A, B, Seen, Eoc, lists:usort([P | Done]), Deadline)
+    after Left ->
+        ct:fail({not_done, Eoc, Done})
+    end.
+
+%% A STUN server on loopback: every binding request gets its source.
+stun_server() ->
+    Self = self(),
+    spawn_link(fun() ->
+        {ok, S} = gen_udp:open(0, [binary, {ip, ?LO}, {active, true}]),
+        {ok, Port} = inet:port(S),
+        Self ! {stun, {?LO, Port}},
+        stun_loop(S)
+    end),
+    receive {stun, Addr} -> Addr end.
+
+stun_loop(S) ->
+    receive
+        {udp, S, IP, Port, Bin} ->
+            case webrtc_stun:decode(Bin) of
+                {ok, M} ->
+                    Resp = webrtc_stun:encode(webrtc_stun:success(M, [{xor_mapped_address, {IP, Port}}]),
+                                              #{fingerprint => true}),
+                    ok = gen_udp:send(S, IP, Port, Resp);
+                _ ->
+                    ok
+            end,
+            stun_loop(S)
+    end.
 
 no_ip_in_candidates(Sdp) ->
     Cands = [L || <<"a=candidate:", _/binary>> = L <- binary:split(Sdp, <<"\r\n">>, [global])],

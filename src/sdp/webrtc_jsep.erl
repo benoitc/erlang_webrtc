@@ -153,9 +153,15 @@ update_tr(Id, F, #jsep{transceivers = Trs} = J) ->
     end.
 
 -spec transceivers(state()) -> [map()].
-transceivers(#jsep{transceivers = Trs}) ->
+transceivers(#jsep{transceivers = Trs} = J) ->
+    Neg = case negotiated(J) of
+              #{media := Ms} -> maps:from_list([{Id, M} || #{id := Id} = M <- Ms]);
+              _ -> #{}
+          end,
     [
-        #{
+        maps:merge(
+            maps:with([send_extensions, recv_extensions, send_encrypted, recv_encrypted], maps:get(T#tr.id, Neg, #{})),
+            #{
             id => T#tr.id,
             kind => T#tr.kind,
             mid => T#tr.mid,
@@ -165,7 +171,7 @@ transceivers(#jsep{transceivers = Trs}) ->
             ssrc => T#tr.ssrc,
             rtx_ssrc => T#tr.rtx_ssrc,
             send_encodings => [maps:with([rid, ssrc, rtx_ssrc], E) || E <- T#tr.encodings]
-        }
+        })
      || T <- Trs
     ].
 

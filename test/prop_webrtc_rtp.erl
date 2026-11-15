@@ -364,6 +364,35 @@ rtcp_header(PT, B) ->
 prop_rtcp_mutation_never_crashes() ->
     ?FORALL(Bin, mutated(rtcp_bin()), rtcp_total(Bin)).
 
+%% RFC 6184 interleaved mode: any NAL units, MTU and transmission order
+%% come back in decoding order.
+prop_h264_interleaved_roundtrip() ->
+    ?FORALL(
+        {Sizes, Mtu, Don, Seed},
+        {non_empty(list(integer(1, 3000))), integer(20, 1500), integer(0, 65535), integer()},
+        begin
+            Nals = [<<16#41, (binary:copy(<<(I rem 256)>>, S - 1))/binary>> || {I, S} <- lists:enumerate(Sizes)],
+            {Pkts, _} = webrtc_rtp_h264:packetize_interleaved(Nals, Mtu, Don),
+            %% Shuffle whole NAL units' packets, keeping fragments together.
+            Groups = group_fragments(Pkts),
+            {_, Shuffled} = lists:unzip(lists:sort([{erlang:phash2({Seed, I}), G} || {I, G} <- lists:enumerate(Groups)])),
+            D0 = webrtc_rtp_h264:deinterleaver_new(length(Nals)),
+            {Out, D} = lists:foldl(
+                fun({Seq, P}, {Acc, DA}) -> {ok, O, DB} = webrtc_rtp_h264:deinterleaver_push(Seq, P, DA), {Acc ++ O, DB} end,
+                {[], D0},
+                lists:enumerate(lists:append(Shuffled))
+            ),
+            {Rest, _} = webrtc_rtp_h264:deinterleaver_flush(D),
+            lists:all(fun(P) -> byte_size(P) =< Mtu end, Pkts) andalso Out ++ Rest =:= Nals
+        end
+    ).
+
+group_fragments([]) -> [];
+group_fragments([<<_:3, 29:5, _/binary>> = Start | Rest]) ->
+    {Frags, Tail} = lists:splitwith(fun(<<_:3, T:5, _/binary>>) -> T =:= 28 end, Rest),
+    [[Start | Frags] | group_fragments(Tail)];
+group_fragments([P | Rest]) -> [[P] | group_fragments(Rest)].
+
 prop_payload_helpers_never_crash() ->
     ?FORALL(
         Bin,
@@ -373,6 +402,8 @@ prop_payload_helpers_never_crash() ->
             _ = webrtc_rtp_vp8:rewrite(Bin, #{picture_id => 5, tl0picidx => 6}),
             _ = webrtc_rtp_h264:depacketize(Bin),
             _ = webrtc_rtp_h264:depacketizer_push(0, Bin, webrtc_rtp_h264:depacketizer_new()),
+            _ = webrtc_rtp_h264:depacketize_interleaved(Bin),
+            _ = webrtc_rtp_h264:deinterleaver_push(0, Bin, webrtc_rtp_h264:deinterleaver_new(1)),
             _ = webrtc_rtp_vp9:parse(Bin),
             _ = webrtc_rtp_av1:aggregation_header(Bin),
             _ = webrtc_rtp_opus:duration(Bin),

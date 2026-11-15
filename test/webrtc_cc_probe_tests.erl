@@ -79,3 +79,86 @@ disabled_test() ->
     P = ?P:start(0, 300000, ?P:new(#{probing => false})),
     ?assertEqual(infinity, ?P:next_timeout(P)),
     ?assertEqual({[], P}, ?P:handle_timeout(10, P)).
+
+%% After start-up: the initial clusters went out and got no result.
+settled(Opts) ->
+    P0 = ?P:start(0, 300000, ?P:new(Opts)),
+    {_, P1} = drain(P0, 0, 100, []),
+    {[], P2} = ?P:handle_timeout(5000, P1),
+    P2.
+
+up(Now, E, Sent, P) -> up(Now, E, Sent, normal, P).
+up(Now, E, Sent, D, P) -> ?P:update(Now, #{estimate => E, sending => Sent, delay_state => D}, P).
+
+%% The packets of the next cluster: 15 ms at its rate, 250 byte packets.
+next_cluster(Now, P) ->
+    {Sent, P1} = drain(P, Now, Now + 100, []),
+    {lists:sum([Sz || {_, _, Sz} <- Sent]) * 8000 div 15, P1}.
+
+%% Application limited: under 65% of the estimate for 500 ms, then a
+%% cluster at twice the estimate every 5 s, until sending is back over
+%% 80%.
+alr_probe_test() ->
+    P0 = up(6000, 1000000, 300000, settled(#{})),
+    P1 = up(6400, 1000000, 300000, P0),
+    ?assertMatch(#{application_limited := false}, ?P:info(P1)),
+    P2 = up(6500, 1000000, 300000, P1),
+    ?assertMatch(#{application_limited := true, pending := 0}, ?P:info(P2)),
+    ?assertEqual(11500, ?P:next_timeout(P2)),
+    P3 = up(11499, 1000000, 300000, P2),
+    ?assertMatch(#{pending := 0}, ?P:info(P3)),
+    P4 = up(11500, 1000000, 300000, P3),
+    ?assertMatch(#{pending := 1}, ?P:info(P4)),
+    {Rate, _} = next_cluster(11500, P4),
+    ?assert(Rate >= 2000000 andalso Rate < 2200000),
+    P5 = up(12000, 1000000, 900000, P4),
+    ?assertMatch(#{application_limited := false}, ?P:info(P5)),
+    %% Nothing sent at all is not application limited.
+    P6 = up(20000, 1000000, 0, up(19000, 1000000, 0, settled(#{}))),
+    ?assertMatch(#{application_limited := false}, ?P:info(P6)).
+
+%% A drop under 66% and a recovery from over-use within 5 s: a cluster
+%% at 85% of the rate before the drop.
+drop_probe_test() ->
+    P0 = up(6000, 2000000, 1800000, settled(#{})),
+    P1 = up(6100, 1000000, 1800000, overuse, P0),
+    ?assertMatch(#{pending := 0}, ?P:info(P1)),
+    P2 = up(7000, 1000000, 1000000, normal, P1),
+    ?assertMatch(#{pending := 1}, ?P:info(P2)),
+    {Rate, _} = next_cluster(7000, P2),
+    ?assert(Rate >= 1700000 andalso Rate < 1900000),
+    %% Recovered too late: no probe.
+    Q1 = up(6100, 1000000, 1800000, overuse, P0),
+    Q2 = up(11200, 1000000, 1000000, normal, Q1),
+    ?assertMatch(#{pending := 0}, ?P:info(Q2)),
+    %% Already back near the old rate: no probe either.
+    R1 = up(6100, 1300000, 1800000, overuse, up(6050, 2000000, 1800000, P0)),
+    R2 = up(6200, 1700000, 1800000, normal, R1),
+    ?assertMatch(#{pending := 0}, ?P:info(R2)).
+
+%% A raised maximum probes at once when the estimate sat at the old one.
+max_raised_test() ->
+    P0 = settled(#{max_bitrate => 1000000}),
+    P1 = ?P:max_raised(6000, 1000000, 3000000, 950000, P0),
+    ?assertMatch(#{pending := 1}, ?P:info(P1)),
+    {Rate, _} = next_cluster(6000, P1),
+    ?assert(Rate >= 3000000 andalso Rate < 3300000),
+    ?assertMatch(#{pending := 0}, ?P:info(?P:max_raised(6000, 1000000, 3000000, 500000, P0))),
+    ?assertMatch(#{pending := 0}, ?P:info(?P:max_raised(6000, 3000000, 1000000, 950000, P0))).
+
+%% One cluster in flight, and at most 10 of these probes a minute.
+bounds_test() ->
+    P0 = ?P:max_raised(6000, 1000000, 3000000, 950000, settled(#{max_bitrate => 1000000})),
+    P1 = ?P:max_raised(6001, 3000000, 6000000, 3000000, P0),
+    ?assertMatch(#{pending := 1}, ?P:info(P1)),
+    Fire = fun(I, P) ->
+        Now = 6000 + I * 100,
+        Pa = ?P:max_raised(Now, I * 1000000, (I + 1) * 1000000, I * 1000000, P),
+        {_, Pb} = drain(Pa, Now, Now + 50, []),
+        {[], Pc} = ?P:handle_timeout(Now + 2100 + 50, Pb),
+        Pc
+    end,
+    P2 = lists:foldl(Fire, settled(#{max_bitrate => 1000000}), lists:seq(1, 12)),
+    #{results := Rs} = ?P:info(P2),
+    %% Two initial clusters, then ten.
+    ?assertEqual(12, length(Rs)).

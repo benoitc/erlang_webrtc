@@ -65,6 +65,7 @@
     target/1,
     has_input/1,
     sending_rate/2,
+    delay_state/1,
     set_limits/2,
     info/1
 ]).
@@ -257,14 +258,19 @@ loss_report(Fraction, Now, G) ->
 
 %% @doc The bitrate a probe cluster got through (`webrtc_cc_probe'):
 %% the delay-based estimate jumps to it, unless the detector sees
-%% over-use (libwebrtc's DelayBasedBwe does the same).
+%% over-use (libwebrtc's DelayBasedBwe does the same). The loss-based
+%% estimate is lifted to it too, as libwebrtc's SetSendBitrate does: a
+%% lower `max_bitrate' or a feedback timeout may have cut it.
 -spec probe_result(pos_integer(), integer(), state()) -> {[event()], state()}.
 probe_result(Bps, _Now, #gcc{delay_active = true, delay = D, aimd = A} = G) ->
     case maps:get(state, webrtc_gcc_delay:info(D)) of
         overuse ->
             {[], G};
         _ ->
-            update_target(G#gcc{aimd = webrtc_gcc_aimd:set_rate(max(Bps, webrtc_gcc_aimd:rate(A)), A)})
+            update_target(G#gcc{
+                aimd = webrtc_gcc_aimd:set_rate(max(Bps, webrtc_gcc_aimd:rate(A)), A),
+                loss_based = min(max(Bps, G#gcc.loss_based), G#gcc.max)
+            })
     end;
 probe_result(_Bps, _Now, G) ->
     {[], G}.
@@ -284,6 +290,10 @@ sending_rate(Now, #gcc{sent_rate = R}) ->
         undefined -> 0;
         Bps -> Bps
     end.
+
+%% @doc The delay detector's signal: `normal', `overuse' or `underuse'.
+-spec delay_state(state()) -> atom().
+delay_state(#gcc{delay = D}) -> maps:get(state, webrtc_gcc_delay:info(D)).
 
 -spec sent(non_neg_integer(), integer(), state()) -> state().
 sent(Size, Now, G) ->

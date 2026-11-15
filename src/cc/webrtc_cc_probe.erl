@@ -12,13 +12,29 @@
 %% could not carry the cluster. A result above 70% of the probed rate
 %% probes again at twice the result, up to `max_bitrate'.
 %%
+%% After start-up, `update/3' follows the estimate and the sending
+%% rate and probes again, as libwebrtc's ProbeController does:
+%% <ul>
+%% <li>Application limited (ALR): sending under 65% of the estimate for
+%%     500 ms, until it is back over 80%. While it lasts a cluster at
+%%     twice the estimate goes every 5 s, so the estimate keeps up with
+%%     the link while the application sends little.</li>
+%% <li>After a large drop: the estimate fell under 66% of its previous
+%%     value, the delay detector leaves over-use within 5 s, and a probe
+%%     at 85% of the rate before the drop would still raise it.</li>
+%% <li>On a raised `max_bitrate' (`max_raised/5'): the estimate was at
+%%     the old maximum, so the new one is probed at once.</li>
+%% </ul>
+%% At most one cluster is in flight, and these probes are limited to
+%% 10 a minute.
+%%
 %% `handle_timeout/2' returns `{probe, Cluster, Size}' padding packets
 %% to send now; the caller tags them with the cluster in the
 %% transport-wide send history so `feedback/3' sees which results belong
 %% to a probe.
 -module(webrtc_cc_probe).
 
--export([new/1, start/3, handle_timeout/2, next_timeout/1, feedback/3, info/1]).
+-export([new/1, start/3, update/3, max_raised/5, handle_timeout/2, next_timeout/1, feedback/3, info/1]).
 
 -export_type([state/0]).
 
@@ -34,6 +50,19 @@
 -define(FURTHER, 0.70).
 %% A cluster that got no usable feedback in this time is given up.
 -define(RESULT_TIMEOUT, 2000).
+%% AlrDetector and ProbeController.
+-define(ALR_START, 0.65).
+-define(ALR_STOP, 0.80).
+-define(ALR_MS, 500).
+-define(ALR_INTERVAL, 5000).
+-define(ALR_SCALE, 2).
+-define(DROP, 0.66).
+-define(DROP_TIMEOUT, 5000).
+-define(AFTER_DROP, 0.85).
+-define(UNCERTAINTY, 0.05).
+-define(CAPPED, 0.9).
+-define(BUDGET, 10).
+-define(BUDGET_MS, 60000).
 
 -record(cluster, {
     id :: pos_integer(),
@@ -56,7 +85,17 @@
     queue = [] :: [#cluster{}],
     sending :: undefined | #cluster{},
     waiting = [] :: [#cluster{}],
-    results = [] :: [{pos_integer(), pos_integer() | failed}]
+    results = [] :: [{pos_integer(), pos_integer() | failed}],
+    %% The last estimate, when sending first fell under ALR_START, and
+    %% since when the sender is application limited.
+    estimate :: undefined | pos_integer(),
+    low_since :: undefined | integer(),
+    alr_since :: undefined | integer(),
+    %% The estimate before the last large drop, and when it happened.
+    drop :: undefined | {pos_integer(), integer()},
+    delay_state = normal :: atom(),
+    %% Start times of the probes after start-up, within BUDGET_MS.
+    probed = [] :: [integer()]
 }).
 
 -opaque state() :: #probe{}.
@@ -74,6 +113,86 @@ start(Now, StartBps, #probe{enabled = true, started = false} = P) ->
     schedule(Rates, Now, P#probe{started = true});
 start(_Now, _StartBps, P) ->
     P.
+
+%% @doc Follow the estimate (`estimate'), the rate being sent
+%% (`sending', bps over the last second) and the delay detector state
+%% (`delay_state'), probing when the sender is application limited or
+%% after a large drop.
+-spec update(integer(), #{estimate := pos_integer(), sending := non_neg_integer(), delay_state := atom()}, state()) ->
+    state().
+update(Now, #{estimate := E, sending := Sent, delay_state := D}, #probe{enabled = true, started = true} = P0) ->
+    P1 = alr(Now, E, Sent, P0),
+    P2 = drop(Now, E, D, P1),
+    P3 = alr_probe(Now, E, P2),
+    P3#probe{estimate = E, delay_state = D};
+update(_Now, #{estimate := E}, P) ->
+    P#probe{estimate = E}.
+
+alr(Now, E, Sent, #probe{low_since = Low, alr_since = Alr} = P) ->
+    if
+        Sent > 0, Sent < ?ALR_START * E ->
+            Since = case Low of undefined -> Now; _ -> Low end,
+            InAlr = case Alr of undefined when Now - Since >= ?ALR_MS -> Now; _ -> Alr end,
+            P#probe{low_since = Since, alr_since = InAlr};
+        Sent > ?ALR_STOP * E; Sent =:= 0 ->
+            P#probe{low_since = undefined, alr_since = undefined};
+        true ->
+            P
+    end.
+
+alr_probe(Now, E, #probe{alr_since = Alr} = P) when Alr =/= undefined ->
+    Last = lists:max([Alr | P#probe.probed]),
+    Rate = min(?ALR_SCALE * E, P#probe.max),
+    case Now - Last >= ?ALR_INTERVAL andalso Rate > E of
+        true -> probe(Now, Rate, P);
+        false -> P
+    end;
+alr_probe(_Now, _E, P) ->
+    P.
+
+%% A large drop is remembered for DROP_TIMEOUT; leaving over-use in that
+%% time probes back towards the rate before it.
+drop(Now, E, D, #probe{estimate = Prev} = P) ->
+    P1 =
+        case Prev of
+            _ when is_integer(Prev), E < ?DROP * Prev -> P#probe{drop = {Prev, Now}};
+            _ -> P
+        end,
+    case {P1#probe.drop, P1#probe.delay_state, D} of
+        {{Before, At}, overuse, S} when S =/= overuse, Now - At < ?DROP_TIMEOUT ->
+            Rate = min(round(?AFTER_DROP * Before), P1#probe.max),
+            case (1 - ?UNCERTAINTY) * Rate > E of
+                true -> probe(Now, Rate, P1#probe{drop = undefined});
+                false -> P1
+            end;
+        {{_, At}, _, _} when Now - At >= ?DROP_TIMEOUT ->
+            P1#probe{drop = undefined};
+        _ ->
+            P1
+    end.
+
+%% @doc `max_bitrate' went from `Old' to `New': an estimate capped at
+%% `Old' probes `New' at once.
+-spec max_raised(integer(), pos_integer(), pos_integer(), pos_integer(), state()) -> state().
+max_raised(Now, Old, New, E, #probe{enabled = true, started = true} = P) when New > Old ->
+    P1 = P#probe{max = New},
+    case E >= ?CAPPED * Old of
+        true -> probe(Now, New, P1);
+        false -> P1
+    end;
+max_raised(_Now, _Old, New, _E, P) ->
+    P#probe{max = New}.
+
+%% One cluster at a time, within the budget.
+probe(Now, Rate, P) ->
+    Recent = [T || T <- P#probe.probed, Now - T < ?BUDGET_MS],
+    case idle(P) andalso length(Recent) < ?BUDGET of
+        true -> schedule([Rate], Now, P#probe{probed = [Now | Recent]});
+        false -> P#probe{probed = Recent}
+    end.
+
+idle(#probe{queue = [], sending = undefined, waiting = []}) -> true;
+idle(_) -> false.
 
 schedule(Rates, _Now, #probe{next_id = Id0, queue = Q} = P) ->
     {Clusters, Next} = lists:mapfoldl(
@@ -111,8 +230,11 @@ handle_timeout(Now, P0) ->
     end.
 
 -spec next_timeout(state()) -> integer() | infinity.
-next_timeout(#probe{sending = undefined, queue = []}) ->
+next_timeout(#probe{sending = undefined, queue = [], alr_since = undefined}) ->
     infinity;
+next_timeout(#probe{sending = undefined, queue = [], alr_since = Alr, probed = Probed}) ->
+    %% The next ALR probe, for update/3 to send.
+    lists:max([Alr | Probed]) + ?ALR_INTERVAL;
 next_timeout(#probe{sending = undefined}) ->
     0;
 next_timeout(#probe{sending = #cluster{rate = R, sent = S, started = T0}}) ->
@@ -192,5 +314,6 @@ info(#probe{} = P) ->
         enabled => P#probe.enabled,
         started => P#probe.started,
         pending => length(P#probe.queue) + length(P#probe.waiting) + case P#probe.sending of undefined -> 0; _ -> 1 end,
-        results => P#probe.results
+        results => P#probe.results,
+        application_limited => P#probe.alr_since =/= undefined
     }.

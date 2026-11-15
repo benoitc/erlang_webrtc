@@ -619,3 +619,74 @@ both_forms_refused_test() ->
     Both = binary:replace(Bin, <<"a=extmap:5 ">>, <<"a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=extmap:5 ">>),
     {ok, Bad} = webrtc_sdp:parse(Both),
     ?assertMatch({error, {both_extension_forms, _}}, webrtc_jsep:set_remote_description(answer, Bad, A2)).
+
+%%====================================================================
+%% RFC 5761 §4, RFC 8858, RFC 3550 §8.2
+%%====================================================================
+
+sdp_text(Sdp) -> webrtc_sdp:encode(Sdp).
+
+reparse(Bin) -> {ok, P} = webrtc_sdp:parse(Bin), P.
+
+%% An offer with a codec on payload type 70: never answered, we mux.
+mux_payload_types_not_answered_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),
+    Bin = binary:replace(sdp_text(Offer), <<"a=rtpmap:0 PCMU/8000">>, <<"a=rtpmap:70 PCMU/8000">>),
+    Bin1 = re:replace(Bin, <<"(m=audio [0-9]+ [A-Z/]+ [0-9 ]*?)\\b0\\b">>, <<"\\g{1}70">>, [{return, binary}]),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, reparse(Bin1), B0),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    ?assertEqual(nomatch, binary:match(sdp_text(Answer), <<"a=rtpmap:70">>)).
+
+%% Our offer (from a JSEP state given such a codec; peer connections
+%% refuse it) carries payload type 70: an answer using it is refused.
+mux_payload_type_answer_refused_test() ->
+    [Opus | Rest] = webrtc_jsep_caps:default_codecs(audio),
+    Codecs = #{audio => [Opus#{pt := 70} | Rest], video => webrtc_jsep_caps:default_codecs(video)},
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new(#{codecs => Codecs})),
+    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, A0),
+    {ok, A2} = webrtc_jsep:set_local_description(offer, Offer, A1),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new(#{codecs => Codecs})),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), B0),
+    %% Answering ourselves drops it, so the peer's answer is written.
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    ?assertEqual(nomatch, binary:match(sdp_text(Answer), <<"a=rtpmap:70 ">>)),
+    Bad = re:replace(sdp_text(Answer), <<"(m=audio [0-9]+ [A-Z/]+ )">>, <<"\\g{1}70 ">>, [{return, binary}]),
+    Bad1 = binary:replace(Bad, <<"a=rtcp-mux\r\n">>, <<"a=rtcp-mux\r\na=rtpmap:70 opus/48000/2\r\n">>),
+    ?assertMatch({error, {payload_type_conflicts_with_rtcp, _}},
+                 webrtc_jsep:set_remote_description(answer, reparse(Bad1), A2)).
+
+%% rtcp-mux-only only with rtcp_mux_policy => require.
+rtcp_mux_only_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, O1, _} = webrtc_jsep:create_offer(#{}, A0),
+    ?assertEqual(nomatch, binary:match(sdp_text(O1), <<"a=rtcp-mux-only">>)),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new(#{rtcp_mux_policy => require})),
+    {ok, O2, _} = webrtc_jsep:create_offer(#{}, B0),
+    ?assertNotEqual(nomatch, binary:match(sdp_text(O2), <<"a=rtcp-mux-only">>)),
+    %% A peer offering rtcp-mux-only gets rtcp-mux in the answer.
+    {ok, _, C0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, C1} = webrtc_jsep:set_remote_description(offer, wire(O2), C0),
+    {ok, Ans, _} = webrtc_jsep:create_answer(#{}, C1),
+    ?assertNotEqual(nomatch, binary:match(sdp_text(Ans), <<"a=rtcp-mux\r\n">>)).
+
+%% The remote offer announces one of our SSRCs: ours changes before
+%% the answer.
+ssrc_clash_avoided_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
+    {ok, Probe, _} = webrtc_jsep:create_offer(#{}, B0),
+    {match, [Ours]} = re:run(sdp_text(Probe), <<"a=ssrc:([0-9]+) cname">>, [{capture, all_but_first, binary}]),
+    {match, [Theirs]} = re:run(sdp_text(Offer), <<"a=ssrc:([0-9]+) cname">>, [{capture, all_but_first, binary}]),
+    Clash = binary:replace(sdp_text(Offer), Theirs, Ours, [global]),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, reparse(Clash), B0),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    ?assertEqual(nomatch, binary:match(sdp_text(Answer), <<"a=ssrc:", Ours/binary, " ">>)).
+
+%% A peer connection is not created with codecs on 64..95.
+mux_payload_types_refused_at_creation_test() ->
+    [Opus | Rest] = webrtc_jsep_caps:default_codecs(audio),
+    ?assertEqual({error, {badarg, {payload_type, 77}}},
+                 webrtc:new_peer_connection(#{codecs => #{audio => [Opus#{pt := 77} | Rest]}})).

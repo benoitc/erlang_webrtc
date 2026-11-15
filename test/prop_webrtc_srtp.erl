@@ -92,6 +92,9 @@ prop_rtp_roundtrip() ->
                             end;
                         {error, E} when E =:= replay; E =:= too_old ->
                             {T, R, Acc};
+                        {error, cryptex_unsupported} when Cryptex ->
+                            %% An extension profile cryptex cannot carry.
+                            {T, R, Acc};
                         {error, malformed} ->
                             %% Only for a profile reserved for cryptex.
                             case cryptex_profile(Pkt) of

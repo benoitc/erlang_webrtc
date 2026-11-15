@@ -66,7 +66,8 @@ init(#{owner := App} = Opts) ->
     process_flag(trap_exit, true),
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
-    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex, encrypt_header_extensions], Opts), #{
+    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex, encrypt_header_extensions,
+                                                 rtcp_mux_policy], Opts), #{
         ice_ufrag => ice_string(8),
         ice_pwd => ice_string(24),
         fingerprints => [FP],
@@ -539,6 +540,9 @@ transport_event({dtls_closed, _R}, St) ->
     update_connection(St#st{dtls_state = closed});
 transport_event({consent_lost, _, _}, St) ->
     update_connection(auto_restart(St#st{ice_state = failed}));
+transport_event({ssrc_changed, Mid, Old, New}, St) ->
+    %% RFC 3550 §8.2: later offers and answers carry the new SSRC.
+    St#st{jsep = webrtc_jsep:change_ssrc(Mid, Old, New, St#st.jsep)};
 transport_event({datachannel, {connected, _}}, St) ->
     lists:foreach(
         fun({L, O}) ->
@@ -806,6 +810,8 @@ extra_event(K, Event, St) ->
             update_connection(Put(X#{dtls => closed}));
         {datachannel, _} ->
             %% SCTP runs on this transport.
+            transport_event(Event, St);
+        {ssrc_changed, _, _, _} ->
             transport_event(Event, St);
         _ ->
             St

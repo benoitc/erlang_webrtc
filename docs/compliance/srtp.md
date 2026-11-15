@@ -84,7 +84,7 @@ This page tracks the SRTP and SRTCP requirements implemented by `src/srtp`: pack
 | CRYPTEX-3 | 5.2, 6.2 | AES-GCM: fixed header and extension header are the associated data, CSRCs, extension data and payload the plaintext | webrtc_srtp_cipher | webrtc_srtp_cryptex_tests:vectors_test_ (A.2), tampered_test | Unit tested |
 | CRYPTEX-4 | 6.3 | The receiver recognises cryptex by the extension profile and accepts both forms | webrtc_srtp | webrtc_srtp_cryptex_tests:vectors_test_ | Unit tested |
 | CRYPTEX-5 | 6.1 | `a=cryptex` offered on RTP sections; answered for a transport whose RTP sections all have it (media or session level); sent once every section negotiated it | webrtc_jsep_build, webrtc_jsep_params, webrtc_media | webrtc_pc_SUITE:cryptex, webrtc_pc_interop_SUITE:cryptex_echo | Interoperability tested (Pion) |
-| CRYPTEX-6 | 6.3 | Refusing packets without cryptex once it is required | | | Not implemented: packets in either form are accepted |
+| CRYPTEX-6 | 6.3, 5.1 | Once cryptex is negotiated, packets with header extensions or CSRCs in any other form are refused (`cryptex_required`); a packet whose extension profile cryptex cannot carry is not sent (`cryptex_unsupported`) | webrtc_srtp, webrtc_media | webrtc_srtp_tests:cryptex_required_test, webrtc_media_tests:cryptex_required_test, prop_webrtc_srtp:prop_rtp_roundtrip | Unit tested; interop with Chromium, Firefox, Pion and aiortc unchanged |
 
 ## RFC 5764: DTLS-SRTP keying
 

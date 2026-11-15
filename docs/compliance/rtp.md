@@ -18,7 +18,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTP-10 | A.3 | Expected, cumulative lost clamped to 24-bit signed, fraction lost per interval | webrtc_rtp_stats | loss_and_fraction_test, duplicates_negative_loss_test, lost_clamp_test | Unit tested |
 | RTP-11 | 6.4.1, A.8 | Interarrival jitter in timestamp units, robust to timestamp wrap | webrtc_rtp_stats | jitter_test, jitter_ts_wrap_test, jitter_time_unit_test | Unit tested |
 | RTP-12 | 6.4.1 | Sender packet and payload octet counts for SR | webrtc_rtp_stats | sender_test | Unit tested |
-| RTP-13 | 8.1, 8.2 | Random SSRC choice and collision detection | | | Not implemented (session layer) |
+| RTP-13 | 8.1, 8.2 | Random SSRC choice and collision detection: our SSRCs avoid those of the remote description; a peer packet or RTCP sender using one of ours makes that sender take a new SSRC, send a BYE for the old one and report `{ssrc_changed, Mid, Old, New}`, later descriptions carrying the new one | webrtc_jsep, webrtc_media_out, webrtc_media_in, webrtc_pc | webrtc_jsep_tests:ssrc_clash_avoided_test, webrtc_media_tests:ssrc_collision_test | Unit tested |
 
 ## RFC 3550: RTCP packets
 
@@ -36,7 +36,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTCP-10 | 6.4.1, A.2 | Padding count valid (1..length) | webrtc_rtcp | padding_test_ | Unit tested |
 | RTCP-11 | A.2 | Unknown packet types kept as raw, the others still decoded | webrtc_rtcp | unknown_type_preserved_test, prop_rtcp_roundtrip | Unit tested |
 | RTCP-12 | 6.1 | Truncated or corrupted RTCP returns an error, never crashes | webrtc_rtcp | truncation_test_, prop_rtcp_decode_never_crashes, prop_rtcp_mutation_never_crashes | Unit tested |
-| RTCP-13 | 6.4.2 | More than 31 sources need several RR packets | webrtc_rtcp | sr_with_reports_and_extension_test (32 blocks rejected) | Not implemented: encode rejects more than 31 blocks, splitting them across packets is left to the caller |
+| RTCP-13 | 6.4.2 | More than 31 sources need several RR packets: the first SR or RR carries 31 blocks, extra RRs the rest, within the RTCP budget and rotating the sources | webrtc_media_out | webrtc_rtcp_tests:sr_with_reports_and_extension_test (32 blocks in one packet rejected), webrtc_media_tests:many_sources_reported_test (80 sources) | Unit tested |
 | RTCP-14 | 6.2, 6.3.1, A.7 | Interval: senders / receivers bandwidth split, Tmin, randomisation in [0.5, 1.5), e - 3/2 compensation | webrtc_rtcp_interval | webrtc_rtcp_interval_tests:deterministic_test_, randomised_test_ | Unit tested |
 | RTCP-15 | 6.2, A.7 | Initial interval uses half the minimum | webrtc_rtcp_interval | min_interval_test_ | Unit tested |
 | RTCP-16 | 6.3.3 | avg_rtcp_size moving average (1/16) | webrtc_rtcp_interval | avpf_helpers_test_ | Unit tested |
@@ -160,8 +160,8 @@ No independent implementation answers these messages (browsers, Pion and aiortc 
 | ID | Section | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
 | MUX-1 | RFC 5761 §4 | Demultiplex by the second octet: 192..223 is RTCP | webrtc_rtp | classify_test_ | Unit tested |
-| MUX-2 | RFC 5761 §4 | RTP payload types 64..95 MUST NOT be used when multiplexing | | | Not implemented: the codec accepts any payload type; the SDP layer must not offer 64..95 |
-| MUX-3 | RFC 8858 §4 | rtcp-mux-only negotiation | | | Not implemented (SDP layer) |
+| MUX-2 | RFC 5761 §4 | RTP payload types 64..95 MUST NOT be used when multiplexing: codecs on them are refused at `new_peer_connection/1`, never answered, and an answer using them is refused (`payload_type_conflicts_with_rtcp`) | webrtc, webrtc_jsep_caps, webrtc_jsep | webrtc_jsep_tests:mux_payload_types_not_answered_test, mux_payload_type_answer_refused_test, mux_payload_types_refused_at_creation_test | Unit tested |
+| MUX-3 | RFC 8858 §4 | rtcp-mux-only: offers carry it with `rtcp_mux_policy => require`; an offer with it is answered with rtcp-mux (we always multiplex) | webrtc_jsep_build | webrtc_jsep_tests:rtcp_mux_only_test | Unit tested |
 
 ## RFC 5506: reduced-size RTCP
 

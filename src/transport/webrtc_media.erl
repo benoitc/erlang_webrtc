@@ -133,7 +133,7 @@ configure(Sections, #media{} = M) ->
               end,
         in = case M#media.in of
                  undefined -> undefined;
-                 In -> webrtc_srtp:set_encrypted_extensions(RecvEnc, In)
+                 In -> webrtc_srtp:set_encrypted_extensions(RecvEnc, webrtc_srtp:set_cryptex(Cryptex, In))
              end,
         senders = Senders,
         twcc_ids = TwccIds,

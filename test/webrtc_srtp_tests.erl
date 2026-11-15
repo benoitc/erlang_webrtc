@@ -3,6 +3,7 @@
 %% replay protection, authentication failures and malformed input.
 -module(webrtc_srtp_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include("webrtc_rtp.hrl").
 
 -import(webrtc_test_hex, [b/1]).
 
@@ -812,3 +813,22 @@ rx_streams_bounded_test() ->
     {ok, Known, _} = webrtc_srtp:protect_rtp(rtp(2, 7, <<"x">>), Tx),
     ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(Known, Rx1)),
     ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(New, webrtc_srtp:forget(7, Rx1))).
+
+%% RFC 9335 §6.3: once cryptex is negotiated, a packet with header
+%% extensions in the plain form is refused; without extensions it is
+%% fine, and the cryptex form is accepted.
+cryptex_required_test() ->
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    {Plain, _} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    {Cx, _} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{cryptex => true}),
+    {_, Rx0} = webrtc_srtp:dtls_contexts(Profile, Material, client, #{}),
+    Rx = webrtc_srtp:set_cryptex(true, Rx0),
+    WithExt = webrtc_rtp:encode(#rtp{pt = 111, seq = 1, ts = 1, ssrc = 5, ext = [{1, <<"0">>}], payload = <<"a">>}),
+    NoExt = webrtc_rtp:encode(#rtp{pt = 111, seq = 2, ts = 2, ssrc = 5, payload = <<"b">>}),
+    {ok, P1, _} = webrtc_srtp:protect_rtp(WithExt, Plain),
+    ?assertEqual({error, cryptex_required}, webrtc_srtp:unprotect_rtp(P1, Rx)),
+    {ok, P2, _} = webrtc_srtp:protect_rtp(NoExt, Plain),
+    ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(P2, Rx)),
+    {ok, P3, _} = webrtc_srtp:protect_rtp(WithExt, Cx),
+    ?assertMatch({ok, _, _}, webrtc_srtp:unprotect_rtp(P3, Rx)).

@@ -38,7 +38,8 @@ offer(_Opts, J0) ->
     Order = [Mid || {_, Mid, _} <- Slots],
     Groups = webrtc_jsep_transport:offer(J1#jsep.groups, Active, Order, J1#jsep.bundle),
     J2 = ensure_creds(Groups, J1),
-    Media = [offer_section(Slot, Setup, (ctx(Mid, Groups, J2))#{cryptex => J2#jsep.cryptex}, J2) || {_, Mid, _} = Slot <- Slots],
+    Media = [offer_section(Slot, Setup, (ctx(Mid, Groups, J2))#{cryptex => J2#jsep.cryptex, rtcp_mux_only => J2#jsep.rtcp_mux_only}, J2)
+             || {_, Mid, _} = Slot <- Slots],
     Session = session(webrtc_jsep_transport:bundles(Groups), J2),
     {Session#sdp{media = Media}, J2}.
 
@@ -300,7 +301,8 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
             [{mid, Mid}] ++
             [{extmap, webrtc_jsep_caps:to_extmap(E)} || E <- Exts] ++
             [{direction, Dir}] ++ Msid ++
-            [{rtcp_mux, true}, {rtcp_rsize, true}] ++ [{cryptex, true} || maps:get(cryptex, Ctx, false)] ++
+            [{rtcp_mux, true}] ++ [{rtcp_mux_only, true} || maps:get(rtcp_mux_only, Ctx, false)] ++
+                [{rtcp_rsize, true}] ++ [{cryptex, true} || maps:get(cryptex, Ctx, false)] ++
             webrtc_sdp_media:codec_attributes(Codecs) ++ Ssrcs ++ Rids,
     Sec = #sdp_media{
         media = atom_to_binary(T#tr.kind),

@@ -181,6 +181,11 @@ new_peer_connection(Opts) ->
 %% restrictions => [{Name, Value}]}' where `restrictions' are RFC 8851
 %% §5 restrictions such as `{<<"max-width">>, <<"640">>}'. Returns
 %% `{error, invalid_encodings}' for duplicate or malformed rids.
+%% `recv_rids' lists the simulcast layers to ask the peer for, as rids
+%% or `#{rid => Rid, paused => true}' for a layer that starts paused
+%% (resume it with `request_resume/3'). A transceiver without
+%% `send_encodings' answering an offer that asks to receive simulcast
+%% sends the offered layers.
 -spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).

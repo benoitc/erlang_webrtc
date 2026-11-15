@@ -209,6 +209,7 @@ hello_retry(#{hash := H} = Suite, Exts, Body, St) ->
     CH1 = client_hello_msg(St),
     Transcript = [webrtc_dtls13_msg:transcript_msg(server_hello, Body), webrtc_dtls13_msg:message_hash(crypto:hash(H, CH1))],
     St1 = webrtc_dtls13:implicit_ack(St#dtls{
+        zero_rtt = case St#dtls.zero_rtt of offered -> rejected; Z -> Z end,
         version = dtls13,
         hrr = true,
         suite13 = Suite,
@@ -216,7 +217,10 @@ hello_retry(#{hash := H} = Suite, Exts, Body, St) ->
         kx = Kx,
         transcript = Transcript
     }),
-    send_client_hello2(St1).
+    %% RFC 8446 §4.1.2: no early data after a HelloRetryRequest; what
+    %% was sent is lost and the caller resends it.
+    St2 = case St#dtls.zero_rtt of offered -> webrtc_dtls:emit(early_data_rejected, St1); _ -> St1 end,
+    send_client_hello2(St2).
 
 %% The ClientHello in the transcript, as a TLS 1.3 style message.
 client_hello_msg(#dtls{transcript = T}) ->
@@ -421,9 +425,8 @@ client(wait_finished, finished, VD, Full, _Now, St) ->
     #{chs := CHS, cap := CAP} = St3#dtls.secrets,
     St4 = resumption_secret(queue(finished, finished_body(CHS, St3), St3)),
     %% Application data uses epoch 3 once our Finished is sent; early
-    %% data ends here.
-    ZeroRtt = case St4#dtls.zero_rtt of undefined -> undefined; _ -> done end,
-    webrtc_dtls13_epoch:install_write(3, CAP, St4#dtls{state = wait_ack, zero_rtt = ZeroRtt});
+    %% data ends here (zero_rtt is already accepted or rejected).
+    webrtc_dtls13_epoch:install_write(3, CAP, St4#dtls{state = wait_ack});
 client(S, new_session_ticket, M, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
     %% The server only sends it after our Finished, so it also confirms
     %% our flight. Kept for a later resumption with the same peer.

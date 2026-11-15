@@ -1088,7 +1088,7 @@ early_data_test() ->
     #{s := Ss, c := Cs, ev := #{s := SE}} = webrtc_dtls_sim:deliver(W0, c, A1 ++ A2),
     ?assert(lists:member({data, <<"early hello">>}, SE)),
     ?assertMatch(#{resumed := true, early_data := accepted}, info(Ss)),
-    ?assertMatch(#{early_data := done}, info(Cs)),
+    ?assertMatch(#{early_data := accepted}, info(Cs)),
     %% The same first flight again (a replay) to another server: the
     %% early data is refused (single use, §8.1) and the server answers
     %% with a cookie instead.
@@ -1116,3 +1116,23 @@ tickets_need_psk_modes_test() ->
     #{s := Ss2} = run(C2, S2),
     ?assertEqual(1, Ss2#dtls.ticket_nonce).
 
+%% A HelloRetryRequest rejects 0-RTT (RFC 8446 §4.1.2): the client
+%% reports it, still resumes and sends the data once connected.
+early_data_rejected_on_retry_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    _ = run(C1, S1),
+    %% This server takes no early data, so it sends its cookie first.
+    {C2, S2} = pair(C, S, zero_rtt_opts(), resume_opts()),
+    {Cl1, A1} = webrtc_dtls:start(0, C2),
+    {ok, Cl2, A2} = webrtc_dtls:send(<<"early hello">>, Cl1),
+    W0 = webrtc_dtls_sim:run(Cl2, S2, fun webrtc_dtls_sim:pass/3, #{start => false}),
+    #{s := Ss, c := Cs, ev := #{s := SE, c := CE}} = webrtc_dtls_sim:deliver(W0, c, A1 ++ A2),
+    ?assert(Cs#dtls.hrr),
+    ?assert(lists:member(early_data_rejected, CE)),
+    ?assertNot(lists:member({data, <<"early hello">>}, SE)),
+    ?assertMatch(#{resumed := true, early_data := rejected}, info(Cs)),
+    ?assertMatch(#{resumed := true}, info(Ss)),
+    _ = data(Cs, Ss, <<"early hello">>, 1000).

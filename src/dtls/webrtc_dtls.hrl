@@ -133,7 +133,7 @@
     ticket_nonce = 0 :: non_neg_integer(),
     psk :: undefined | map(),
     resumed = false :: boolean(),
-    zero_rtt :: undefined | offered | accepted | rejected | done,
+    zero_rtt :: undefined | offered | accepted | rejected,
     early_sent = 0 :: non_neg_integer(),
     out = [] :: [term()]
 }).

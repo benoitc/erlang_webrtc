@@ -105,6 +105,27 @@ jobs:
         run: |
           echo "$HOME/openssl4/bin" >> "$GITHUB_PATH"
           "$HOME/openssl4/bin/openssl" version
+      # mbedTLS 3 example programs for the DTLS 1.2 connection ID cases
+      # (RFC 9146); DTLS-SRTP is off in its default configuration.
+      - name: Cache mbedTLS
+        id: mbedtls
+        uses: actions/cache@v4
+        with:
+          path: ~/mbedtls
+          key: mbedtls-3.6.6-${{ matrix.arch }}
+      - name: Build mbedTLS programs
+        if: steps.mbedtls.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.6/mbedtls-3.6.6.tar.bz2 | tar xj
+          cd mbedtls-3.6.6
+          python3 scripts/config.py set MBEDTLS_SSL_DTLS_SRTP
+          python3 scripts/config.py set MBEDTLS_SSL_DTLS_CONNECTION_ID
+          cmake -B build -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=ON
+          cmake --build build -j"$(nproc)" --target ssl_server2 ssl_client2
+          mkdir -p $HOME/mbedtls
+          cp build/programs/ssl/ssl_server2 build/programs/ssl/ssl_client2 $HOME/mbedtls/
+      - name: Point the suites at mbedTLS
+        run: echo "MBEDTLS_PROGRAMS=$HOME/mbedtls" >> "$GITHUB_ENV"
       - name: Build peer adapters
         run: make -C interop all
       - name: Install headless browsers

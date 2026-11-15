@@ -8,12 +8,18 @@
 
 %% @doc Locate an adapter executable. Returns `{ok, Cmd}' or
 %% `{skip, Reason}' so suites report missing peers as skipped.
--spec find(pion | aiortc | chromium | chromium_mdns | firefox | webkit) -> {ok, string()} | {skip, string()}.
+-spec find(pion | piondtls | aiortc | chromium | chromium_mdns | firefox | webkit) -> {ok, string()} | {skip, string()}.
 find(pion) ->
     Bin = filename:join([root(), "interop", "pion", "bin", "pion-peer"]),
     case filelib:is_regular(Bin) of
         true -> {ok, Bin};
         false -> {skip, "pion adapter not built: run make -C interop pion"}
+    end;
+find(piondtls) ->
+    Bin = filename:join([root(), "interop", "piondtls", "bin", "piondtls"]),
+    case filelib:is_regular(Bin) of
+        true -> {ok, Bin};
+        false -> {skip, "pion/dtls adapter not built: run make -C interop piondtls"}
     end;
 find(aiortc) ->
     Py = filename:join([root(), "interop", "aiortc", ".venv", "bin", "python"]),

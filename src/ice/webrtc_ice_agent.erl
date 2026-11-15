@@ -52,7 +52,13 @@
 %%     from it (`webrtc_turn_stream:split/1') go to `handle_packet/5'
 %%     with `{stream, N}' as the socket and the server as the source;
 %%     `stream_down/4' when it closes.</li>
-%% <li>`{close_stream, {stream, N}}': close that connection.</li>
+%% <li>`{connect, {tcp, N}, #{transport := ice_tcp, local, remote}}':
+%%     open a TCP connection from address `local' to `remote' for an
+%%     ICE-TCP pair (RFC 6544), then `stream_up/3' or `stream_down/4'.
+%%     Packets on it, both ways, are framed with a 16-bit length
+%%     (RFC 4571): received ones go to `handle_packet/5' with `{tcp, N}'
+%%     as the socket and the remote address as the source.</li>
+%% <li>`{close_stream, Ref}': close the connection `Ref'.</li>
 %% <li>`{event, Event}'.</li>
 %% </ul>
 %%
@@ -101,6 +107,8 @@
     stream_up/3,
     stream_down/4,
     stream_server/2,
+    tcp_listeners/3,
+    tcp_accepted/5,
     close/2
 ]).
 -export([
@@ -508,14 +516,37 @@ restart(Opts, Now, S) ->
 %% @doc A stream connection to a TURN server asked with `{connect, ...}'
 %% is up.
 -spec stream_up({stream, pos_integer()}, integer(), agent()) -> {agent(), [action()]}.
+stream_up({tcp, _} = Ref, Now, S) ->
+    {S1, Acts} = webrtc_ice_tcp:up(Ref, Now, S),
+    finish(Now, S1, Acts);
 stream_up(Ref, Now, S) ->
     {S1, Acts} = webrtc_ice_relay:stream_up(Ref, Now, S),
     finish(Now, S1, Acts).
 
 %% @doc A stream connection to a TURN server failed or closed.
 -spec stream_down({stream, pos_integer()}, term(), integer(), agent()) -> {agent(), [action()]}.
+stream_down({tcp, _} = Ref, Reason, Now, S) ->
+    {S1, Acts} = webrtc_ice_tcp:down(Ref, Reason, Now, S),
+    finish(Now, S1, Acts);
 stream_down(Ref, Reason, Now, S) ->
     {S1, Acts} = webrtc_ice_relay:stream_down(Ref, Reason, Now, S),
+    finish(Now, S1, Acts).
+
+%% @doc ICE-TCP (RFC 6544): the owner listens on these TCP addresses,
+%% `[{ListenRef, {IP, Port}}]'. Each gives a passive and an active host
+%% candidate.
+-spec tcp_listeners([{term(), webrtc_ice_candidate:address()}], integer(), agent()) -> {agent(), [action()]}.
+tcp_listeners(Specs, Now, S) ->
+    {S1, Acts} = webrtc_ice_tcp:listeners(Specs, Now, S),
+    finish(Now, S1, Acts).
+
+%% @doc A connection `{tcp, N}' (named by the owner) was accepted on
+%% listener `ListenRef' from `Peer'. Refused (`{close_stream, Ref}') when
+%% too many are open.
+-spec tcp_accepted({tcp, pos_integer()}, term(), webrtc_ice_candidate:address(), integer(), agent()) ->
+    {agent(), [action()]}.
+tcp_accepted(Ref, Listen, Peer, Now, S) ->
+    {S1, Acts} = webrtc_ice_tcp:accepted(Ref, Listen, Peer, Now, S),
     finish(Now, S1, Acts).
 
 %% @doc The TURN server a stream connection leads to.
@@ -534,7 +565,9 @@ stream_server(Ref, #ice{turn = T, streams = P}) ->
 close(_Now, #ice{state = closed} = S) ->
     {S, []};
 close(Now, S) ->
-    {S1, Acts} = webrtc_ice_relay:close(Now, S),
+    {S0, Acts0} = webrtc_ice_relay:close(Now, S),
+    {S1, Acts1} = webrtc_ice_tcp:close(S0),
+    Acts = Acts0 ++ Acts1,
     {S1#ice{state = closed, ta_at = infinity, recheck_at = infinity},
         Acts ++ [{event, {connection_state, closed}}]}.
 

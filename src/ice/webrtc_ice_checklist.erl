@@ -18,6 +18,7 @@
     put_pair/2,
     pair_local/2,
     find_remote/3,
+    find_remote/4,
     add_remote/2,
     pair_new_local/2,
     pair_new_remote/2,
@@ -67,6 +68,15 @@ pair_local(#pair{local = L}, S) -> local(base(L, S), S).
 -spec find_remote(1..256, webrtc_ice_candidate:address(), #ice{}) -> {ok, pos_integer()} | error.
 find_remote(Comp, {IP, Port}, #ice{remote = R}) ->
     case [Id || Id := #ice_cand{address = A, port = P, component = C} <- R, A =:= IP, P =:= Port, C =:= Comp] of
+        [Id | _] -> {ok, Id};
+        [] -> error
+    end.
+
+%% @doc The remote candidate of a transport address on one transport.
+-spec find_remote(1..256, webrtc_ice_candidate:address(), udp | tcp, #ice{}) -> {ok, pos_integer()} | error.
+find_remote(Comp, {IP, Port}, Transport, #ice{remote = R}) ->
+    case [Id || Id := #ice_cand{address = A, port = P, component = C, transport = T} <- R,
+                A =:= IP, P =:= Port, C =:= Comp, T =:= Transport] of
         [Id | _] -> {ok, Id};
         [] -> error
     end.

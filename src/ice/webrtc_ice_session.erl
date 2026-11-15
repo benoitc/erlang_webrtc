@@ -176,7 +176,6 @@ send_data(Comp, Data, Now, S) ->
     end.
 
 send_on(Where, #pair{component = C} = P, Data, Now, S) ->
-    Base = webrtc_ice_checklist:pair_local(P, S),
     RC =
         case Where of
             current -> webrtc_ice_checklist:remote(P#pair.remote, S);
@@ -191,7 +190,7 @@ send_on(Where, #pair{component = C} = P, Data, Now, S) ->
                 #prev{pairs = PP} = Pv = S#ice.prev,
                 S#ice{prev = Pv#prev{pairs = PP#{C => {P1, RC}}}}
         end,
-    webrtc_ice_gather:route(webrtc_ice_gather:via(Base, S1), webrtc_ice_candidate:transport_address(RC),
+    webrtc_ice_gather:route(webrtc_ice_tcp:pair_via(P1, RC, S1), webrtc_ice_candidate:transport_address(RC),
                             Data, Now, S1).
 
 -spec is_valid_remote(term(), webrtc_ice_candidate:address(), #ice{}) -> boolean().
@@ -205,18 +204,14 @@ is_valid_remote(Via, From, S) ->
         fun({#pair{valid = V, requests_received = N, consent_lost = Lost} = P, #ice_cand{} = RC}) ->
                 not Lost andalso (V orelse N > 0) andalso
                     webrtc_ice_candidate:transport_address(RC) =:= From andalso
-                    via_of(P, S) =:= {ok, Via};
+                    webrtc_ice_tcp:pair_via(P, RC, S) =:= Via;
            (_) ->
                 false
         end,
         Current ++ Old
     ).
 
-via_of(P, S) ->
-    case webrtc_ice_checklist:pair_local(P, S) of
-        #ice_cand{} = L -> {ok, webrtc_ice_gather:via(L, S)};
-        undefined -> error
-    end.
+
 
 %%--------------------------------------------------------------------
 %% ICE restart (RFC 8445 §9)

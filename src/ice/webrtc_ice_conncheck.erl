@@ -50,7 +50,12 @@ send_check(Id, Now, S) ->
     #pair{} = P = webrtc_ice_checklist:pair(Id, S),
     L = webrtc_ice_checklist:pair_local(P, S),
     R = webrtc_ice_checklist:remote(P#pair.remote, S),
-    Via = webrtc_ice_gather:via(L, S),
+    case webrtc_ice_tcp:pair_via(P, R, S) of
+        none -> webrtc_ice_tcp:connect(Id, Now, S);
+        Via -> send_check(Id, P, L, R, Via, Now, S)
+    end.
+
+send_check(Id, P, L, R, Via, Now, S) ->
     Prio = prflx_priority(L),
     UseCand = S#ice.role =:= controlling andalso P#pair.use_candidate,
     Msg = binding_request({S#ice.ufrag, S#ice.remote_ufrag}, Prio, UseCand, S),
@@ -70,7 +75,7 @@ send_check(Id, Now, S) ->
     To = webrtc_ice_candidate:transport_address(R),
     {Tx, TxActs} = webrtc_stun_tx:send(
         Msg#stun.txid, {Via, To}, Bin,
-        #{rto => check_rto(S), rc => S#ice.rc, rm => S#ice.rm, meta => {check, Id, Info}},
+        tx_opts(L, #{rto => check_rto(S), rc => S#ice.rc, rm => S#ice.rm, meta => {check, Id, Info}}),
         Now, Tx0
     ),
     P1 = P#pair{
@@ -81,6 +86,11 @@ send_check(Id, Now, S) ->
     },
     S1 = webrtc_ice_checklist:put_pair(P1, S#ice{tx = Tx}),
     route_all(TxActs, Now, ?INC(checks_sent, S1)).
+
+%% No retransmission over TCP; the check fails after 39.5 s (RFC 6544
+%% §7.1, RFC 8489 §6.2.2).
+tx_opts(#ice_cand{transport = tcp}, Opts) -> Opts#{rto => 500, rc => 1, rm => 79};
+tx_opts(_, Opts) -> Opts.
 
 %% RFC 8445 §14.3: RTO = MAX(500ms, Ta * N * (Num-Waiting +
 %% Num-In-Progress)), capped by the `max_check_rto' option.
@@ -256,7 +266,11 @@ success(#pair{} = P, Info, Mapped, Now, S) ->
     end.
 
 %% Local candidate matching the mapped address, or a new peer-reflexive
-%% one (RFC 8445 §7.2.5.3.1).
+%% one (RFC 8445 §7.2.5.3.1). Over TCP the mapped address is the
+%% connection's own (an active candidate's port is 9): the valid pair
+%% keeps the TCP candidate (RFC 6544 §7.2).
+mapped_local(BaseId, #ice_cand{transport = tcp}, _Mapped, _Prio, S) ->
+    {BaseId, S};
 mapped_local(BaseId, Base, {MIP, MPort}, Prio, S) ->
     Match = [Id || Id := #ice_cand{address = A, port = Po} <- S#ice.local,
                    A =:= MIP, Po =:= MPort, webrtc_ice_checklist:base(Id, S) =:= BaseId],

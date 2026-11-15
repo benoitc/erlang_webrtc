@@ -116,17 +116,16 @@ request(W, C, P, RC, {LU, RU, RP}, Now, S) ->
         requests_sent = P#pair.requests_sent + 1
     },
     S1 = put(W, C, P1, S#ice{rand = R}),
-    Via = webrtc_ice_gather:via(Base, S1),
+    Via = webrtc_ice_tcp:pair_via(P1, RC, S1),
     webrtc_ice_gather:route(Via, webrtc_ice_candidate:transport_address(RC), Bin, Now, ?INC(consent_sent, S1)).
 
 keepalive_due(#pair{last_sent = undefined}, _Now, _S) -> true;
 keepalive_due(#pair{last_sent = L}, Now, #ice{keepalive_interval = Tr}) -> Now - L >= Tr.
 
 keepalive(W, C, P, RC, Now, S) ->
-    Base = webrtc_ice_checklist:pair_local(P, S),
     Bin = webrtc_stun:encode(webrtc_stun:indication(binding, []), #{fingerprint => true}),
     S1 = put(W, C, P#pair{last_sent = Now}, S),
-    webrtc_ice_gather:route(webrtc_ice_gather:via(Base, S1), webrtc_ice_candidate:transport_address(RC),
+    webrtc_ice_gather:route(webrtc_ice_tcp:pair_via(P, RC, S1), webrtc_ice_candidate:transport_address(RC),
                             Bin, Now, ?INC(keepalives_sent, S1)).
 
 %% @doc Find the consent target owning a transaction id.
@@ -142,9 +141,8 @@ match(TxId, S) ->
                #ice{}) -> {#ice{}, [term()]}.
 response({W, C}, Via, From, #stun{txid = TxId} = Msg, Bin, Now, S) ->
     [{W, C, P, RC, {_, _, RP}}] = [T || {W2, C2, _, _, _} = T <- targets(S), W2 =:= W, C2 =:= C],
-    Base = webrtc_ice_checklist:pair_local(P, S),
     Symmetric =
-        Via =:= webrtc_ice_gather:via(Base, S) andalso
+        Via =:= webrtc_ice_tcp:pair_via(P, RC, S) andalso
             From =:= webrtc_ice_candidate:transport_address(RC),
     Authentic =
         webrtc_ice_conncheck:has_fingerprint(Msg) andalso webrtc_stun:check_integrity(Bin, RP) =:= ok,

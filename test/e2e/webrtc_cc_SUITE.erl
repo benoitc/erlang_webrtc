@@ -16,7 +16,9 @@
     estimate_grows_without_bottleneck/1,
     pacing_can_be_disabled/1,
     probing_fills_link_at_start/1,
-    probing_on_raised_maximum/1
+    probing_on_raised_maximum/1,
+    ccfb_without_transport_cc/1,
+    ccfb_tracks_bottleneck/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -30,7 +32,9 @@ all() ->
         estimate_grows_without_bottleneck,
         pacing_can_be_disabled,
         probing_fills_link_at_start,
-        probing_on_raised_maximum
+        probing_on_raised_maximum,
+        ccfb_without_transport_cc,
+        ccfb_tracks_bottleneck
     ].
 
 init_per_suite(Config) ->
@@ -53,6 +57,23 @@ pair(Config, Impair) ->
     F = webrtc_impair:filter(Impair#{seed => ?config(seed, Config)}),
     {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => F}),
     {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{direction => sendonly}),
+    {ok, _} = webrtc:add_transceiver(B, video, #{direction => recvonly}),
+    ?S:connect(A, B, 60000),
+    {A, B}.
+
+%% Peers without transport-cc: RFC 8888 feedback is negotiated instead.
+no_twcc() ->
+    Uri = <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>,
+    Strip = fun(Cs) -> [C#{rtcp_fb := [F || F <- Fb, maps:get(type, F) =/= <<"transport-cc">>]} || #{rtcp_fb := Fb} = C <- Cs] end,
+    #{codecs => #{audio => Strip(webrtc_jsep_caps:default_codecs(audio)), video => Strip(webrtc_jsep_caps:default_codecs(video))},
+      extensions => #{K => [E || #{uri := U} = E <- webrtc_jsep_caps:default_extensions(K), U =/= Uri] || K <- [audio, video]}}.
+
+pair_ccfb(Config, Impair) ->
+    Base = maps:merge(no_twcc(), #{loopback => true}),
+    AOpts = case map_size(Impair) of 0 -> Base; _ -> Base#{outbound_filter => webrtc_impair:filter(Impair#{seed => ?config(seed, Config)})} end,
+    {ok, A} = webrtc:new_peer_connection(AOpts),
+    {ok, B} = webrtc:new_peer_connection(Base),
     {ok, _} = webrtc:add_transceiver(A, video, #{direction => sendonly}),
     {ok, _} = webrtc:add_transceiver(B, video, #{direction => recvonly}),
     ?S:connect(A, B, 60000),
@@ -211,6 +232,36 @@ probing_on_raised_maximum(Config) ->
         [] -> ct:fail({never_reached, Est})
     end,
     ?assert(lists:all(fun(X) -> X =< 3300000 end, window(Est, 6000, 9000))),
+    close(A, B).
+
+%% RFC 8888 without transport-cc: the receiver sends congestion control
+%% feedback, the estimate grows on it, and on loopback our ECT(0) marks
+%% arrive, so ECN is validated (RFC 6679).
+ccfb_without_transport_cc(Config) ->
+    {A, B} = pair_ccfb(Config, #{}),
+    {Est, Got} = stream(A, B, 6000, fun(_) -> ok end),
+    ct:log("received ~p~nB media ~p", [Got, maps:without([congestion_control], maps:get(media, maps:get(transport, webrtc:get_stats(B))))]),
+    CcA = stats_target(A),
+    CcB = stats_target(B),
+    ct:log("estimates ~p~nA ~p~nB ~p", [Est, maps:with([ecn, ccfb, twcc], CcA), maps:with([ccfb], CcB)]),
+    ?assertMatch(#{ccfb := #{send := true}, twcc := #{send := false}}, CcA),
+    #{ccfb := #{receive_stats := #{feedback_sent := N}}} = CcB,
+    ?assert(N > 10),
+    ?assert(lists:max([X || {_, X} <- Est]) >= 1000000),
+    ?assertMatch(#{ecn := on}, CcA),
+    close(A, B).
+
+%% The same over a 1 Mbps bottleneck: the estimate tracks it. (The
+%% impairment filter sends without the marks: ECN is found cleared.)
+ccfb_tracks_bottleneck(Config) ->
+    {A, B} = pair_ccfb(Config, #{rate => 1000000, queue_ms => 300}),
+    {Est, _} = stream(A, B, 15000, fun(_) -> ok end),
+    ct:log("estimates ~p~ncc ~p", [Est, maps:with([ecn, estimator], stats_target(A))]),
+    Late = window(Est, 8000, 15000),
+    ?assert(Late =/= []),
+    ?assert(lists:all(fun(X) -> X =< 1500000 end, Late)),
+    ?assert(lists:max(Late) >= 500000),
+    ?assertMatch(#{ecn := failed}, stats_target(A)),
     close(A, B).
 
 %% With pacing off every packet leaves at once and nothing is queued.

@@ -103,6 +103,22 @@ tmmbn_test() ->
     %% an empty bounding set is valid
     roundtrip(b("84 cd 00 02 00 00 00 01 00 00 00 00"), #rtcp_tmmbn{sender_ssrc = 1}).
 
+%% RFC 7728 §8: FMT 9, media SSRC 0, PAUSE then PAUSED with the
+%% extended sequence number of the last packet sent.
+pause_test() ->
+    roundtrip(
+        b("89 cd 00 07 00 00 00 01 00 00 00 00 2a 3b 4c 5d 00 00 00 07 2a 3b 4c 5d 20 01 00 07 00 01 00 10"),
+        #rtcp_pause{sender_ssrc = 1, entries = [{16#2a3b4c5d, pause, 7, undefined}, {16#2a3b4c5d, paused, 7, 16#10010}]}
+    ),
+    roundtrip(b("89 cd 00 04 00 00 00 05 00 00 00 00 00 00 00 09 30 00 ff ff"),
+              #rtcp_pause{sender_ssrc = 5, entries = [{9, refused, 65535, undefined}]}),
+    %% Reserved types are ignored, unknown type specific data skipped.
+    ?assertEqual(
+        {ok, [#rtcp_pause{sender_ssrc = 1, entries = [{9, resume, 2, undefined}]}]},
+        webrtc_rtcp:decode(b("89 cd 00 07 00 00 00 01 00 00 00 00 00 00 00 09 40 00 00 01 00 00 00 09 10 01 00 02 de ad be ef"))
+    ),
+    ?assertMatch({error, _}, webrtc_rtcp:decode(b("89 cd 00 02 00 00 00 01 00 00 00 00"))).
+
 bitrate_precision_test() ->
     %% values that need more than 17 bits lose their low bits, never round up
     {Exp, Mant} = webrtc_rtcp_fb:bitrate_exp(1000001, 17),

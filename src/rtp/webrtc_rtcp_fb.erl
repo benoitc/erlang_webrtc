@@ -2,7 +2,7 @@
 %% PT 205) and payload specific (PSFB, PT 206).
 %%
 %% RTPFB: generic NACK (FMT 1, RFC 4585 §6.2.1), TMMBR and TMMBN (FMT 3
-%% and 4, RFC 5104 §4.2), RFC 8888 congestion control feedback (FMT 11,
+%% and 4, RFC 5104 §4.2), PAUSE-RESUME (FMT 9, RFC 7728 §8), RFC 8888 congestion control feedback (FMT 11,
 %% `webrtc_rtcp_ccfb') and transport-wide CC feedback (FMT 15,
 %% `webrtc_rtcp_twcc').
 %%
@@ -63,6 +63,12 @@ fci(?RTCP_RTPFB, Fmt, S, M, Fci) when Fmt =:= ?RTPFB_TMMBR; Fmt =:= ?RTPFB_TMMBN
         Err ->
             Err
     end;
+fci(?RTCP_RTPFB, ?RTPFB_PAUSE, S, _M, Fci) ->
+    case pause_entries(Fci, []) of
+        {ok, []} -> {error, empty_pause};
+        {ok, E} -> {ok, #rtcp_pause{sender_ssrc = S, entries = E}};
+        Err -> Err
+    end;
 fci(?RTCP_RTPFB, ?RTPFB_CCFB, S, M, Fci) ->
     webrtc_rtcp_ccfb:decode(<<S:32, M:32, Fci/binary>>);
 fci(?RTCP_RTPFB, ?RTPFB_TWCC, S, M, Fci) ->
@@ -114,6 +120,42 @@ fci(?RTCP_PSFB, ?PSFB_AFB, _, _, <<"REMB", _/binary>>) ->
 fci(_, _, _, _, _) ->
     unknown.
 
+%% Reserved types are ignored and type specific data beyond what we
+%% know is skipped (RFC 7728 §8.1).
+pause_entries(<<>>, Acc) ->
+    {ok, lists:reverse(Acc)};
+pause_entries(<<Target:32, Type:4, _:4, Len:8, Id:16, Params:Len/binary-unit:32, Rest/binary>>, Acc) ->
+    Seq =
+        case Params of
+            <<Ext:32, _/binary>> -> Ext;
+            _ -> undefined
+        end,
+    case pause_type(Type) of
+        reserved -> pause_entries(Rest, Acc);
+        paused -> pause_entries(Rest, [{Target, paused, Id, Seq} | Acc]);
+        T -> pause_entries(Rest, [{Target, T, Id, undefined} | Acc])
+    end;
+pause_entries(_, _) ->
+    {error, truncated}.
+
+pause_type(0) -> pause;
+pause_type(1) -> resume;
+pause_type(2) -> paused;
+pause_type(3) -> refused;
+pause_type(_) -> reserved.
+
+pause_code(pause) -> 0;
+pause_code(resume) -> 1;
+pause_code(paused) -> 2;
+pause_code(refused) -> 3.
+
+pause_entry({Target, paused, Id, Seq}) when ?is_u32(Target), is_integer(Id), Id >= 0, Id =< 65535, ?is_u32(Seq) ->
+    <<Target:32, 2:4, 0:4, 1:8, Id:16, Seq:32>>;
+pause_entry({Target, Type, Id, _}) when ?is_u32(Target), is_integer(Id), Id >= 0, Id =< 65535, Type =/= paused ->
+    <<Target:32, (pause_code(Type)):4, 0:4, 0:8, Id:16>>;
+pause_entry(_) ->
+    error(badarg).
+
 words(Bin, Size) when byte_size(Bin) rem Size =:= 0 ->
     {ok, [W || <<W:Size/binary>> <= Bin]};
 words(_, _) ->
@@ -132,6 +174,8 @@ encode(#rtcp_tmmbr{sender_ssrc = S, media_ssrc = M, entries = E}) ->
     {?RTPFB_TMMBR, ?RTCP_RTPFB, [hdr(S, M), [tmmb_entry(X) || X <- E]]};
 encode(#rtcp_tmmbn{sender_ssrc = S, media_ssrc = M, entries = E}) ->
     {?RTPFB_TMMBN, ?RTCP_RTPFB, [hdr(S, M), [tmmb_entry(X) || X <- E]]};
+encode(#rtcp_pause{sender_ssrc = S, entries = [_ | _] = E}) ->
+    {?RTPFB_PAUSE, ?RTCP_RTPFB, [hdr(S, 0), [pause_entry(X) || X <- E]]};
 encode(#rtcp_ccfb{} = C) ->
     {?RTPFB_CCFB, ?RTCP_RTPFB, webrtc_rtcp_ccfb:encode(C)};
 encode(#rtcp_twcc{sender_ssrc = S, media_ssrc = M} = T) ->

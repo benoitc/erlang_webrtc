@@ -23,6 +23,8 @@
     keys/5,
     rtp_protect/5,
     rtp_unprotect/5,
+    rtp_protect_cryptex/4,
+    rtp_unprotect_cryptex/5,
     rtcp_protect/5,
     rtcp_unprotect/4
 ]).
@@ -112,6 +114,73 @@ rtp_unprotect(#srtp_keys{transform = gcm, dec_state = S} = K, SSRC, Index, Bin, 
         Plain when is_binary(Plain) -> {ok, <<Hdr/binary, Plain/binary>>};
         error -> {error, auth_failed}
     end.
+
+%%====================================================================
+%% Cryptex (RFC 9335)
+%%====================================================================
+
+%% @doc Protect an RTP packet with its CSRC list and header extension
+%% encrypted (RFC 9335 §5.1). `Parts' is the fixed header (X set), the
+%% CSRC list, the extension header (0xC0DE or 0xC2DE), the extension
+%% data and the payload. The encrypted portion is CSRCs, extension data
+%% and payload as one keystream; for GCM the fixed header and extension
+%% header are the associated data (§5.2).
+-spec rtp_protect_cryptex(#srtp_keys{}, 0..16#FFFFFFFF, non_neg_integer(),
+                          {binary(), binary(), binary(), binary(), binary()}) ->
+    {ok, binary()} | {error, malformed}.
+rtp_protect_cryptex(#srtp_keys{transform = cm}, _SSRC, _Index, {_, C, _, E, P}) when
+    byte_size(C) + byte_size(E) + byte_size(P) > ?CM_MAX_BYTES
+->
+    {error, malformed};
+rtp_protect_cryptex(#srtp_keys{transform = cm} = K, SSRC, Index, {Fixed, C, ExtHdr, E, P}) ->
+    #srtp_keys{enc_key = EK, auth_key = AK, tag_len = TL} = K,
+    Enc = crypto:crypto_one_time(aes_128_ctr, EK, cm_iv(K, SSRC, Index), [C, E, P], true),
+    Out = assemble(Fixed, byte_size(C), ExtHdr, Enc),
+    Tag = crypto:macN(hmac, sha, AK, [Out, <<(Index bsr 16):32>>], TL),
+    {ok, <<Out/binary, Tag/binary>>};
+rtp_protect_cryptex(#srtp_keys{transform = gcm, enc_state = S} = K, SSRC, Index, {Fixed, C, ExtHdr, E, P}) ->
+    CT = crypto:crypto_one_time_aead(S, gcm_iv(K, SSRC, Index), [C, E, P], [Fixed, ExtHdr]),
+    {ok, assemble(Fixed, byte_size(C), ExtHdr, CT)}.
+
+%% @doc Verify and decrypt a cryptex packet with `CC' CSRCs. The
+%% extension header comes back with its usual profile value.
+-spec rtp_unprotect_cryptex(#srtp_keys{}, 0..16#FFFFFFFF, non_neg_integer(), binary(), 0..15) ->
+    {ok, binary()} | {error, auth_failed | malformed}.
+rtp_unprotect_cryptex(#srtp_keys{transform = cm} = K, SSRC, Index, Bin, CC) ->
+    #srtp_keys{enc_key = EK, auth_key = AK, tag_len = TL} = K,
+    AuthLen = byte_size(Bin) - TL,
+    <<Auth:AuthLen/binary, Tag:TL/binary>> = Bin,
+    Expected = crypto:macN(hmac, sha, AK, [Auth, <<(Index bsr 16):32>>], TL),
+    case crypto:hash_equals(Expected, Tag) of
+        true when AuthLen > ?CM_MAX_BYTES ->
+            {error, malformed};
+        true ->
+            {Fixed, EncC, ExtHdr, Rest} = split_cryptex(Auth, CC),
+            Plain = crypto:crypto_one_time(aes_128_ctr, EK, cm_iv(K, SSRC, Index), [EncC, Rest], false),
+            {ok, assemble(Fixed, CC * 4, restore(ExtHdr), Plain)};
+        false ->
+            {error, auth_failed}
+    end;
+rtp_unprotect_cryptex(#srtp_keys{transform = gcm, dec_state = S} = K, SSRC, Index, Bin, CC) ->
+    {Fixed, EncC, ExtHdr, Rest} = split_cryptex(Bin, CC),
+    case crypto:crypto_one_time_aead(S, gcm_iv(K, SSRC, Index), <<EncC/binary, Rest/binary>>, [Fixed, ExtHdr]) of
+        Plain when is_binary(Plain) -> {ok, assemble(Fixed, CC * 4, restore(ExtHdr), Plain)};
+        error -> {error, auth_failed}
+    end.
+
+split_cryptex(Bin, CC) ->
+    CL = CC * 4,
+    <<Fixed:12/binary, EncC:CL/binary, ExtHdr:4/binary, Rest/binary>> = Bin,
+    {Fixed, EncC, ExtHdr, Rest}.
+
+%% Fixed header, the first CL bytes of Enc (the CSRCs), the extension
+%% header, then the rest of Enc (extension data, payload, GCM tag).
+assemble(Fixed, CL, ExtHdr, Enc) ->
+    <<C:CL/binary, Rest/binary>> = iolist_to_binary(Enc),
+    <<Fixed/binary, C/binary, ExtHdr/binary, Rest/binary>>.
+
+restore(<<16#C0DE:16, Len:16>>) -> <<16#BEDE:16, Len:16>>;
+restore(<<16#C2DE:16, Len:16>>) -> <<16#1000:16, Len:16>>.
 
 %%====================================================================
 %% SRTCP

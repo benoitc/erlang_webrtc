@@ -222,6 +222,8 @@ media_actions(Acts, St) ->
     lists:foldl(
         fun
             ({send, B}, S) -> webrtc_transport_net:send_out(B, S);
+            %% The peer connection keeps the new SSRC for later offers.
+            ({event, {ssrc_changed, _, _, _} = E}, S) -> webrtc_transport:to_pc(E, S), webrtc_transport:to_app(E, S), S;
             ({event, E}, S) -> webrtc_transport:to_app(E, S), S
         end,
         St,

@@ -40,6 +40,7 @@
     create_answer/2,
     set_local_description/3,
     set_remote_description/3,
+    change_ssrc/4,
     signaling_state/1,
     local_description/1,
     remote_description/1,
@@ -306,7 +307,7 @@ set_remote_description(offer, Sdp0, #jsep{signaling = S} = J) when
         ok ?= validate_reoffer(Sdp, J),
         J0 = snapshot(restore(J)),
         {ok, J01} ?= dtls_identity(Sdp, J0),
-        J1 = associate(Sdp, J01),
+        J1 = avoid_ssrcs(Sdp, associate(Sdp, J01)),
         {ok, J1#jsep{
             pending_remote = Sdp,
             pending_remote_orig = Sdp0,
@@ -323,7 +324,7 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
         ok ?= validate(answer, Sdp, J),
         {ok, Jd} ?= dtls_identity(Sdp, J),
         ok ?= validate_answer(Sdp, J#jsep.pending_local, Jd),
-        J1 = negotiate(offerer, J#jsep.pending_local, Sdp, Jd),
+        J1 = avoid_ssrcs(Sdp, negotiate(offerer, J#jsep.pending_local, Sdp, Jd)),
         J2 = J1#jsep{remote_ice = remote_ice(Sdp), answerer = false},
         case Type of
             pranswer ->
@@ -781,6 +782,44 @@ negotiated(#jsep{} = J) ->
     case Local =:= undefined orelse Remote =:= undefined of
         true -> undefined;
         false -> webrtc_jsep_params:negotiated(Local, Remote, J)
+    end.
+
+%%====================================================================
+%% SSRC collisions (RFC 3550 §8.2)
+%%====================================================================
+
+%% @doc A sender changed SSRC after a collision seen in the media: later
+%% descriptions carry the new one.
+-spec change_ssrc(binary(), 0..16#FFFFFFFF, 0..16#FFFFFFFF, state()) -> state().
+change_ssrc(Mid, Old, New, #jsep{transceivers = Trs} = J) ->
+    J#jsep{transceivers = [case T#tr.mid of Mid -> swap_ssrc(Old, New, T); _ -> T end || T <- Trs]}.
+
+swap_ssrc(Old, New, #tr{ssrc = S, rtx_ssrc = R, encodings = Es} = T) ->
+    Sw = fun(X) when X =:= Old -> New; (X) -> X end,
+    T#tr{ssrc = Sw(S), rtx_ssrc = Sw(R),
+         encodings = [maps:map(fun(K, V) when K =:= ssrc; K =:= rtx_ssrc -> Sw(V); (_, V) -> V end, E) || E <- Es]}.
+
+%% Our SSRCs that the remote description also uses are replaced before
+%% any media goes out with them.
+avoid_ssrcs(#sdp{media = Ms}, #jsep{transceivers = Trs} = J) ->
+    Remote = lists:usort([S || M <- Ms, #{ssrc := S} <- webrtc_sdp_media:attrs(ssrc, M)]),
+    Mine = [X || #tr{ssrc = A, rtx_ssrc = B, encodings = Es} <- Trs,
+                 X <- [A, B | [maps:get(K, E) || E <- Es, K <- [ssrc, rtx_ssrc], is_map_key(K, E)]]],
+    case [S || S <- Remote, lists:member(S, Mine)] of
+        [] ->
+            J;
+        Clashes ->
+            lists:foldl(fun(Old, JA) ->
+                                New = fresh_ssrc(Remote ++ Mine),
+                                JA#jsep{transceivers = [swap_ssrc(Old, New, T) || T <- JA#jsep.transceivers]}
+                        end, J, Clashes)
+    end.
+
+fresh_ssrc(Used) ->
+    S = ssrc(),
+    case lists:member(S, Used) of
+        true -> fresh_ssrc(Used);
+        false -> S
     end.
 
 %%====================================================================

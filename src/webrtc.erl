@@ -18,6 +18,9 @@
 %%     `negotiation_needed' follows, so send the new offer.</li>
 %% <li>`{track, Mid, audio | video}': the remote side sends media on
 %%     this transceiver.</li>
+%% <li>`{ssrc_changed, Mid, Old, New}': the peer sent with one of our
+%%     SSRCs, so ours changed (RFC 3550 §8.2); a BYE went out for the old
+%%     one.</li>
 %% <li>`{rtp, Mid, #rtp{}}': an RTP packet (see `webrtc_rtp.hrl').</li>
 %% <li>`{rtp, Mid, Rid, #rtp{}}': an RTP packet of the simulcast layer
 %%     `Rid' (RFC 8853) of a transceiver that receives several layers.

@@ -23,6 +23,7 @@
     send_feedback/3,
     send_rtcp/2,
     senders/2,
+    ssrc_collision/2,
     tmin/2
 ]).
 
@@ -479,6 +480,40 @@ send_rtcp(Pkts, M) ->
     case webrtc_srtp:protect_rtcp(webrtc_rtcp:encode(Pkts), M#media.out) of
         {ok, B, Out} -> {[{send, B}], count(rtcp_sent, M#media{out = Out})};
         {error, _} -> {[], M}
+    end.
+
+%% @doc RFC 3550 §8.2: the peer sends with `Ssrc', one of ours. The
+%% sender using it takes a new SSRC and says BYE for the old one; our
+%% receiver-only RTCP SSRC simply changes. Events:
+%% `{ssrc_changed, Mid, Old, New}'.
+-spec ssrc_collision(non_neg_integer(), #media{}) -> {#media{}, list()}.
+ssrc_collision(Ssrc, #media{senders = Senders} = M) ->
+    case [{K, F} || K := S <- Senders, F <- [ssrc, rtx_ssrc], element(field_pos(F), S) =:= Ssrc] of
+        [{K, F} | _] ->
+            S = maps:get(K, Senders),
+            New = fresh_ssrc(M),
+            S1 = setelement(field_pos(F), S, New),
+            M1 = count(ssrc_collisions, M#media{senders = Senders#{K := S1}}),
+            {Bye, M2} = send_rtcp([#rtcp_rr{ssrc = Ssrc}, #rtcp_sdes{chunks = [{Ssrc, [{cname, M1#media.cname}]}]},
+                                   #rtcp_bye{ssrcs = [Ssrc]}], M1),
+            {M2, Bye ++ [{event, {ssrc_changed, S#snd.mid, Ssrc, New}}]};
+        [] when Ssrc =:= M#media.rtcp_ssrc ->
+            {count(ssrc_collisions, M#media{rtcp_ssrc = fresh_ssrc(M)}), []};
+        [] ->
+            {M, []}
+    end.
+
+field_pos(ssrc) -> #snd.ssrc;
+field_pos(rtx_ssrc) -> #snd.rtx_ssrc.
+
+%% Distinct from every SSRC in use, ours and the peer's.
+fresh_ssrc(M) ->
+    <<S:32>> = crypto:strong_rand_bytes(4),
+    Used = [M#media.rtcp_ssrc | [X || #snd{ssrc = A, rtx_ssrc = B} <- maps:values(M#media.senders), X <- [A, B]]] ++
+        maps:keys(M#media.ssrc_mid),
+    case S =:= 0 orelse lists:member(S, Used) of
+        true -> fresh_ssrc(M);
+        false -> S
     end.
 
 %%====================================================================

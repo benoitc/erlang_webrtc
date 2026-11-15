@@ -47,7 +47,13 @@ keep_srtp(Ssrc, #media{ssrc_mid = SM} = M) when is_map_key(Ssrc, SM) ->
 keep_srtp(Ssrc, M) ->
     M#media{in = webrtc_srtp:forget(Ssrc, M#media.in)}.
 
-route(#rtp{ssrc = Ssrc} = Pkt, Now, M) ->
+route(#rtp{ssrc = Ssrc} = Pkt, Now, M0) ->
+    %% RFC 3550 §8.2: the peer uses one of our SSRCs; ours changes.
+    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, M0),
+    {M1, Acts} = route1(Pkt, Now, M),
+    {M1, Coll ++ Acts}.
+
+route1(#rtp{ssrc = Ssrc} = Pkt, Now, M) ->
     case find_mid(Pkt, M) of
         undefined ->
             {webrtc_media_out:count(unroutable, M), []};
@@ -281,28 +287,38 @@ rtcp_packet(#rtcp_fir{entries = Entries}, _Now, M) ->
         {M, []},
         Entries
     );
-rtcp_packet(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M) ->
+rtcp_packet(#rtcp_sr{ssrc = Ssrc} = SR, Now, M0) ->
+    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, M0),
+    {M1, Acts} = sender_report(SR, Now, M),
+    {M1, Coll ++ Acts};
+rtcp_packet(#rtcp_sdes{chunks = Chunks}, _Now, M) ->
+    {M#media{rids = webrtc_media_rid:sdes(Chunks, M#media.ssrc_mid, M#media.rids)}, []};
+rtcp_packet(#rtcp_rr{ssrc = Ssrc, reports = Rbs}, Now, M0) ->
+    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, M0),
+    {M1, Acts} = report_blocks(Rbs, Now, M),
+    {M1, Coll ++ Acts};
+rtcp_packet(Other, Now, M) ->
+    rtcp_packet2(Other, Now, M).
+
+sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M) ->
     case maps:find(Ssrc, M#media.receivers) of
         {ok, R} ->
             Rx = webrtc_rtp_stats:rx_sender_report(SR, Now, R#rcv.rx),
             report_blocks(Rbs, Now, M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{rx = Rx}}});
         error ->
             report_blocks(Rbs, Now, M)
-    end;
-rtcp_packet(#rtcp_sdes{chunks = Chunks}, _Now, M) ->
-    {M#media{rids = webrtc_media_rid:sdes(Chunks, M#media.ssrc_mid, M#media.rids)}, []};
-rtcp_packet(#rtcp_rr{reports = Rbs}, Now, M) ->
-    report_blocks(Rbs, Now, M);
+    end.
+
 %% RFC 3550 §6.6: the source left; its state goes with it.
-rtcp_packet(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
+rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
     Events = [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs],
     {lists:foldl(fun forget/2, M, Ssrcs), Events};
-rtcp_packet(#rtcp_pause{} = P, Now, M) ->
+rtcp_packet2(#rtcp_pause{} = P, Now, M) ->
     webrtc_media_pause:rtcp(P, Now, M);
-rtcp_packet(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
+rtcp_packet2(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
     {Events, Cc} = webrtc_cc:rtcp(P, Now, M#media.cc),
     {M#media{cc = Cc}, [{event, {rtcp, undefined, P}} | [{event, E} || E <- Events]]};
-rtcp_packet(_P, _Now, M) ->
+rtcp_packet2(_P, _Now, M) ->
     {M, []}.
 
 %% Report blocks about our streams feed the circuit breakers and the

@@ -219,8 +219,9 @@ bool_opt(Key, Default, Opts) ->
         Other -> erlang:error({badarg, {Key, Other}})
     end.
 
-%% @doc Send the next packets with or without cryptex (RFC 9335), once
-%% both sides announced it. Receiving accepts both forms.
+%% @doc Cryptex (RFC 9335), once both sides announced it: an outbound
+%% context sends the next packets in that form, an inbound one refuses
+%% packets with header extensions or CSRCs in any other form (§6.3).
 -spec set_cryptex(boolean(), ctx()) -> ctx().
 set_cryptex(On, #srtp{} = C) when is_boolean(On) ->
     C#srtp{cryptex = On}.
@@ -308,7 +309,7 @@ unprotect_rtp(Packet, #srtp{rtp = Keys} = C) when is_binary(Packet) ->
 unprotect_rtp(_, #srtp{}) ->
     {error, malformed}.
 
-protect(Packet0, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex} = C) ->
+protect(<<_:3, X:1, _/bitstring>> = Packet0, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex} = C) ->
     case {Cryptex andalso cryptex_parts(Packet0), is_cryptex(Packet0)} of
         {{ok, Parts}, _} ->
             %% Cryptex encrypts every element: no RFC 6904 mask on top.
@@ -316,6 +317,10 @@ protect(Packet0, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex} = C) 
         {_, true} ->
             %% The receiver would take it for cryptex (RFC 9335 §6.3).
             {error, malformed};
+        {none, false} when X =:= 1 ->
+            %% RFC 9335 §5.1: cryptex covers the one-byte and two-byte
+            %% header forms only; the receiver refuses this one in clear.
+            {error, cryptex_unsupported};
         {_, false} ->
             %% RFC 6904 §4: elements are encrypted before the tag.
             Packet = header_crypt(Packet0, SSRC, Index, C),
@@ -335,10 +340,12 @@ is_cryptex(_) ->
 
 %% A receiver recognises cryptex by the extension profile (RFC 9335
 %% §6.3).
-unprotect(<<_:4, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, #srtp{rtp = Keys} = C) ->
+unprotect(<<_:3, X:1, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, #srtp{rtp = Keys} = C) ->
     case is_cryptex(Packet) of
         true ->
             webrtc_srtp_cipher:rtp_unprotect_cryptex(Keys, SSRC, Index, Packet, CC);
+        false when C#srtp.cryptex, X =:= 1 orelse CC > 0 ->
+            {error, cryptex_required};
         false ->
             %% RFC 6904 §4: decrypt the elements only once the packet is
             %% authenticated.

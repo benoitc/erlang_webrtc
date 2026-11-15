@@ -124,6 +124,13 @@
     %% receive and the one the peer asked us to send, once negotiated.
     cid :: undefined | binary(),
     peer_cid :: undefined | binary(),
+    %% After the handshake (webrtc_dtls13_cid): the CIDs we receive on,
+    %% the peer's spare CIDs, a rotation waiting for one, and the CID
+    %% messages waiting for the current flight to be acknowledged.
+    cids = [] :: [binary()],
+    peer_spares = [] :: [binary()],
+    rotate = false :: boolean(),
+    cid_queue = [] :: [{request, pos_integer()} | {spares, pos_integer()}],
     %% Resumption and 0-RTT (RFC 8446 §2.2, §2.3): enabled, the ticket
     %% offered (client) or accepted (server), whether this handshake
     %% resumed, and early data: offered, accepted, rejected or done.

@@ -93,9 +93,15 @@ record(#{format := plain}, _Now, St) ->
     %% DTLSPlaintext only exists in epoch 0.
     St;
 record(#{format := unified, epoch_bits := Bits} = R, Now, St) ->
-    case webrtc_dtls13_record:select_epoch(Bits, maps:keys(St#dtls.read_keys)) of
-        {ok, E} -> decrypt(E, R, Now, St);
-        error -> buffer(R, St)
+    %% RFC 9147 §9: a CID we do not receive on is not ours.
+    case webrtc_dtls13_cid:known(maps:get(cid, R, <<>>), St) of
+        true ->
+            case webrtc_dtls13_record:select_epoch(Bits, maps:keys(St#dtls.read_keys)) of
+                {ok, E} -> decrypt(E, R, Now, St);
+                error -> buffer(R, St)
+            end;
+        false ->
+            St
     end.
 
 %% Only ClientHello, ServerHello and HelloRetryRequest are sent in
@@ -244,11 +250,13 @@ ack(Recs, E, Now, St) ->
 
 flight_done(St0) ->
     St = St0#dtls{last_flight = [], sent_recs = #{}, acked = #{}, rtx_at = infinity},
-    case St of
-        #dtls{ku_pending = true} -> webrtc_dtls13_epoch:key_update_acked(St);
-        #dtls{state = wait_ack} -> webrtc_dtls13_hs:final_flight_acked(St);
-        _ -> St
-    end.
+    St1 =
+        case St of
+            #dtls{ku_pending = true} -> webrtc_dtls13_epoch:key_update_acked(St);
+            #dtls{state = wait_ack} -> webrtc_dtls13_hs:final_flight_acked(St);
+            _ -> St
+        end,
+    webrtc_dtls13_cid:flight_done(St1).
 
 %% @doc The peer's next flight acknowledges our last flight.
 -spec implicit_ack(#dtls{}) -> #dtls{}.

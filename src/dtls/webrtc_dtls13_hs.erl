@@ -339,17 +339,11 @@ handle(Type, Body, Epoch, Now, St) ->
     end.
 
 %% RFC 9147 §9: without negotiated connection IDs these messages are
-%% unexpected. A NewConnectionId for immediate use switches the CID of
-%% our records; a RequestConnectionId is acknowledged, as we keep a
-%% single CID to receive. Both are acknowledged (§5.7).
+%% unexpected; otherwise see webrtc_dtls13_cid.
 connection_id(_Type, _Msg, #dtls{peer_cid = undefined} = St) ->
     fail(?ALERT_UNEXPECTED_MESSAGE, connection_id_not_negotiated, St);
-connection_id(new_connection_id, {[Cid | _], immediate}, St) ->
-    St#dtls{peer_cid = Cid, ack_now = true};
-connection_id(new_connection_id, {_, _}, St) ->
-    St#dtls{ack_now = true};
-connection_id(request_connection_id, _N, St) ->
-    St#dtls{ack_now = true}.
+connection_id(Type, Msg, St) ->
+    webrtc_dtls13_cid:received(Type, Msg, St).
 
 %% Handshake messages use epoch 2, post-handshake messages epoch 3 or
 %% later (RFC 9147 §6.1).

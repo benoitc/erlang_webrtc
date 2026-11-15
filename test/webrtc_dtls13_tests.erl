@@ -1137,6 +1137,81 @@ early_data_rejected_on_retry_test() ->
     ?assertMatch(#{resumed := true}, info(Ss)),
     _ = data(Cs, Ss, <<"early hello">>, 1000).
 
+%%====================================================================
+%% Spare connection IDs (RFC 9147 §9)
+%%====================================================================
+
+cid_pair() ->
+    {C, S, _} = established(#{connection_id => <<"cccc">>}, #{connection_id => <<"ssss">>}),
+    {C, S}.
+
+%% Datagrams from `From' handled by `To' until neither has more to say.
+pump(From, To, Ds, Now) -> pump(From, To, Ds, Now, 20).
+
+pump(From, To, [], _Now, _N) -> {From, To};
+pump(From, To, _Ds, _Now, 0) -> {From, To};
+pump(From, To, Ds, Now, N) ->
+    {To1, Acts} = lists:foldl(fun(D, {T, A}) -> {T1, A1} = webrtc_dtls:handle_packet(D, Now, T), {T1, A ++ A1} end,
+                              {To, []}, Ds),
+    {To2, From2} = pump(To1, From, [D || {send, D} <- Acts], Now, N - 1),
+    {From2, To2}.
+
+%% A RequestConnectionId is answered with spare CIDs as long as ours;
+%% the peer keeps them, rotating moves its records to one, and records
+%% with them are accepted.
+request_connection_id_test() ->
+    {C, S} = cid_pair(),
+    {S1, [Req]} = post_handshake(request_connection_id, <<3>>, 100, S),
+    {S2, C1} = pump(S1, C, [Req], 100),
+    ?assertEqual(4, length(C1#dtls.cids)),
+    ?assert(lists:all(fun(Cid) -> byte_size(Cid) =:= 4 end, C1#dtls.cids)),
+    ?assertEqual(3, length(S2#dtls.peer_spares)),
+    %% Rotating to a spare it holds sends nothing by itself.
+    {ok, S4, []} = webrtc_dtls:rotate_connection_id(200, S2),
+    C2 = C1,
+    {_, _, D1} = data(S4, C2, <<"on a new path">>, 300),
+    New = record_cid(D1, 4),
+    ?assertNotEqual(<<"cccc">>, New),
+    ?assert(lists:member(New, tl(C1#dtls.cids))),
+    %% Our set is full: a further request gets no CID.
+    {_, [Req2]} = post_handshake(request_connection_id, <<2>>, 400, S4),
+    {C3, _} = webrtc_dtls:handle_packet(Req2, 400, C2),
+    ?assertEqual(4, length(C3#dtls.cids)).
+
+%% Rotating without a spare asks for some and moves to one once they
+%% arrive.
+rotate_without_spares_test() ->
+    {C, S} = cid_pair(),
+    {ok, S1, A} = webrtc_dtls:rotate_connection_id(100, S),
+    ?assert(S1#dtls.rotate),
+    {S2, _C1} = pump(S1, C, [D || {send, D} <- A], 100),
+    ?assertNot(S2#dtls.rotate),
+    ?assertNotEqual(<<"cccc">>, S2#dtls.peer_cid),
+    %% It asked for two and used one.
+    ?assertEqual(1, length(S2#dtls.peer_spares)),
+    %% Without negotiated CIDs there is nothing to rotate.
+    {P, _, _} = established(#{}, #{}),
+    ?assertEqual({error, not_negotiated}, webrtc_dtls:rotate_connection_id(100, P)).
+
+%% A record with a CID we do not receive on is dropped, even of the
+%% right length.
+unknown_cid_dropped_test() ->
+    {C, S} = cid_pair(),
+    {ok, _, [{send, <<H, _:4/binary, Rest/binary>>}]} = webrtc_dtls:send(<<"x">>, S),
+    ?assertEqual({C, []}, webrtc_dtls:handle_packet(<<H, "zzzz", Rest/binary>>, 100, C)).
+
+%% One CID message at a time: while a KeyUpdate waits for its ACK the
+%% request waits too, and goes once it is acknowledged.
+cid_message_waits_for_ack_test() ->
+    {C, S} = cid_pair(),
+    {ok, S1, KU} = webrtc_dtls:key_update(100, S),
+    {ok, S2, []} = webrtc_dtls:rotate_connection_id(100, S1),
+    ?assertEqual([{request, 2}], S2#dtls.cid_queue),
+    {S3, C3} = pump(S2, C, [D || {send, D} <- KU], 100),
+    ?assertEqual(connected, C3#dtls.state),
+    ?assertEqual([], S3#dtls.cid_queue),
+    ?assertNot(S3#dtls.rotate),
+    ?assertNotEqual(<<"cccc">>, S3#dtls.peer_cid).
 
 %% Erratum 8108: while our KeyUpdate waits for its ACK we write the old
 %% epoch, so a record the peer sent in its next epoch is acknowledged

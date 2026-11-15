@@ -109,6 +109,7 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 ice = webrtc_ice_agent:new(IceOpts),
                 cert = Cert,
                 media = webrtc_media:new(#{
+                    ecn => lists:all(fun({S, _}) -> webrtc_transport_net:ecn_capable(S) end, Sockets),
                     cname => maps:get(cname, Opts, <<"webrtc">>),
                     cc => maps:get(congestion_control, Opts, #{}),
                     rtcp => #{report_interval => maps:get(rtcp_report_interval, Opts, 1000)}
@@ -239,6 +240,11 @@ handle_cast(_Msg, St) ->
 
 handle_info({udp, Sock, IP, Port, Bin}, St) ->
     St1 = webrtc_transport_net:datagram(Sock, {IP, Port}, Bin, now_ms(), St),
+    {noreply, arm(St1)};
+handle_info({udp, Sock, IP, Port, Anc, Bin}, St) ->
+    %% recvtos / recvtclass: the ECN codepoint is the low two bits.
+    Ecn = case Anc of [{tos, T} | _] -> T band 3; [{tclass, T} | _] -> T band 3; _ -> 0 end,
+    St1 = webrtc_transport_net:datagram(Sock, {IP, Port}, Bin, now_ms(), St, Ecn),
     {noreply, arm(St1)};
 handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
     {stop, normal, St};

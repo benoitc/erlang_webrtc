@@ -155,6 +155,8 @@ media_params(T, L, R, {Local, Remote, J}) ->
         remote_ssrcs => remote_ssrcs(R),
         rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true},
         pause => pause(LocalCodecs, RemoteCodecs),
+        %% RFC 8888 §6: both descriptions have `ack ccfb'.
+        ccfb => ccfb(LocalCodecs) andalso ccfb(RemoteCodecs),
         %% RFC 9335: both sides receive encrypted CSRCs and extensions.
         cryptex => webrtc_sdp_media:find_attr(cryptex, L, Local) =:= {ok, true} andalso
             webrtc_sdp_media:find_attr(cryptex, R, Remote) =:= {ok, true}
@@ -168,6 +170,9 @@ pause(Local, Remote) ->
         {[L | _], [R | _]} -> #{nowait => lists:member(<<"nowait">>, L) andalso lists:member(<<"nowait">>, R)};
         _ -> undefined
     end.
+
+ccfb(Codecs) ->
+    lists:any(fun(#{rtcp_fb := Fb}) -> lists:member(#{type => <<"ack">>, param => <<"ccfb">>}, Fb) end, Codecs).
 
 remote_ssrcs(R) ->
     Ssrcs = webrtc_sdp_media:attrs(ssrc, R),

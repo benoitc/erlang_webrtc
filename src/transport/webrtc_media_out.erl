@@ -141,18 +141,19 @@ egress(Items, Now, M0) ->
                     %% A retransmission without RTX: the exact bytes sent
                     %% the first time, not protected again.
                     {raw, Srtp} = Pkt0,
-                    Cc = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
-                    {[{send, Srtp} | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
+                    <<_:16, RSeq:16, _:32, RSsrc:32, _/binary>> = Srtp,
+                    Cc = webrtc_cc:sent_rtp(Mid, RSsrc, RSeq, byte_size(Srtp), Now, M1#media.cc),
+                    {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
                 false ->
                     Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
                     case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), M1#media.out) of
                         {ok, Srtp, Out} ->
                             %% Circuit breakers work per transceiver: all
                             %% simulcast layers of a mid share the flow.
-                            Cc0 = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
+                            Cc0 = webrtc_cc:sent_rtp(Mid, Pkt#rtp.ssrc, Pkt#rtp.seq, byte_size(Srtp), Now, M1#media.cc),
                             Cc = case Kind of video -> webrtc_cc:video_sent(Now, Cc0); _ -> Cc0 end,
                             M2 = keep_wire(Key, Pkt, Srtp, Rtx, Now, M1#media{out = Out, cc = Cc}),
-                            {[{send, Srtp} | Acc], sent_stats(Key, Pkt, Rtx, M2)};
+                            {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt, Rtx, M2)};
                         {error, _} ->
                             {Acc, count(srtp_failed, M1)}
                     end
@@ -162,6 +163,13 @@ egress(Items, Now, M0) ->
         Items
     ),
     {lists:reverse(Sends), M}.
+
+%% RTP goes out ECT(0) while ECN is in use (RFC 6679, RFC 8888 §6).
+out(Bin, #media{cc = Cc}) ->
+    case webrtc_cc:ecn_mark(Cc) of
+        true -> {send_ect, Bin};
+        false -> {send, Bin}
+    end.
 
 add_twcc(undefined, _Seq, Pkt) ->
     Pkt;

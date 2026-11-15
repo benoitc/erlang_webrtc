@@ -13,6 +13,7 @@
     start_dtls_if_ready/1,
     flush_dtls/1,
     secure_datagram/4,
+    secure_datagram/5,
     secure_relayed/3,
     transmit_dtls/2,
     dtls_actions/2,
@@ -138,12 +139,15 @@ path_changed(Old, New, #st{dtls = D} = St) when Old =/= undefined, Old =/= New, 
 path_changed(_Old, _New, St) ->
     St.
 
-secure_datagram(dtls, Bin, Now, St) ->
+secure_datagram(Class, Bin, Now, St) ->
+    secure_datagram(Class, Bin, Now, St, 0).
+
+secure_datagram(dtls, Bin, Now, St, _Ecn) ->
     dtls_in(Bin, Now, St);
-secure_datagram(rtp, Bin, Now, St) ->
-    {M1, Acts} = webrtc_media:handle_packet(Bin, Now, St#st.media),
+secure_datagram(rtp, Bin, Now, St, Ecn) ->
+    {M1, Acts} = webrtc_media:handle_packet(Bin, Now, St#st.media, Ecn),
     media_actions(Acts, St#st{media = M1});
-secure_datagram(_, _Bin, _Now, St) ->
+secure_datagram(_, _Bin, _Now, St, _Ecn) ->
     St.
 
 dtls_in(Bin, _Now, #st{dtls = undefined, early_dtls = E} = St) when length(E) < ?MAX_EARLY_DTLS ->
@@ -235,6 +239,7 @@ media_actions(Acts, St) ->
             ({send, B}, S) -> webrtc_transport_net:send_out(B, S);
             %% The peer connection keeps the new SSRC for later offers.
             ({event, {ssrc_changed, _, _, _} = E}, S) -> webrtc_transport:to_pc(E, S), webrtc_transport:to_app(E, S), S;
+            ({send_ect, B}, S) -> webrtc_transport_net:send_out_ect(B, S);
             ({event, E}, S) -> webrtc_transport:to_app(E, S), S
         end,
         St,

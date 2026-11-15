@@ -24,7 +24,9 @@
 %% offered the extension, feedback is generated for incoming packets.
 %% `new/1' takes the `webrtc_cc' options under `cc'.
 %%
-%% Actions: `{send, Datagram}' and `{event, Event}' with Event one of
+%% Actions: `{send, Datagram}', `{send_ect, Datagram}' (RTP to send
+%% with ECT(0), RFC 6679, once RFC 8888 feedback validated ECN) and
+%% `{event, Event}' with Event one of
 %% `{rtp, Mid, #rtp{}}', `{rtp, Mid, Rid, #rtp{}}' (a simulcast layer),
 %% `{keyframe_request, Mid}', `{keyframe_request, Mid, Rid}',
 %% `{rtcp, Mid, Packet}' (feedback the application may act on, such as
@@ -50,6 +52,7 @@
     request_pause/4,
     set_congestion_control/3,
     handle_packet/3,
+    handle_packet/4,
     handle_timeout/2,
     next_timeout/1,
     stats/1
@@ -70,6 +73,7 @@
 new(Opts) ->
     #media{
         cname = maps:get(cname, Opts, <<"webrtc">>),
+        ecn = maps:get(ecn, Opts, false),
         rtcp_ssrc = rand32(),
         cc = webrtc_cc:new(maps:get(cc, Opts, #{})),
         rtcp_opts = maps:with([report_interval], maps:get(rtcp, Opts, #{}))
@@ -114,7 +118,10 @@ configure(Sections, #media{} = M) ->
         #{
             twcc_send => lists:any(fun(#snd{twcc_ext = E}) -> E =/= undefined end, maps:values(Senders)),
             twcc_recv => TwccIds =/= [],
-            sender_ssrc => M#media.rtcp_ssrc
+            sender_ssrc => M#media.rtcp_ssrc,
+            %% RFC 8888 when transport-cc is not negotiated.
+            ccfb => Sections =/= [] andalso lists:all(fun(S) -> maps:get(ccfb, S, false) end, Sections),
+            ecn => M#media.ecn
         },
         M#media.cc
     ),
@@ -283,8 +290,16 @@ set_congestion_control(Opts, Now, M) ->
 handle_packet(_Bin, _Now, #media{in = undefined} = M) ->
     {M, []};
 handle_packet(Bin, Now, M) ->
+    handle_packet(Bin, Now, M, 0).
+
+%% @doc The same with the ECN codepoint the datagram arrived with (0
+%% not-ECT, 1 ECT(1), 2 ECT(0), 3 CE), for RFC 8888 feedback.
+-spec handle_packet(binary(), integer(), state(), 0..3) -> {state(), list()}.
+handle_packet(_Bin, _Now, #media{in = undefined} = M, _Ecn) ->
+    {M, []};
+handle_packet(Bin, Now, M, Ecn) ->
     case webrtc_rtp:classify(Bin) of
-        rtp -> webrtc_media_in:rtp_in(Bin, Now, M);
+        rtp -> webrtc_media_in:rtp_in(Bin, Now, M, Ecn);
         rtcp -> webrtc_media_in:rtcp_in(Bin, Now, M);
         unknown -> {webrtc_media_out:count(dropped, M), []}
     end.

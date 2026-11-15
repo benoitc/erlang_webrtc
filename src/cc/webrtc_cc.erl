@@ -58,6 +58,9 @@
     enqueue/3,
     twcc_seq/1,
     sent/4,
+    sent_rtp/6,
+    ecn_mark/1,
+    ccfb_arrival/5,
     sent_probe/5,
     video_sent/2,
     arrival/4,
@@ -97,8 +100,22 @@
     reduced = #{} :: #{term() => integer()},
     max_bitrate :: pos_integer(),
     hold :: pos_integer(),
-    probe :: webrtc_cc_probe:state()
+    probe :: webrtc_cc_probe:state(),
+    %% RFC 8888 feedback when transport-cc is not negotiated: what we
+    %% sent, by {Ssrc, Seq} ({SendMs, Size, Key, Marked}), and the
+    %% receiver of the peer's packets.
+    ccfb_tx :: undefined | #{{0..16#FFFFFFFF, 0..65535} => {integer(), non_neg_integer(), term(), boolean()}},
+    ccfb_rx :: undefined | webrtc_ccfb_receiver:state(),
+    %% ECN (RFC 6679, RFC 8888 §6): the socket can mark and read; the
+    %% marking state, validated by the feedback; CE marks and packets
+    %% reported per stream since its last receiver report (RFC 8083 §4.4).
+    ecn_capable = false :: boolean(),
+    ecn = off :: off | testing | on | failed,
+    ce = #{} :: #{term() => {non_neg_integer(), non_neg_integer()}}
 }).
+
+-define(CCFB_HISTORY_MS, 2000).
+-define(CCFB_MAX, 10000).
 
 -opaque state() :: #cc{}.
 
@@ -128,9 +145,30 @@ new(Opts) ->
 %% @doc Turn transport-wide CC on for sending (the peer accepts the
 %% extension) and for receiving (we offered it), `sender_ssrc' being
 %% the SSRC our feedback is sent from.
--spec configure(#{twcc_send := boolean(), twcc_recv := boolean(), sender_ssrc := 0..16#FFFFFFFF}, state()) ->
+-spec configure(#{twcc_send := boolean(), twcc_recv := boolean(), sender_ssrc := 0..16#FFFFFFFF,
+                  ccfb => boolean(), ecn => boolean()}, state()) ->
     state().
-configure(#{twcc_send := Send, twcc_recv := Recv, sender_ssrc := Ssrc}, Cc) ->
+configure(#{twcc_send := Send, twcc_recv := Recv, sender_ssrc := Ssrc} = Opts, Cc0) ->
+    Ccfb = maps:get(ccfb, Opts, false),
+    Cc = Cc0#cc{
+        ecn_capable = maps:get(ecn, Opts, Cc0#cc.ecn_capable),
+        ccfb_tx = case Ccfb andalso not Send of
+                      true -> case Cc0#cc.ccfb_tx of undefined -> #{}; T -> T end;
+                      false -> undefined
+                  end,
+        ccfb_rx = case Ccfb andalso not Recv of
+                      true -> case Cc0#cc.ccfb_rx of undefined -> webrtc_ccfb_receiver:new(#{sender_ssrc => Ssrc, interval => Cc0#cc.twcc_interval}); R -> R end;
+                      false -> undefined
+                  end
+    },
+    configure_twcc(Send, Recv, Ssrc, Cc#cc{ecn = case {Cc#cc.ccfb_tx, Cc#cc.ecn_capable, Cc#cc.ecn} of
+                                                {undefined, _, _} -> off;
+                                                {_, false, _} -> off;
+                                                {_, true, off} -> testing;
+                                                {_, true, E} -> E
+                                            end}).
+
+configure_twcc(Send, Recv, Ssrc, Cc) ->
     Tx =
         case {Send, Cc#cc.twcc_tx} of
             {true, undefined} -> webrtc_twcc_sender:new(#{});
@@ -199,6 +237,31 @@ twcc_seq(#cc{twcc_tx = undefined}) -> undefined;
 twcc_seq(#cc{twcc_tx = Tx}) -> webrtc_twcc_sender:next_seq(Tx).
 
 %% @doc A packet of stream `Key' left with `Size' bytes on the wire.
+%% @doc RTP packet `Ssrc'/`Seq' of stream `Key' left with `Size' bytes:
+%% `sent/4', and kept for RFC 8888 feedback when that is negotiated.
+-spec sent_rtp(term(), 0..16#FFFFFFFF, 0..65535, non_neg_integer(), integer(), state()) -> state().
+sent_rtp(Key, Ssrc, Seq, Size, Now, #cc{ccfb_tx = Tx} = Cc) when Tx =/= undefined ->
+    Tx1 = case map_size(Tx) >= ?CCFB_MAX of true -> prune_ccfb(Now, Tx); false -> Tx end,
+    (sent(Key, Size, Now, Cc))#cc{ccfb_tx = Tx1#{{Ssrc, Seq} => {Now, Size, Key, ecn_mark(Cc)}}};
+sent_rtp(Key, _Ssrc, _Seq, Size, Now, Cc) ->
+    sent(Key, Size, Now, Cc).
+
+prune_ccfb(Now, Tx) ->
+    maps:filter(fun(_, {At, _, _, _}) -> Now - At < ?CCFB_HISTORY_MS end, Tx).
+
+%% @doc Whether RTP should go out ECT(0): RFC 8888 feedback reports the
+%% marks, the socket can set them, and the path did not clear them.
+-spec ecn_mark(state()) -> boolean().
+ecn_mark(#cc{ecn = E}) -> E =:= testing orelse E =:= on.
+
+%% @doc The peer's RTP packet `Ssrc'/`Seq' arrived with ECN codepoint
+%% `Ecn', for RFC 8888 feedback.
+-spec ccfb_arrival(0..16#FFFFFFFF, 0..65535, 0..3, integer(), state()) -> state().
+ccfb_arrival(_Ssrc, _Seq, _Ecn, _Now, #cc{ccfb_rx = undefined} = Cc) ->
+    Cc;
+ccfb_arrival(Ssrc, Seq, Ecn, Now, #cc{ccfb_rx = Rx} = Cc) ->
+    Cc#cc{ccfb_rx = webrtc_ccfb_receiver:packet(Ssrc, Seq, Ecn, Now, Rx)}.
+
 -spec sent(term(), non_neg_integer(), integer(), state()) -> state().
 sent(Key, Size, Now, Cc) ->
     %% Media leaving while a probe cluster is sent is part of it.
@@ -260,16 +323,78 @@ rtcp(#rtcp_twcc{} = Fb, Now, #cc{twcc_tx = Tx} = Cc) when Tx =/= undefined ->
         Probed
     ),
     {Events ++ ProbeEvents, retarget(Now, follow(Now, Cc#cc{twcc_tx = Tx1, gcc = Gcc1, probe = Probe}))};
+rtcp(#rtcp_ccfb{reports = Reports, timestamp = Ts}, Now, #cc{ccfb_tx = Tx} = Cc) when Tx =/= undefined ->
+    %% RFC 8888 §3.1: arrival = report timestamp - offset, on the
+    %% receiver's clock (only differences matter to the estimator).
+    TsUs = Ts * 1000000 div 65536,
+    {Results, Tx1, Ecn} = lists:foldl(
+        fun({Ssrc, Begin, Metrics}, Acc0) ->
+            {_, Acc} = lists:foldl(
+                fun(M, {Seq, {R, T, E}}) ->
+                    case maps:take({Ssrc, Seq}, T) of
+                        {{At, Size, Key, Marked}, T1} ->
+                            {Arr, E1} =
+                                case M of
+                                    not_received -> {lost, E};
+                                    {Cp, Ato} -> {TsUs - Ato * 1000000 div 1024, [{Key, Marked, Cp} | E]}
+                                end,
+                            {(Seq + 1) band 16#FFFF, {[{At * 1000, Arr, Size} | R], T1, E1}};
+                        error ->
+                            {(Seq + 1) band 16#FFFF, {R, T, E}}
+                    end
+                end,
+                {Begin, Acc0},
+                Metrics
+            ),
+            Acc
+        end,
+        {[], Tx, []},
+        Reports
+    ),
+    {Events, Gcc} = webrtc_gcc:feedback(lists:keysort(1, Results), Now, Cc#cc.gcc),
+    Cc1 = ecn_feedback(Ecn, Cc#cc{ccfb_tx = prune_ccfb(Now, Tx1), gcc = Gcc}),
+    {Events, retarget(Now, Cc1)};
 rtcp(#rtcp_remb{bitrate = Bps}, Now, Cc) ->
     {Events, Gcc} = webrtc_gcc:remb(Bps, Now, Cc#cc.gcc),
     {Events, retarget(Now, Cc#cc{gcc = Gcc})};
 rtcp(_, _Now, Cc) ->
     {[], Cc}.
 
+%% RFC 6679 §7.2, RFC 8888 §6: marked packets reported not-ECT mean the
+%% path clears the marks, stop marking; ECT or CE validates it. CE
+%% marks count per stream for the circuit breaker (RFC 8083 §4.4).
+ecn_feedback([], Cc) ->
+    Cc;
+ecn_feedback(Seen, Cc) ->
+    Marked = [Cp || {_, true, Cp} <- Seen],
+    Ecn =
+        case {Cc#cc.ecn, Marked} of
+            {E, []} -> E;
+            {testing, _} -> case lists:member(0, Marked) of true -> failed; false -> on end;
+            {on, _} -> case lists:all(fun(C) -> C =:= 0 end, Marked) of true -> failed; false -> on end;
+            {E, _} -> E
+        end,
+    Ce = lists:foldl(
+        fun({Key, _, Cp}, Acc) ->
+            {C, T} = maps:get(Key, Acc, {0, 0}),
+            Acc#{Key => {C + case Cp of 3 -> 1; _ -> 0 end, T + 1}}
+        end,
+        Cc#cc.ce,
+        Seen
+    ),
+    Cc#cc{ecn = Ecn, ce = Ce}.
+
 %% @doc A report block about stream `Key', with the round-trip time in
 %% milliseconds when it could be computed.
 -spec report(term(), #rtcp_rb{}, non_neg_integer() | undefined, integer(), state()) -> {[event()], state()}.
-report(Key, #rtcp_rb{fraction_lost = F} = Rb, Rtt, Now, Cc) ->
+report(Key, #rtcp_rb{fraction_lost = F0} = Rb0, Rtt, Now, Cc0) ->
+    %% RFC 8083 §4.4: CE marked packets count as lost for the breaker.
+    {F, Cc} =
+        case maps:take(Key, Cc0#cc.ce) of
+            {{Ce, Total}, Rest} when Total > 0 -> {min(255, F0 + (Ce * 256) div Total), Cc0#cc{ce = Rest}};
+            _ -> {F0, Cc0}
+        end,
+    Rb = Rb0#rtcp_rb{fraction_lost = F},
     {E1, Cb} = webrtc_circuit_breaker:report(Key, Rb, Rtt, Now, Cc#cc.cb),
     G0 =
         case Rtt of
@@ -342,14 +467,20 @@ handle_timeout(Now, Cc000) ->
     {Probes, Probe} = webrtc_cc_probe:handle_timeout(Now, Cc00#cc.probe),
     Cc0 = Cc00#cc{probe = Probe},
     {Pkts, P} = webrtc_pacer:handle_timeout(Now, Cc0#cc.pacer),
-    {Fb, Rx} =
+    {Fb0, Rx} =
         case Cc0#cc.twcc_rx of
             undefined -> {[], undefined};
             R -> webrtc_twcc_receiver:handle_timeout(Now, R)
         end,
+    {Fb1, CRx} =
+        case Cc0#cc.ccfb_rx of
+            undefined -> {[], undefined};
+            CR -> webrtc_ccfb_receiver:handle_timeout(Now, CR)
+        end,
+    Fb = Fb0 ++ Fb1,
     {E1, G} = webrtc_gcc:handle_timeout(Now, Cc0#cc.gcc),
     {E2, Cb} = webrtc_circuit_breaker:handle_timeout(Now, Cc0#cc.cb),
-    {E3, Cc1} = breakers(E2, Now, Cc0#cc{pacer = P, twcc_rx = Rx, gcc = G, cb = Cb}),
+    {E3, Cc1} = breakers(E2, Now, Cc0#cc{pacer = P, twcc_rx = Rx, ccfb_rx = CRx, gcc = G, cb = Cb}),
     {E4, Cc2} = lift(Now, Cc1),
     Cc = retarget(Now, Cc2),
     {[D || {_, _, D} <- Pkts] ++ Probes, Fb, E1 ++ E2 ++ E3 ++ E4, Cc}.
@@ -363,6 +494,10 @@ next_timeout(#cc{} = Cc) ->
             R -> webrtc_twcc_receiver:next_timeout(R)
         end,
         webrtc_gcc:next_timeout(Cc#cc.gcc),
+        case Cc#cc.ccfb_rx of
+            undefined -> infinity;
+            CR -> webrtc_ccfb_receiver:next_timeout(CR)
+        end,
         webrtc_circuit_breaker:next_timeout(Cc#cc.cb),
         webrtc_cc_probe:next_timeout(Cc#cc.probe)
     ] ++ [Since + Cc#cc.hold || _ := Since <- Cc#cc.reduced]).
@@ -383,6 +518,11 @@ stats(#cc{} = Cc) ->
         halted => maps:map(fun(_, {Reason, _}) -> Reason end, Cc#cc.halted),
         rate_cut => maps:keys(Cc#cc.reduced),
         probing => webrtc_cc_probe:info(Cc#cc.probe),
+        ecn => Cc#cc.ecn,
+        ccfb => #{
+            send => Cc#cc.ccfb_tx =/= undefined,
+            receive_stats => case Cc#cc.ccfb_rx of undefined -> undefined; CR -> webrtc_ccfb_receiver:stats(CR) end
+        },
         twcc => #{
             send => Cc#cc.twcc_tx =/= undefined,
             receive_stats => case Cc#cc.twcc_rx of undefined -> undefined; R -> webrtc_twcc_receiver:stats(R) end

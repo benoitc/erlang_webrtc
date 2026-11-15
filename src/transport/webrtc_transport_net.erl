@@ -13,10 +13,13 @@
     local_addresses/1,
     family/1,
     datagram/5,
+    datagram/6,
+    ecn_capable/1,
     ice_actions/2,
     local_candidate/2,
     udp_send/3,
     send_out/2,
+    send_out_ect/2,
     transmit/2,
     stream_opened/3,
     stream_data/3,
@@ -38,6 +41,9 @@ open_socket({IP, Port}) ->
         end,
     case gen_udp:open(Port, [binary, Family, {ip, IP}, {active, ?ACTIVE_N}, {recbuf, 1 bsl 20}, {sndbuf, 1 bsl 20}]) of
         {ok, S} ->
+            %% Report the ECN codepoint of received datagrams (RFC 6679),
+            %% where the platform can.
+            _ = inet:setopts(S, [case Family of inet -> {recvtos, true}; inet6 -> {recvtclass, true} end]),
             {ok, {_, P}} = inet:sockname(S),
             {ok, {S, {IP, P}}};
         {error, _} = E ->
@@ -70,7 +76,18 @@ usable({169, 254, _, _}) -> false;
 usable({A, _, _, _, _, _, _, _}) when A band 16#FFC0 =:= 16#FE80 -> false;
 usable(_) -> true.
 
+%% @doc Whether the socket reports ECN codepoints.
+-spec ecn_capable(gen_udp:socket()) -> boolean().
+ecn_capable(Sock) ->
+    case inet:getopts(Sock, [recvtos, recvtclass]) of
+        {ok, Opts} -> lists:member({recvtos, true}, Opts) orelse lists:member({recvtclass, true}, Opts);
+        _ -> false
+    end.
+
 datagram(Sock, Src, Bin, Now, St0) ->
+    datagram(Sock, Src, Bin, Now, St0, 0).
+
+datagram(Sock, Src, Bin, Now, St0, Ecn) ->
     Class0 = webrtc_demux:classify(Bin),
     St = St0#st{received = maps:update_with(Class0, fun(N) -> N + 1 end, 1, St0#st.received)},
     case Class0 of
@@ -79,7 +96,7 @@ datagram(Sock, Src, Bin, Now, St0) ->
             ice_actions(Acts, St#st{ice = I1});
         Class ->
             case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
-                true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, St);
+                true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, St, Ecn);
                 false -> drop(unvalidated_source, St#st{dropped_last = {Class, Sock, Src}})
             end
     end.
@@ -106,6 +123,16 @@ ice_action({close_stream, Ref}, St) ->
 ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     St;
+ice_action({send_ect, Sock, {IP, Port} = Dest, Bin}, #st{filter = undefined} = St) when is_port(Sock) ->
+    %% ECT(0) in the IP header (RFC 3168 §5).
+    Anc = case tuple_size(IP) of 4 -> [{tos, 2}]; 8 -> [{tclass, 2}] end,
+    _ = case gen_udp:send(Sock, Dest, Anc, Bin) of
+        ok -> ok;
+        {error, _} -> gen_udp:send(Sock, IP, Port, Bin)
+    end,
+    St;
+ice_action({send_ect, Sock, Dest, Bin}, St) ->
+    ice_action({send, Sock, Dest, Bin}, St);
 ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
     %% Test hook (impairment): it runs in this process and must not
     %% block; a crashing filter lets the datagram through.
@@ -170,8 +197,22 @@ send_out(Bin, St) ->
         {error, _} -> St
     end.
 
+%% The same with ECT(0) on the datagram sent to the peer (relayed and
+%% stream sends go unmarked).
+send_out_ect(Bin, St) ->
+    case webrtc_ice_agent:send(Bin, webrtc_transport:now_ms(), St#st.ice) of
+        {ok, I1, Acts} ->
+            ice_actions([case A of {send, Sock, Dest, B} when is_port(Sock) -> {send_ect, Sock, Dest, B}; _ -> A end
+                         || A <- Acts], St#st{ice = I1});
+        {error, _} ->
+            St
+    end.
+
 transmit(Acts, St) ->
-    lists:foldl(fun({send, B}, S) -> send_out(B, S) end, St, [A || {send, _} = A <- Acts]).
+    lists:foldl(fun({send, B}, S) -> send_out(B, S);
+                   ({send_ect, B}, S) -> send_out_ect(B, S);
+                   (_, S) -> S
+                end, St, Acts).
 
 %%====================================================================
 %% Stream connections to TURN servers (RFC 8656 §3.1)

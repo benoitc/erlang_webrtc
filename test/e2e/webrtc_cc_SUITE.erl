@@ -15,7 +15,8 @@
     estimate_follows_capacity_drop/1,
     estimate_grows_without_bottleneck/1,
     pacing_can_be_disabled/1,
-    probing_fills_link_at_start/1
+    probing_fills_link_at_start/1,
+    probing_on_raised_maximum/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -28,7 +29,8 @@ all() ->
         estimate_follows_capacity_drop,
         estimate_grows_without_bottleneck,
         pacing_can_be_disabled,
-        probing_fills_link_at_start
+        probing_fills_link_at_start,
+        probing_on_raised_maximum
     ].
 
 init_per_suite(Config) ->
@@ -189,6 +191,26 @@ probing_fills_link_at_start(Config) ->
         [] -> ct:fail({never_reached, Est})
     end,
     ?assert(lists:all(fun(X) -> X =< 2600000 end, window(Est, 3000, 6000))),
+    close(A, B).
+
+%% The application caps the estimate at 800 kbps on a 3 Mbps link, then
+%% lifts the cap: a probe at the new maximum gets the estimate near the
+%% link within a second instead of the 8% a second ramp.
+probing_on_raised_maximum(Config) ->
+    {A, B} = pair(Config, #{rate => 3000000, queue_ms => 300}),
+    ok = webrtc:set_congestion_control(A, #{max_bitrate => 800000}),
+    Change = fun
+        (T) when T >= 6000, T < 6100 -> ok = webrtc:set_congestion_control(A, #{max_bitrate => 3000000});
+        (_) -> ok
+    end,
+    {Est, _} = stream(A, B, 9000, Change),
+    ct:log("estimates ~p~nprobing ~p", [Est, maps:get(probing, stats_target(A))]),
+    ?assert(lists:all(fun(X) -> X =< 800000 end, window(Est, 2000, 6000))),
+    case [T || {T, Bps} <- Est, T >= 6000, Bps >= 1600000] of
+        [First | _] -> ?assert(First =< 7500);
+        [] -> ct:fail({never_reached, Est})
+    end,
+    ?assert(lists:all(fun(X) -> X =< 3300000 end, window(Est, 6000, 9000))),
     close(A, B).
 
 %% With pacing off every packet leaves at once and nothing is queued.

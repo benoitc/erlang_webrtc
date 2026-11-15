@@ -1,13 +1,22 @@
 %% @doc DTLS 1.2 record layer (RFC 6347 §4.1): record framing, AEAD
 %% protection and the anti-replay window (§4.1.2.6).
+%%
+%% With a connection ID (RFC 9146) protected records have content type
+%% `tls12_cid' (25) and the CID after the sequence number; the real
+%% content type is the last non-zero byte of the decrypted inner
+%% plaintext, and the additional data is that of RFC 9146 §5.
 -module(webrtc_dtls_record).
 
 -export([
     decode/1,
+    decode/2,
     encode/5,
     new_cipher/3,
     protect/6,
+    protect/7,
     unprotect/2,
+    open/2,
+    overhead/2,
     replay_new/0,
     replay_check/2,
     replay_update/2,
@@ -23,12 +32,13 @@
 -define(WINDOW, 64).
 
 -type content_type() ::
-    change_cipher_spec | alert | handshake | application_data | heartbeat | ack | 0..255.
+    change_cipher_spec | alert | handshake | application_data | heartbeat | tls12_cid | ack | 0..255.
 -type dtls_record() :: #{
     type := content_type(),
     version := 0..16#FFFF,
     epoch := 0..16#FFFF,
     seq := 0..16#FFFFFFFFFFFF,
+    cid => binary(),
     fragment := binary()
 }.
 -type cipher() :: #{
@@ -45,6 +55,7 @@ type_code(alert) -> 21;
 type_code(handshake) -> 22;
 type_code(application_data) -> 23;
 type_code(heartbeat) -> 24;
+type_code(tls12_cid) -> 25;
 type_code(ack) -> 26;
 type_code(N) when is_integer(N) -> N.
 
@@ -54,6 +65,7 @@ type_name(21) -> alert;
 type_name(22) -> handshake;
 type_name(23) -> application_data;
 type_name(24) -> heartbeat;
+type_name(25) -> tls12_cid;
 type_name(26) -> ack;
 type_name(N) -> N.
 
@@ -63,15 +75,33 @@ type_name(N) -> N.
 %% (§4.1.2.7) without affecting valid ones.
 -spec decode(binary()) -> [dtls_record()].
 decode(Bin) ->
-    decode(Bin, []).
+    decode(Bin, undefined).
 
-decode(<<Type, Version:16, Epoch:16, Seq:48, Len:16, Rest/binary>>, Acc) when
-    Len =< ?MAX_CIPHERTEXT, byte_size(Rest) >= Len, Version >= 16#FEFD, Version =< 16#FEFF
+%% @doc The same when we receive on a connection ID of `CidLen' bytes:
+%% `tls12_cid' records carry it (RFC 9146 §4). Without one such records
+%% cannot be parsed and end the datagram.
+-spec decode(binary(), undefined | pos_integer()) -> [dtls_record()].
+decode(Bin, CidLen) ->
+    decode(Bin, CidLen, []).
+
+decode(<<25, Version:16, Epoch:16, Seq:48, Rest0/binary>>, CidLen, Acc) when
+    is_integer(CidLen), Version >= 16#FEFD, Version =< 16#FEFF
+->
+    case Rest0 of
+        <<Cid:CidLen/binary, Len:16, Rest/binary>> when Len =< ?MAX_CIPHERTEXT, byte_size(Rest) >= Len ->
+            <<Frag:Len/binary, Tail/binary>> = Rest,
+            R = #{type => tls12_cid, version => Version, epoch => Epoch, seq => Seq, cid => Cid, fragment => Frag},
+            decode(Tail, CidLen, [R | Acc]);
+        _ ->
+            lists:reverse(Acc)
+    end;
+decode(<<Type, Version:16, Epoch:16, Seq:48, Len:16, Rest/binary>>, CidLen, Acc) when
+    Type =/= 25, Len =< ?MAX_CIPHERTEXT, byte_size(Rest) >= Len, Version >= 16#FEFD, Version =< 16#FEFF
 ->
     <<Frag:Len/binary, Tail/binary>> = Rest,
     R = #{type => type_name(Type), version => Version, epoch => Epoch, seq => Seq, fragment => Frag},
-    decode(Tail, [R | Acc]);
-decode(_, Acc) ->
+    decode(Tail, CidLen, [R | Acc]);
+decode(_, _CidLen, Acc) ->
     lists:reverse(Acc).
 
 -spec encode(content_type(), 0..16#FFFF, 0..16#FFFF, 0..16#FFFFFFFFFFFF, iodata()) -> binary().
@@ -97,6 +127,72 @@ protect(Type, Version, Epoch, Seq, Plain0, #{cipher := C, key := K, iv := IV, ex
     {Ct, Tag} = crypto:crypto_one_time_aead(C, K, Nonce, Plain, AAD, 16, true),
     Body = <<Explicit/binary, Ct/binary, Tag/binary>>,
     <<TypeCode, Version:16, Epoch:16, Seq:48, (byte_size(Body)):16, Body/binary>>.
+
+%% @doc The same with the peer's connection ID (RFC 9146 §5): a
+%% non-empty one makes a `tls12_cid' record; `undefined' or an empty one
+%% the plain format.
+-spec protect(content_type(), 0..16#FFFF, 0..16#FFFF, 0..16#FFFFFFFFFFFF, iodata(), cipher(),
+              undefined | binary()) -> binary().
+protect(Type, Version, Epoch, Seq, Plain, Cipher, Cid) when Cid =:= undefined; Cid =:= <<>> ->
+    protect(Type, Version, Epoch, Seq, Plain, Cipher);
+protect(Type, Version, Epoch, Seq, Plain0, #{cipher := C, key := K, iv := IV, explicit_nonce := E}, Cid) ->
+    %% DTLSInnerPlaintext: content, real type, no padding.
+    Inner = <<(iolist_to_binary(Plain0))/binary, (type_code(Type))>>,
+    SeqNum = <<Epoch:16, Seq:48>>,
+    AAD = cid_aad(Version, Epoch, Seq, Cid, byte_size(Inner)),
+    {Nonce, Explicit} = nonce(E, IV, SeqNum),
+    {Ct, Tag} = crypto:crypto_one_time_aead(C, K, Nonce, Inner, AAD, 16, true),
+    Body = <<Explicit/binary, Ct/binary, Tag/binary>>,
+    <<25, Version:16, Epoch:16, Seq:48, Cid/binary, (byte_size(Body)):16, Body/binary>>.
+
+%% RFC 9146 §5: seq_num_placeholder, tls12_cid, cid_length, tls12_cid,
+%% version, epoch, sequence number, cid, length of the inner plaintext.
+cid_aad(Version, Epoch, Seq, Cid, InnerLen) ->
+    <<16#FFFFFFFFFFFFFFFF:64, 25, (byte_size(Cid)), 25, Version:16, Epoch:16, Seq:48, Cid/binary, InnerLen:16>>.
+
+%% @doc Bytes a protected record adds to its content, with the peer's
+%% connection ID: header, explicit nonce, tag, CID and inner type.
+-spec overhead(cipher(), undefined | binary()) -> pos_integer().
+overhead(#{explicit_nonce := E}, Cid) when Cid =:= undefined; Cid =:= <<>> -> 13 + E + 16;
+overhead(#{explicit_nonce := E}, Cid) -> 13 + E + 16 + byte_size(Cid) + 1.
+
+%% @doc Decrypt a protected record, either format: `{ok, Type, Content}'.
+-spec open(dtls_record(), cipher()) -> {ok, content_type(), binary()} | {error, bad_record_mac}.
+open(#{type := tls12_cid, version := Version, epoch := Epoch, seq := Seq, cid := Cid, fragment := Frag},
+     #{cipher := C, key := K, iv := IV, explicit_nonce := E}) ->
+    case Frag of
+        <<Explicit:E/binary, Rest/binary>> when byte_size(Rest) >= 17 ->
+            CtLen = byte_size(Rest) - 16,
+            <<Ct:CtLen/binary, Tag:16/binary>> = Rest,
+            Nonce = case E of 8 -> <<IV/binary, Explicit/binary>>; 0 -> xor_iv(IV, <<Epoch:16, Seq:48>>) end,
+            case crypto:crypto_one_time_aead(C, K, Nonce, Ct, cid_aad(Version, Epoch, Seq, Cid, CtLen), Tag, false) of
+                Inner when is_binary(Inner) -> inner(Inner);
+                _ -> {error, bad_record_mac}
+            end;
+        _ ->
+            {error, bad_record_mac}
+    end;
+open(#{type := Type} = R, Cipher) ->
+    case unprotect(R, Cipher) of
+        {ok, Plain} -> {ok, Type, Plain};
+        Err -> Err
+    end.
+
+%% The real type is the last non-zero byte; the zeros after it padding.
+inner(Inner) ->
+    inner(Inner, byte_size(Inner) - 1).
+
+inner(_Inner, -1) ->
+    {error, bad_record_mac};
+inner(Inner, I) ->
+    case binary:at(Inner, I) of
+        0 ->
+            inner(Inner, I - 1);
+        T when T =/= 25, I =< ?MAX_PLAINTEXT ->
+            {ok, type_name(T), binary:part(Inner, 0, I)};
+        _ ->
+            {error, bad_record_mac}
+    end.
 
 %% @doc Decrypt a protected record.
 -spec unprotect(dtls_record(), cipher()) -> {ok, binary()} | {error, bad_record_mac}.

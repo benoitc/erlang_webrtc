@@ -21,6 +21,13 @@
     expand_label/6,
     derive_secret/5,
     early_secret/2,
+    early_secret/3,
+    handshake_secret/4,
+    binder_key/3,
+    binder/4,
+    client_early_secret/4,
+    resumption_master_secret/4,
+    resumption_psk/4,
     handshake_secret/3,
     master_secret/3,
     traffic_keys/3,
@@ -126,18 +133,56 @@ derive_secret(Prefix, Hash, Secret, Label, TranscriptHash) ->
     expand_label(Prefix, Hash, Secret, Label, TranscriptHash, hash_len(Hash)).
 
 %%====================================================================
-%% Key schedule (RFC 8446 §7.1), no PSK
+%% Key schedule (RFC 8446 §7.1)
 %%====================================================================
 
+%% @doc The early secret without a PSK.
 -spec early_secret(binary(), hash()) -> binary().
 early_secret(_Prefix, Hash) ->
     extract(Hash, <<>>, binary:copy(<<0>>, hash_len(Hash))).
 
+%% @doc The early secret from a resumption PSK.
+-spec early_secret(binary(), hash(), binary()) -> binary().
+early_secret(_Prefix, Hash, Psk) ->
+    extract(Hash, <<>>, Psk).
+
 -spec handshake_secret(binary(), hash(), binary()) -> binary().
 handshake_secret(Prefix, Hash, Shared) ->
-    Early = early_secret(Prefix, Hash),
+    handshake_secret(Prefix, Hash, Shared, early_secret(Prefix, Hash)).
+
+%% @doc The handshake secret from (EC)DHE on top of an early secret
+%% (a PSK one when resuming with psk_dhe_ke).
+-spec handshake_secret(binary(), hash(), binary(), binary()) -> binary().
+handshake_secret(Prefix, Hash, Shared, Early) ->
     Derived = derive_secret(Prefix, Hash, Early, <<"derived">>, empty_hash(Hash)),
     extract(Hash, Derived, Shared).
+
+%% @doc binder_key for a resumption PSK (RFC 8446 §7.1, "res binder").
+-spec binder_key(binary(), hash(), binary()) -> binary().
+binder_key(Prefix, Hash, Early) ->
+    derive_secret(Prefix, Hash, Early, <<"res binder">>, empty_hash(Hash)).
+
+%% @doc The PSK binder (RFC 8446 §4.2.11.2): Finished computed with the
+%% binder key over the hash of the truncated ClientHello.
+-spec binder(binary(), hash(), binary(), binary()) -> binary().
+binder(Prefix, Hash, BinderKey, TruncatedHash) ->
+    finished(Prefix, Hash, BinderKey, TruncatedHash).
+
+%% @doc client_early_traffic_secret (0-RTT), from the ClientHello hash.
+-spec client_early_secret(binary(), hash(), binary(), binary()) -> binary().
+client_early_secret(Prefix, Hash, Early, ClientHelloHash) ->
+    derive_secret(Prefix, Hash, Early, <<"c e traffic">>, ClientHelloHash).
+
+%% @doc resumption_master_secret, from the hash up to the client
+%% Finished.
+-spec resumption_master_secret(binary(), hash(), binary(), binary()) -> binary().
+resumption_master_secret(Prefix, Hash, Master, TranscriptHash) ->
+    derive_secret(Prefix, Hash, Master, <<"res master">>, TranscriptHash).
+
+%% @doc The PSK of a ticket (RFC 8446 §4.6.1).
+-spec resumption_psk(binary(), hash(), binary(), binary()) -> binary().
+resumption_psk(Prefix, Hash, ResumptionMaster, Nonce) ->
+    expand_label(Prefix, Hash, ResumptionMaster, <<"resumption">>, Nonce, hash_len(Hash)).
 
 -spec master_secret(binary(), hash(), binary()) -> binary().
 master_secret(Prefix, Hash, HandshakeSecret) ->

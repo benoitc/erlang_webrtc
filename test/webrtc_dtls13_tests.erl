@@ -995,3 +995,28 @@ new_connection_id_test() ->
     {C3, Acts} = webrtc_dtls:handle_packet(D2, 100, C2),
     ?assertEqual(failed, C3#dtls.state),
     ?assertMatch([_ | _], [A || {send, _} = A <- Acts]).
+
+%%====================================================================
+%% Resumption key schedule (RFC 8448 §3 and §4)
+%%====================================================================
+
+hx(S) -> binary:decode_hex(iolist_to_binary(string:replace(S, " ", "", all))).
+
+rfc8448_resumption_test() ->
+    K = webrtc_dtls13_keys,
+    Master = hx("18 df 06 84 3d 13 a0 8b f2 a4 49 84 4c 5f 8a 47 80 01 bc 4d 4c 62 79 84 d5 a4 1d a8 d0 40 29 19"),
+    RMS = K:resumption_master_secret(?T13, sha256, Master,
+        hx("20 91 45 a9 6e e8 e2 a1 22 ff 81 00 47 cc 95 26 84 65 8d 60 49 e8 64 29 42 6d b8 7c 54 ad 14 3d")),
+    ?assertEqual(hx("7d f2 35 f2 03 1d 2a 05 12 87 d0 2b 02 41 b0 bf da f8 6c c8 56 23 1f 2d 5a ba 46 c4 34 ec 19 6c"), RMS),
+    Psk = K:resumption_psk(?T13, sha256, RMS, <<0, 0>>),
+    ?assertEqual(hx("4e cd 0e b6 ec 3b 4d 87 f5 d6 02 8f 92 2c a4 c5 85 1a 27 7f d4 13 11 c9 e6 2d 2c 94 92 e1 c4 f3"), Psk),
+    Early = K:early_secret(?T13, sha256, Psk),
+    ?assertEqual(hx("9b 21 88 e9 b2 fc 6d 64 d7 1d c3 29 90 0e 20 bb 41 91 50 00 f6 78 aa 83 9c bb 79 7c b7 d8 33 2c"), Early),
+    BK = K:binder_key(?T13, sha256, Early),
+    ?assertEqual(hx("69 fe 13 1a 3b ba d5 d6 3c 64 ee bc c3 0e 39 5b 9d 81 07 72 6a 13 d0 74 e3 89 db c8 a4 e4 72 56"), BK),
+    ?assertEqual(hx("3a dd 4f b2 d8 fd f8 22 a0 ca 3c f7 67 8e f5 e8 8d ae 99 01 41 c5 92 4d 57 bb 6f a3 1b 9e 5f 9d"),
+                 K:binder(?T13, sha256, BK,
+                          hx("63 22 4b 2e 45 73 f2 d3 45 4c a8 4b 9d 00 9a 04 f6 be 9e 05 71 1a 83 96 47 3a ef a0 1e 92 4a 14"))),
+    ?assertEqual(hx("3f bb e6 a6 0d eb 66 c3 0a 32 79 5a ba 0e ff 7e aa 10 10 55 86 e7 be 5c 09 67 8d 63 b6 ca ab 62"),
+                 K:client_early_secret(?T13, sha256, Early,
+                     hx("08 ad 0f a0 5d 7c 72 33 b1 77 5b a2 ff 9f 4c 5b 8b 59 27 6b 7f 22 7f 13 a9 76 24 5f 5d 96 09 13"))).

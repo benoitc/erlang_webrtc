@@ -117,7 +117,11 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 dtls_opts = maps:with([connection_id, resumption, ticket_lifetime], maps:get(dtls, Opts, #{})),
                 filter = maps:get(outbound_filter, Opts, undefined),
                 mdns = webrtc_mdns_client:new(
-                    (maps:get(mdns, Opts, #{}))#{hide_host => maps:get(mdns_host_candidates, Opts, false)},
+                    (maps:get(mdns, Opts, #{}))#{
+                        hide_host => maps:get(mdns_host_candidates, Opts, false),
+                        expose_public => maps:get(mdns_expose_public, Opts, true),
+                        stun_servers => maps:get(stun_servers, Opts, [])
+                    },
                     lists:usort([webrtc_transport_net:family(IP) || {_, {IP, _}} <- Sockets])
                 )
             })}

@@ -296,7 +296,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
         maps:with(
             [stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
                 rtcp_report_interval, ice_tcp,
-                mdns_host_candidates, dtls, srtp_profiles],
+                mdns_host_candidates, mdns_expose_public, dtls, srtp_profiles],
             St#st.opts
         ),
         #{

@@ -25,6 +25,11 @@
 %% (draft §3.1.1), and the related address of other candidates becomes
 %% `0.0.0.0' or `::' port 9 (§3.1.2.2), so the host address is not
 %% revealed.
+%%
+%% A server-reflexive candidate whose address is the one of its hidden
+%% host shows that address is public (§3.1.2.2). It is remembered for
+%% the current STUN servers (`webrtc_mdns_public') and, with
+%% `expose_public' (default true), later gatherings signal it as it is.
 -module(webrtc_mdns_client).
 
 -include("webrtc_ice.hrl").
@@ -39,6 +44,8 @@
     families :: [inet | inet6],
     max_pending :: pos_integer(),
     hide_host :: boolean(),
+    expose_public :: boolean(),
+    stun :: [term()],
     pid :: undefined | pid(),
     mon :: undefined | reference(),
     pending = #{} :: #{reference() => {mdns | fqdn, #sdp_candidate{}}},
@@ -49,14 +56,17 @@
 
 %% @doc `Opts' is the transport's `mdns' option map (passed to
 %% `webrtc_mdns:start/1') plus `max_pending' (default 32) and
-%% `hide_host'. `Families' are those of the transport's sockets.
+%% `hide_host', `expose_public' (default true) and `stun_servers'.
+%% `Families' are those of the transport's sockets.
 -spec new(map(), [inet | inet6]) -> client().
 new(Opts, Families) ->
     #c{
-        opts = maps:without([max_pending, hide_host], Opts),
+        opts = maps:without([max_pending, hide_host, expose_public, stun_servers], Opts),
         families = Families,
         max_pending = maps:get(max_pending, Opts, 32),
-        hide_host = maps:get(hide_host, Opts, false)
+        hide_host = maps:get(hide_host, Opts, false),
+        expose_public = maps:get(expose_public, Opts, true),
+        stun = maps:get(stun_servers, Opts, [])
     }.
 
 %% @doc Classify a remote candidate. `{add, Value}': give it to the ICE
@@ -184,7 +194,21 @@ restart(C) ->
 -spec local_candidate(#ice_cand{}, client()) -> {binary(), client()}.
 local_candidate(Ice, #c{hide_host = false} = C) ->
     {webrtc_ice_candidate:to_sdp(Ice), C};
-local_candidate(#ice_cand{type = host, address = IP} = Ice, C0) ->
+local_candidate(#ice_cand{type = host, address = IP} = Ice, #c{expose_public = true, stun = [_ | _] = Stun} = C0)
+  when is_tuple(IP) ->
+    case webrtc_mdns_public:is_public(IP, Stun) of
+        true -> {webrtc_ice_candidate:to_sdp(Ice), C0};
+        false -> hide(Ice, C0)
+    end;
+local_candidate(#ice_cand{type = host} = Ice, C) ->
+    hide(Ice, C);
+local_candidate(#ice_cand{type = srflx, address = IP, related_address = IP} = Ice, #c{stun = Stun} = C) ->
+    ok = webrtc_mdns_public:learn(IP, Stun),
+    any_related(Ice, C);
+local_candidate(Ice, C) ->
+    any_related(Ice, C).
+
+hide(#ice_cand{address = IP} = Ice, C0) ->
     Value = webrtc_ice_candidate:to_sdp(Ice),
     case ensure(C0) of
         {ok, #c{pid = Pid} = C} ->
@@ -194,15 +218,16 @@ local_candidate(#ice_cand{type = host, address = IP} = Ice, C0) ->
             end;
         {error, _} ->
             {Value, C0}
-    end;
-local_candidate(#ice_cand{related_address = RA} = Ice, C) when RA =/= undefined ->
+    end.
+
+any_related(#ice_cand{related_address = RA} = Ice, C) when RA =/= undefined ->
     Any =
         case tuple_size(RA) of
             4 -> {0, 0, 0, 0};
             8 -> {0, 0, 0, 0, 0, 0, 0, 0}
         end,
     {webrtc_ice_candidate:to_sdp(Ice#ice_cand{related_address = Any, related_port = 9}), C};
-local_candidate(Ice, C) ->
+any_related(Ice, C) ->
     {webrtc_ice_candidate:to_sdp(Ice), C}.
 
 with_address(Value, Name) ->

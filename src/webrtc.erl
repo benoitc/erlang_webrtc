@@ -207,7 +207,10 @@ transceivers(Pc) ->
     call(Pc, transceivers).
 
 %% @doc Create a data channel. `Opts': `ordered', `max_retransmits',
-%% `max_packet_life_time', `protocol', `negotiated' and `id'. Returns
+%% `max_packet_life_time', `protocol', `negotiated', `id' and
+%% `priority' (`very_low', `low' (default), `medium', `high' or a DCEP
+%% value 0..65535): channels share the association in proportion to
+%% it (RFC 8831 §6.4), and the peer is told it. Returns
 %% `{ok, Id}' when the id is known (association up, or a pre-negotiated
 %% channel); otherwise `ok', the channel is opened as soon as the
 %% association is up and the `datachannel_open' event carries its id.

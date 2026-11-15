@@ -97,8 +97,8 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | ID-4 | 2.2.3 | Reassembly by stream, U bit, MID and FSN; DATA and I-DATA mixed abort the association | webrtc_sctp_recv | assoc:interleaving_lossy_test_, assoc:idata_without_negotiation_test | Unit tested |
 | ID-5 | 2.3.1 | I-FORWARD-TSN for ordered and unordered messages; FORWARD TSN with I-DATA aborts | webrtc_sctp_pr, webrtc_sctp_recv | assoc:interleaving_pr_test, assoc:forward_tsn_with_idata_test | Unit tested |
 | ID-6 | 2.3.2 | Stream reset resets both MID counters | webrtc_sctp_send | assoc:stream_reset_interleaving_test | Unit tested |
-| ID-7 | 3.2 | Round robin scheduler between streams (per fragment with I-DATA, per message with DATA) | webrtc_sctp_send | assoc:interleaving_test | Unit tested |
-| ID-8 | 3.1, 3.3 to 3.6 | First come first served, priority, fair bandwidth and weighted fair queueing schedulers | | | Not implemented (data channel priority is carried but not used for scheduling) |
+| ID-7 | 3.2, 3.6 | Weighted fair queueing between streams (per fragment with I-DATA, per message with DATA); equal weights share by bytes | webrtc_sctp_send | assoc:wfq_interleaved_test, wfq_data_test, wfq_equal_test, interleaving_test | Unit tested |
+| ID-8 | 3.1, 3.3 to 3.5 | First come first served, strict priority and fair bandwidth schedulers | | | Not implemented: weighted fair queueing (3.6) is the one used |
 
 ## RFC 8261 (SCTP over DTLS)
 

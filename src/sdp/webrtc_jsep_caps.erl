@@ -15,6 +15,11 @@
     match_remote/2,
     answer_extensions/2,
     extension_map/1,
+    normalize/1,
+    to_extmap/1,
+    encrypted_ids/1,
+    common_extensions/2,
+    single_forms/1,
     fmtp/2,
     same_codec/2,
     pause_params/1
@@ -23,7 +28,9 @@
 -export_type([extension/0]).
 
 -type codec() :: webrtc_sdp_media:codec().
--type extension() :: #{id := pos_integer(), uri := binary()}.
+%% `encrypt': sent with RFC 6904 header extension encryption, signaled
+%% as `urn:ietf:params:rtp-hdrext:encrypt <uri>'.
+-type extension() :: #{id := pos_integer(), uri := binary(), encrypt => boolean()}.
 -type kind() :: audio | video.
 
 -define(FB(T), #{type => T, param => undefined}).
@@ -33,6 +40,7 @@
 -define(URI_RID, <<"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id">>).
 -define(URI_RRID, <<"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id">>).
 -define(URI_AUDIO_LEVEL, <<"urn:ietf:params:rtp-hdrext:ssrc-audio-level">>).
+-define(URI_ENCRYPT, <<"urn:ietf:params:rtp-hdrext:encrypt">>).
 -define(URI_ABS_SEND_TIME, <<"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
 -define(URI_TOFFSET, <<"urn:ietf:params:rtp-hdrext:toffset">>).
@@ -97,7 +105,10 @@ rtx(Pt, Apt) ->
 -spec default_extensions(kind()) -> [extension()].
 default_extensions(audio) ->
     [
+        %% RFC 8834 §5.2.2: the audio level can be encrypted (RFC 6904);
+        %% both forms are offered, the answer keeps one.
         #{id => 1, uri => ?URI_AUDIO_LEVEL},
+        #{id => 5, uri => ?URI_AUDIO_LEVEL, encrypt => true},
         #{id => 2, uri => ?URI_ABS_SEND_TIME},
         #{id => 3, uri => ?URI_TWCC},
         #{id => 4, uri => ?URI_MID}
@@ -257,13 +268,76 @@ apt(C) ->
     end.
 
 %% @doc Offered header extensions we support, keeping the offered ids
-%% (RFC 8285 §5).
+%% (RFC 8285 §5). An extension offered both in clear and encrypted
+%% (RFC 6904 §4.1) is answered encrypted when we can, and never in both
+%% forms.
 -spec answer_extensions([webrtc_sdp_rtp:extmap()], [extension()]) -> [extension()].
-answer_extensions(Offered, Local) ->
-    Uris = [U || #{uri := U} <- Local],
-    [#{id => Id, uri => U} || #{id := Id, uri := U} <- Offered, lists:member(U, Uris)].
+answer_extensions(Offered0, Local0) ->
+    Offered = [normalize(E) || E <- Offered0],
+    Local = [normalize(E) || E <- Local0],
+    CanEncrypt = [U || #{uri := U, encrypt := true} <- Local],
+    Known = [U || #{uri := U} <- Local],
+    Chosen = [
+        E
+     || U <- lists:usort([U || #{uri := U} <- Offered]),
+        lists:member(U, Known),
+        E <- choose(U, [X || #{uri := U1} = X <- Offered, U1 =:= U], lists:member(U, CanEncrypt))
+    ],
+    %% In the offer's order.
+    [E || E <- Offered, lists:member(E, Chosen)].
 
-%% @doc `#{Uri => Id}' for a list of extensions.
+%% The encrypted form when offered and we encrypt it, else the clear one.
+choose(_U, Forms, true) ->
+    case [E || #{encrypt := true} = E <- Forms] of
+        [E | _] -> [E];
+        [] -> choose(_U, Forms, false)
+    end;
+choose(_U, Forms, false) ->
+    lists:sublist([E || #{encrypt := false} = E <- Forms], 1).
+
+%% @doc An extension or `a=extmap' value with the encrypted form told
+%% apart: `uri' is the extension's own URI and `encrypt' says whether it
+%% is sent encrypted (RFC 6904 §4).
+-spec normalize(extension() | webrtc_sdp_rtp:extmap()) -> extension().
+normalize(#{uri := ?URI_ENCRYPT, attributes := A} = E) when is_binary(A) ->
+    [Inner | _] = binary:split(A, <<" ">>),
+    #{id => maps:get(id, E), uri => Inner, encrypt => true};
+normalize(#{id := Id, uri := U} = E) ->
+    #{id => Id, uri => U, encrypt => maps:get(encrypt, E, false) =:= true}.
+
+%% @doc The `a=extmap' value of an extension.
+-spec to_extmap(extension()) -> webrtc_sdp_rtp:extmap().
+to_extmap(#{id := Id, uri := U} = E) ->
+    case maps:get(encrypt, E, false) of
+        true -> #{id => Id, direction => undefined, uri => ?URI_ENCRYPT, attributes => U};
+        false -> #{id => Id, direction => undefined, uri => U, attributes => undefined}
+    end.
+
+%% @doc `#{Uri => Id}' for a list of extensions, by their own URI
+%% whether encrypted or not.
 -spec extension_map([extension() | webrtc_sdp_rtp:extmap()]) -> #{binary() => pos_integer()}.
 extension_map(Exts) ->
-    maps:from_list([{U, Id} || #{id := Id, uri := U} <- Exts]).
+    maps:from_list([{U, Id} || E <- Exts, #{id := Id, uri := U} <- [normalize(E)]]).
+
+%% @doc Ids of the encrypted extensions of a list.
+-spec encrypted_ids([extension() | webrtc_sdp_rtp:extmap()]) -> [pos_integer()].
+encrypted_ids(Exts) ->
+    lists:usort([Id || E <- Exts, #{id := Id, encrypt := true} <- [normalize(E)]]).
+
+%% @doc The extensions of `Mine' in the form (clear or encrypted) the
+%% other description `Theirs' also has (RFC 8285 §6, RFC 6904 §4.1).
+-spec common_extensions([webrtc_sdp_rtp:extmap()], [webrtc_sdp_rtp:extmap()]) -> [extension()].
+common_extensions(Mine, Theirs) ->
+    Forms = [{U, Enc} || E <- Theirs, #{uri := U, encrypt := Enc} <- [normalize(E)]],
+    [N || E <- Mine, #{uri := U, encrypt := Enc} = N <- [normalize(E)], lists:member({U, Enc}, Forms)].
+
+%% @doc True when no extension appears both in clear and encrypted (an
+%% answer must not negotiate both, RFC 6904 §4.1).
+-spec single_forms([webrtc_sdp_rtp:extmap()]) -> boolean().
+single_forms(Exts) ->
+    Ns = [normalize(E) || E <- Exts],
+    Uris = [U || #{uri := U} <- Ns],
+    lists:all(
+        fun(U) -> length(lists:usort([Enc || #{uri := U1, encrypt := Enc} <- Ns, U1 =:= U])) =:= 1 end,
+        Uris
+    ).

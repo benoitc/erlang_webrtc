@@ -60,15 +60,21 @@
 
 %% @doc Options: `ice_ufrag', `ice_pwd' and `fingerprints' (required);
 %% `ice_lite', `sctp_port', `max_message_size', `codecs' and
-%% `extensions' (maps keyed by `audio' and `video').
+%% `extensions' (maps keyed by `audio' and `video'; an extension with
+%% `encrypt => true' is offered encrypted, RFC 6904), and
+%% `encrypt_header_extensions' (default true; false offers and accepts
+%% no encrypted extension).
 -spec new(map()) -> state().
 new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
     Codecs = maps:get(codecs, Opts, #{}),
     Exts = maps:get(extensions, Opts, #{}),
+    %% RFC 8834 §5.2.2: header extension encryption can be turned off.
+    Encrypt = maps:get(encrypt_header_extensions, Opts, true),
     Caps = maps:from_list([
         {K, {
             maps:get(K, Codecs, webrtc_jsep_caps:default_codecs(K)),
-            maps:get(K, Exts, webrtc_jsep_caps:default_extensions(K))
+            [E || E <- maps:get(K, Exts, webrtc_jsep_caps:default_extensions(K)),
+                  Encrypt orelse maps:get(encrypt, E, false) =/= true]
         }}
      || K <- [audio, video]
     ]),
@@ -575,7 +581,9 @@ answer_section(OM, O, AM, A, J) ->
         {not Active orelse not Rtp orelse
             direction_allowed(webrtc_sdp_media:direction(OM, O), webrtc_sdp_media:direction(AM, A)),
             direction_mismatch},
-        {not Active orelse not Rtp orelse offered_formats(OM, AM), payload_type_mismatch}
+        {not Active orelse not Rtp orelse offered_formats(OM, AM), payload_type_mismatch},
+        %% RFC 6904 §4.1: never both the clear and the encrypted form.
+        {not Active orelse webrtc_jsep_caps:single_forms(webrtc_sdp_media:attrs(extmap, AM)), both_extension_forms}
     ],
     case [R || {false, R} <- Checks] of
         [] -> ok;

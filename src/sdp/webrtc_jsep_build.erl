@@ -297,8 +297,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
         [{rtcp, #{port => 9, connection => ?NULL_C}}] ++
             transport_attrs(Setup, Ctx, J) ++
             [{mid, Mid}] ++
-            [{extmap, #{id => Id, direction => undefined, uri => U, attributes => undefined}}
-             || #{id := Id, uri := U} <- Exts] ++
+            [{extmap, webrtc_jsep_caps:to_extmap(E)} || E <- Exts] ++
             [{direction, Dir}] ++ Msid ++
             [{rtcp_mux, true}, {rtcp_rsize, true}] ++ [{cryptex, true} || maps:get(cryptex, Ctx, false)] ++
             webrtc_sdp_media:codec_attributes(Codecs) ++ Ssrcs ++ Rids,

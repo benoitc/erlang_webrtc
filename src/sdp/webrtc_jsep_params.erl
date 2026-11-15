@@ -130,7 +130,13 @@ media_params(_T, _L, #sdp_media{port = 0}, _Ctx) ->
 media_params(T, L, R, {Local, Remote, J}) ->
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
-    LocalExts = webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
+    LX = webrtc_sdp_media:attrs(extmap, L),
+    RX = webrtc_sdp_media:attrs(extmap, R),
+    %% Only extensions both descriptions have, in the same form, clear or
+    %% encrypted (RFC 8285 §6, RFC 6904 §4.1): the remote ids for sending,
+    %% ours for receiving.
+    Send = webrtc_jsep_caps:common_extensions(RX, LX),
+    Recv = webrtc_jsep_caps:common_extensions(LX, RX),
     Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R, J#jsep.answerer),
     Layers#{
         id => T#tr.id,
@@ -139,12 +145,10 @@ media_params(T, L, R, {Local, Remote, J}) ->
         direction => T#tr.current_direction,
         send_codecs => webrtc_jsep_caps:match_remote(RemoteCodecs, T#tr.codecs),
         recv_codecs => LocalCodecs,
-        %% Only extensions both descriptions have (RFC 8285 §6): the
-        %% remote ids of the ones the local description lists.
-        send_extensions => webrtc_jsep_caps:extension_map(
-            [E || #{uri := U} = E <- webrtc_sdp_media:attrs(extmap, R), maps:is_key(U, LocalExts)]
-        ),
-        recv_extensions => LocalExts,
+        send_extensions => webrtc_jsep_caps:extension_map(Send),
+        recv_extensions => webrtc_jsep_caps:extension_map(Recv),
+        send_encrypted => webrtc_jsep_caps:encrypted_ids(Send),
+        recv_encrypted => webrtc_jsep_caps:encrypted_ids(Recv),
         ssrc => T#tr.ssrc,
         rtx_ssrc => T#tr.rtx_ssrc,
         cname => undefined,

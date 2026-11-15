@@ -11,7 +11,7 @@
 
 -include("webrtc_rtp_rtcp.hrl").
 
--export([run/1, average/4, min_after/4]).
+-export([run/1, average/4, min_after/4, reached/3]).
 
 %% Opts: link (webrtc_cc_link options), flows (list of webrtc_cc
 %% options, one per flow, optionally with start_ms), duration_ms,
@@ -104,10 +104,15 @@ split(B) ->
 
 egress(Sizes, T, #{id := Id} = F, #{link := L0} = Sim) ->
     {Cc, L} = lists:foldl(
-        fun(Sz, {C, L1}) ->
-            Seq = webrtc_cc:twcc_seq(C),
-            C1 = webrtc_cc:sent(Id, Sz, T, C),
-            {C1, webrtc_cc_link:send({Id, Seq, Sz}, Sz, T * 1000, L1)}
+        fun
+            ({probe, Cluster, Sz}, {C, L1}) ->
+                Seq = webrtc_cc:twcc_seq(C),
+                C1 = webrtc_cc:sent_probe(Id, Sz, T, Cluster, C),
+                {C1, webrtc_cc_link:send({Id, Seq, Sz}, Sz, T * 1000, L1)};
+            (Sz, {C, L1}) ->
+                Seq = webrtc_cc:twcc_seq(C),
+                C1 = webrtc_cc:video_sent(T, webrtc_cc:sent(Id, Sz, T, C)),
+                {C1, webrtc_cc_link:send({Id, Seq, Sz}, Sz, T * 1000, L1)}
         end,
         {maps:get(cc, F), L0},
         Sizes
@@ -178,6 +183,13 @@ sample(_T, Sim) ->
 average(Samples, N, From, To) ->
     Vs = [lists:nth(N, Ts) || {T, Ts, _} <- Samples, T >= From, T =< To],
     lists:sum(Vs) / length(Vs).
+
+%% First time (ms) flow N's target reached Bps, or never.
+reached(Samples, N, Bps) ->
+    case [T || {T, Ts, _} <- Samples, lists:nth(N, Ts) >= Bps] of
+        [T | _] -> T;
+        [] -> never
+    end.
 
 min_after(Samples, N, From, To) ->
     lists:min([lists:nth(N, Ts) || {T, Ts, _} <- Samples, T >= From, T =< To]).

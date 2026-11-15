@@ -34,8 +34,13 @@
 %% timeout interval) after it tripped, so a retry loop cannot keep
 %% overloading the path (RFC 8083 §4.5, RFC 8084).
 %%
-%% Options (all optional): `pacing' (default true), `pacing_factor'
-%% (2.5), `burst_ms' (10), `max_queue_packets' (1000), `max_queue_ms'
+%% Probing (`webrtc_cc_probe'): with transport-wide feedback, the first
+%% video packet starts probe clusters of padding packets ahead of the
+%% estimate; their results lift it at once instead of the slow startup
+%% ramp.
+%%
+%% Options (all optional): `pacing' (default true), `probing' (default
+%% true), `pacing_factor' (2.5), `burst_ms' (10), `max_queue_packets' (1000), `max_queue_ms'
 %% (1000), `twcc_interval' (100), `rtcp_timeout' (15000),
 %% `circuit_breaker_hold' (15000), and the
 %% `webrtc_gcc' options `start_bitrate', `min_bitrate', `max_bitrate',
@@ -51,6 +56,8 @@
     enqueue/3,
     twcc_seq/1,
     sent/4,
+    sent_probe/5,
+    video_sent/2,
     arrival/4,
     rtcp/3,
     report/5,
@@ -85,7 +92,8 @@
     %% Streams whose congestion breaker cut the rate: Key => Since.
     reduced = #{} :: #{term() => integer()},
     max_bitrate :: pos_integer(),
-    hold :: pos_integer()
+    hold :: pos_integer(),
+    probe :: webrtc_cc_probe:state()
 }).
 
 -opaque state() :: #cc{}.
@@ -108,7 +116,8 @@ new(Opts) ->
         gcc = Gcc,
         cb = webrtc_circuit_breaker:new(maps:with([rtcp_timeout], Opts)),
         twcc_interval = maps:get(twcc_interval, Opts, 100),
-        rtx_sent = webrtc_cc_rate:new(1000)
+        rtx_sent = webrtc_cc_rate:new(1000),
+        probe = webrtc_cc_probe:new(maps:with([probing, max_bitrate], Opts))
     }.
 
 %% @doc Turn transport-wide CC on for sending (the peer accepts the
@@ -195,6 +204,26 @@ sent(Key, Size, Now, Cc) ->
         cb = webrtc_circuit_breaker:sent(Key, Size, Now, Cc#cc.cb)
     }.
 
+%% @doc A probe padding packet of cluster `Cluster' left (see
+%% `handle_timeout/2').
+-spec sent_probe(term(), non_neg_integer(), integer(), pos_integer(), state()) -> state().
+sent_probe(Key, Size, Now, Cluster, #cc{twcc_tx = Tx} = Cc) when Tx =/= undefined ->
+    Cc#cc{
+        twcc_tx = webrtc_twcc_sender:sent(Size, Now, {probe, Cluster}, Tx),
+        gcc = webrtc_gcc:sent(Size, Now, Cc#cc.gcc),
+        cb = webrtc_circuit_breaker:sent(Key, Size, Now, Cc#cc.cb)
+    };
+sent_probe(_Key, _Size, _Now, _Cluster, Cc) ->
+    Cc.
+
+%% @doc A video packet left: with transport-wide feedback the first
+%% probes start (`webrtc_cc_probe').
+-spec video_sent(integer(), state()) -> state().
+video_sent(_Now, #cc{twcc_tx = undefined} = Cc) ->
+    Cc;
+video_sent(Now, #cc{probe = P, gcc = G} = Cc) ->
+    Cc#cc{probe = webrtc_cc_probe:start(Now, webrtc_gcc:target(G), P)}.
+
 %% @doc A packet carrying transport-wide sequence number `Seq' arrived.
 -spec arrival(0..65535, 0..16#FFFFFFFF, integer(), state()) -> state().
 arrival(_Seq, _Ssrc, _Now, #cc{twcc_rx = undefined} = Cc) ->
@@ -206,9 +235,15 @@ arrival(Seq, Ssrc, Now, #cc{twcc_rx = Rx} = Cc) ->
 %% REMB. Other packets are ignored.
 -spec rtcp(term(), integer(), state()) -> {[event()], state()}.
 rtcp(#rtcp_twcc{} = Fb, Now, #cc{twcc_tx = Tx} = Cc) when Tx =/= undefined ->
-    {Results, Tx1} = webrtc_twcc_sender:feedback(Fb, Now, Tx),
+    {Results, Tagged, Tx1} = webrtc_twcc_sender:tagged_feedback(Fb, Now, Tx),
     {Events, Gcc} = webrtc_gcc:feedback(Results, Now, Cc#cc.gcc),
-    {Events, retarget(Now, Cc#cc{twcc_tx = Tx1, gcc = Gcc})};
+    {Probed, Probe} = webrtc_cc_probe:feedback([{Id, S, A, Sz} || {{probe, Id}, S, A, Sz} <- Tagged], Now, Cc#cc.probe),
+    {ProbeEvents, Gcc1} = lists:foldl(
+        fun(Bps, {Ev, G}) -> {E, G1} = webrtc_gcc:probe_result(Bps, Now, G), {Ev ++ E, G1} end,
+        {[], Gcc},
+        Probed
+    ),
+    {Events ++ ProbeEvents, retarget(Now, Cc#cc{twcc_tx = Tx1, gcc = Gcc1, probe = Probe})};
 rtcp(#rtcp_remb{bitrate = Bps}, Now, Cc) ->
     {Events, Gcc} = webrtc_gcc:remb(Bps, Now, Cc#cc.gcc),
     {Events, retarget(Now, Cc#cc{gcc = Gcc})};
@@ -281,10 +316,14 @@ resume(Key, Now, #cc{halted = H, hold = Hold} = Cc) ->
         _ -> {error, not_halted}
     end.
 
-%% @doc Returns the packets the pacer releases, the transport-wide
-%% feedback to send and events.
+%% @doc Returns the packets the pacer releases, followed by the probe
+%% padding packets due (`{probe, Cluster, Size}': send one padding
+%% packet of that size and report it with `sent_probe/5'), the
+%% transport-wide feedback to send and events.
 -spec handle_timeout(integer(), state()) -> {[term()], [#rtcp_twcc{}], [event()], state()}.
-handle_timeout(Now, Cc0) ->
+handle_timeout(Now, Cc00) ->
+    {Probes, Probe} = webrtc_cc_probe:handle_timeout(Now, Cc00#cc.probe),
+    Cc0 = Cc00#cc{probe = Probe},
     {Pkts, P} = webrtc_pacer:handle_timeout(Now, Cc0#cc.pacer),
     {Fb, Rx} =
         case Cc0#cc.twcc_rx of
@@ -296,7 +335,7 @@ handle_timeout(Now, Cc0) ->
     {E3, Cc1} = breakers(E2, Now, Cc0#cc{pacer = P, twcc_rx = Rx, gcc = G, cb = Cb}),
     {E4, Cc2} = lift(Now, Cc1),
     Cc = retarget(Now, Cc2),
-    {[D || {_, _, D} <- Pkts], Fb, E1 ++ E2 ++ E3 ++ E4, Cc}.
+    {[D || {_, _, D} <- Pkts] ++ Probes, Fb, E1 ++ E2 ++ E3 ++ E4, Cc}.
 
 -spec next_timeout(state()) -> integer() | infinity.
 next_timeout(#cc{} = Cc) ->
@@ -307,7 +346,8 @@ next_timeout(#cc{} = Cc) ->
             R -> webrtc_twcc_receiver:next_timeout(R)
         end,
         webrtc_gcc:next_timeout(Cc#cc.gcc),
-        webrtc_circuit_breaker:next_timeout(Cc#cc.cb)
+        webrtc_circuit_breaker:next_timeout(Cc#cc.cb),
+        webrtc_cc_probe:next_timeout(Cc#cc.probe)
     ] ++ [Since + Cc#cc.hold || _ := Since <- Cc#cc.reduced]).
 
 -spec target(state()) -> pos_integer().
@@ -325,6 +365,7 @@ stats(#cc{} = Cc) ->
         circuit_breakers => webrtc_circuit_breaker:stats(Cc#cc.cb),
         halted => maps:map(fun(_, {Reason, _}) -> Reason end, Cc#cc.halted),
         rate_cut => maps:keys(Cc#cc.reduced),
+        probing => webrtc_cc_probe:info(Cc#cc.probe),
         twcc => #{
             send => Cc#cc.twcc_tx =/= undefined,
             receive_stats => case Cc#cc.twcc_rx of undefined -> undefined; R -> webrtc_twcc_receiver:stats(R) end

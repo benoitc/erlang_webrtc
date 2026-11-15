@@ -16,6 +16,8 @@
 %%     limited by the start guess; from then on the estimate is backed
 %%     by input (pacing applies), drops on loss above 10% and, below 2%
 %%     loss, never falls under the rate getting through.</li>
+%% <li>`probe_result/3': the bitrate a probe cluster got through, which
+%%     the delay-based estimate takes unless over-use is detected.</li>
 %% <li>`remb/3': a receiver estimated maximum bitrate
 %%     (draft-alvestrand-rmcat-remb), an upper bound of the
 %%     estimate.</li>
@@ -55,6 +57,7 @@
     feedback/3,
     loss_report/3,
     remb/3,
+    probe_result/3,
     set_rtt/2,
     sent/3,
     handle_timeout/2,
@@ -251,6 +254,20 @@ loss_report(Fraction, Now, G) ->
                 G1
         end,
     update_target(G2).
+
+%% @doc The bitrate a probe cluster got through (`webrtc_cc_probe'):
+%% the delay-based estimate jumps to it, unless the detector sees
+%% over-use (libwebrtc's DelayBasedBwe does the same).
+-spec probe_result(pos_integer(), integer(), state()) -> {[event()], state()}.
+probe_result(Bps, _Now, #gcc{delay_active = true, delay = D, aimd = A} = G) ->
+    case maps:get(state, webrtc_gcc_delay:info(D)) of
+        overuse ->
+            {[], G};
+        _ ->
+            update_target(G#gcc{aimd = webrtc_gcc_aimd:set_rate(max(Bps, webrtc_gcc_aimd:rate(A)), A)})
+    end;
+probe_result(_Bps, _Now, G) ->
+    {[], G}.
 
 -spec remb(non_neg_integer(), integer(), state()) -> {[event()], state()}.
 remb(Bps, _Now, G) ->

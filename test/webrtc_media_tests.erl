@@ -202,7 +202,8 @@ keyed() ->
     Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
     MB1 = [M#{remote_ssrcs => []} || M <- MB],
     SB = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{}))),
-    {Tx, _} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    %% Cryptex is negotiated (the default): the peer sends that form.
+    {Tx, _} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{cryptex => true}),
     [#{mid := <<"0">>, recv_extensions := #{?URI_MID := MidId}, recv_codecs := [#{pt := Pt} | _]} | _] = MB1,
     {SB, {Tx, MidId, Pt}}.
 
@@ -285,7 +286,7 @@ many_sources() ->
     Profile = srtp_aead_aes_128_gcm,
     Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
     SB0 = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{cname => <<"b">>}))),
-    {Tx0, Rx} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    {Tx0, Rx} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{cryptex => true}),
     {SB, _} = lists:foldl(
         fun({#{mid := Mid, recv_extensions := #{?URI_MID := MidId}, recv_codecs := [#{pt := Pt} | _]}, I}, {S, Tx}) ->
             lists:foldl(
@@ -368,3 +369,43 @@ compound_feedback_without_rsize_test() ->
 reduced_size_feedback_test() ->
     {SB, Rx} = feedback_pair(true),
     ?assertMatch([#rtcp_pli{}], pli_from(SB, Rx)).
+
+%%====================================================================
+%% SSRC collision (RFC 3550 §8.2), cryptex required (RFC 9335 §6.3),
+%% more than 31 sources (RFC 3550 §6.4.2)
+%%====================================================================
+
+%% B sends with A's audio SSRC: A takes another, says BYE for the old
+%% one and reports the change; its next packets use the new SSRC.
+ssrc_collision_test() ->
+    {SA, _SB, MA, MB} = pair(),
+    [#{ssrc := Ours} | _] = MA,
+    MB1 = [case maps:get(mid, M) of <<"0">> -> M#{ssrc := Ours}; _ -> M end || M <- MB],
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SA1 = webrtc_media:set_srtp(Profile, Material, server, 0, webrtc_media:configure(MA, webrtc_media:new(#{cname => <<"a">>}))),
+    SB1 = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{cname => <<"b">>}))),
+    _ = SA,
+    {ok, Out, _} = webrtc_media:send(<<"0">>, <<"from b">>, #{timestamp => 1}, 0, SB1),
+    {SA2, Acts} = deliver(Out, SA1, 0),
+    [{ssrc_changed, <<"0">>, Ours, New}] = [E || {ssrc_changed, _, _, _} = E <- events(Acts)],
+    ?assertNotEqual(Ours, New),
+    ?assertMatch([_ | _], sends(Acts)),
+    {ok, [{send, Pkt}], _} = webrtc_media:send(<<"0">>, <<"from a">>, #{timestamp => 2}, 0, SA2),
+    {ok, Plain, _} = webrtc_srtp:unprotect_rtp(Pkt, element(2, webrtc_srtp:dtls_contexts(Profile, Material, client, #{}))),
+    {ok, #rtp{ssrc = New}} = webrtc_rtp:decode(Plain).
+
+%% Cryptex negotiated: a packet with header extensions in the plain form
+%% is refused.
+cryptex_required_test() ->
+    {SA, _SB, MA, MB} = pair(#{cryptex => true}),
+    ?assert(lists:all(fun(M) -> maps:get(cryptex, M) end, MA)),
+    MB1 = [M#{cryptex := false} || M <- MB],
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SA1 = webrtc_media:set_srtp(Profile, Material, server, 0, webrtc_media:configure(MA, webrtc_media:new(#{}))),
+    SB1 = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{}))),
+    _ = SA,
+    {ok, Out, _} = webrtc_media:send(<<"0">>, <<"plain extensions">>, #{timestamp => 1}, 0, SB1),
+    {_, Acts} = deliver(Out, SA1, 0),
+    ?assertEqual([], [E || {rtp, _, _} = E <- events(Acts)]).

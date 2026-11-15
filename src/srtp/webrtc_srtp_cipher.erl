@@ -25,6 +25,7 @@
     rtp_unprotect/5,
     rtp_protect_cryptex/4,
     rtp_unprotect_cryptex/5,
+    header_keystream/5,
     rtcp_protect/5,
     rtcp_unprotect/4
 ]).
@@ -266,6 +267,20 @@ rtcp_unprotect(#srtp_keys{transform = gcm, dec_state = S} = K, SSRC, Index, Bin)
                 error -> {error, auth_failed}
             end
     end.
+
+%%====================================================================
+%% Header extension keystream (RFC 6904 §4)
+%%====================================================================
+
+%% @doc `Len' octets of the header extension keystream of a packet: the
+%% AES-CM transform and IV of the payload (RFC 3711 §4.1.1) with the
+%% header key and salt in place of the session key and salt. AES-CM is
+%% also the transform for the AES-GCM profiles (RFC 7714 §8.3).
+-spec header_keystream(binary(), <<_:112>>, 0..16#FFFFFFFF, non_neg_integer(), non_neg_integer()) -> binary().
+header_keystream(Key, <<Salt:112>>, SSRC, Index, Len) ->
+    Cipher = case byte_size(Key) of 16 -> aes_128_ctr; 24 -> aes_192_ctr; 32 -> aes_256_ctr end,
+    IV = <<((Salt bsl 16) bxor (SSRC bsl 64) bxor (Index bsl 16)):128>>,
+    crypto:crypto_one_time(Cipher, Key, IV, <<0:(Len * 8)>>, true).
 
 %%====================================================================
 %% IV formation

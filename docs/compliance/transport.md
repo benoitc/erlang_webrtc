@@ -13,7 +13,7 @@
 | TR-9 | 8261 §6.1 | SCTP started over DTLS application data once DTLS is connected | webrtc_transport | webrtc_pc_SUITE | Interoperability tested |
 | TR-10 | | Bounded reception: active-N sockets, bounded early buffers, bounded SCTP buffers | webrtc_transport | webrtc_security_SUITE:garbage_flood, unauthenticated_stun_flood | E2E tested |
 | TR-11 | | Independent peer connections, no shared state on the packet path | webrtc_pc_sup, webrtc_transport | webrtc_pc_SUITE:concurrent_peer_connections | E2E tested |
-| TR-12 | 8835 §3.2 | ICE-TCP and TURN over TCP/TLS | | | Not implemented |
+| TR-12 | 8835 §3.2 | ICE-TCP and TURN over TCP/TLS | webrtc_transport_net, webrtc_ice_tcp, webrtc_ice_relay | see the RFC 6544 table of ice.md and TURN-32 | Interoperability tested |
 | TR-13 | 8835 §3.5 | HTTP proxy traversal | | | Not implemented |
 | TR-14 | 8421 | Multihomed and dual stack host candidates | webrtc_transport, webrtc_ice_candidate | webrtc_ice_net_tests | Unit tested |
 | TR-15 | | A transport never outlives its peer connection: it monitors it, and close kills a transport that does not stop within 5 s (sockets, timers and TURN state released) | webrtc_pc, webrtc_transport | webrtc_security_SUITE:stuck_transport_killed_on_close | E2E tested |

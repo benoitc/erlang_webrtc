@@ -27,6 +27,9 @@ Erlang peers against the pion/turn v5 server (`interop/turn`). A filter drops ev
 | Both peers relay-only, RTP | relay / relay | Pass |
 | One peer relay-only, the other direct | relay / host | Pass |
 | Wrong TURN password: no relay candidate, no connection | | Pass |
+| One peer reaches the server only over TCP (no UDP leaves it), data channel | relay (TCP to the server) / host | Pass |
+| The same over TLS, server certificate verified against the suite's CA | relay (TLS to the server) / host | Pass |
+| TLS server certificate not trusted: no relay candidate | | Pass |
 
 ## Harness control (webrtc_harness_SUITE)
 
@@ -63,11 +66,14 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Erlang sends three simulcast layers, the peer receives each one by rid | Pass | Skipped (4) | Skipped (4) | Pass |
 | Peer offers with mDNS host candidates only, Erlang resolves them, data channel both ways | | | Pass (5) | |
 | Erlang offers, peer answers with mDNS host candidates only, Erlang's checks to the resolved addresses answered | | | Pass (5) | |
+| ICE-TCP, Erlang offers: no UDP leaves Erlang, data channel echo, selected pair TCP | | | Pass (6) | Pass (6) |
+| ICE-TCP, peer offers: the same, the peer sends | | | Pass (6) | Pass (6) |
 
 1. Firefox is the installed release (160 on the development machine), driven over WebDriver BiDi with puppeteer-core. On macOS it is started through launchd: a Firefox started from a terminal inherits the terminal's privacy restrictions and cannot read its profile. Without an installed Firefox the suite falls back to Playwright's build.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
 3. The adapter has no simulcast encoder.
 4. Browsers do not receive simulcast (RFC 9429 §3.7); aiortc answers without it.
+6. Groups `chromium_tcp` and `firefox_tcp`: Erlang with `ice_tcp` and an outbound filter that drops every UDP datagram, so only a TCP pair can work. Both browsers gather active TCP candidates and connect to Erlang's passive one.
 5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings

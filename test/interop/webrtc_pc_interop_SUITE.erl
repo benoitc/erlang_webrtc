@@ -25,7 +25,9 @@
     peer_sends_simulcast/1,
     erlang_sends_simulcast/1,
     peer_offers_mdns_candidates/1,
-    erlang_offers_mdns_candidates/1
+    erlang_offers_mdns_candidates/1,
+    erlang_offers_ice_tcp/1,
+    peer_offers_ice_tcp/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -47,11 +49,13 @@ cases() ->
         erlang_sends_simulcast
     ].
 
-all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns}].
+all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
+          {group, chromium_tcp}, {group, firefox_tcp}].
 
 groups() ->
     [{G, [], cases()} || G <- [pion, aiortc, chromium, firefox]] ++
-        [{chromium_mdns, [], [peer_offers_mdns_candidates, erlang_offers_mdns_candidates]}].
+        [{chromium_mdns, [], [peer_offers_mdns_candidates, erlang_offers_mdns_candidates]}] ++
+        [{G, [], [erlang_offers_ice_tcp, peer_offers_ice_tcp]} || G <- [chromium_tcp, firefox_tcp]].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -73,6 +77,9 @@ init_per_group(chromium_mdns, Config) ->
         {skip, R} ->
             {skip, R}
     end;
+init_per_group(G, Config) when G =:= chromium_tcp; G =:= firefox_tcp ->
+    Peer = case G of chromium_tcp -> chromium; firefox_tcp -> firefox end,
+    init_per_group(Peer, Config);
 init_per_group(Peer, Config) ->
     case ?P:probe(Peer, ?config(priv_dir, Config)) of
         ok -> [{peer, Peer} | Config];
@@ -623,4 +630,49 @@ resolved_pair(Pc, Need, Tries) ->
         [] ->
             ct:fail({no_resolved_pair, [{T#ice_cand.type, T#ice_cand.address, St, N} ||
                 #{remote := T, state := St, responses_received := N} <- Pairs]})
+    end.
+
+%%--------------------------------------------------------------------
+%% ICE-TCP (RFC 6544): no UDP leaves our side, the browser reaches our
+%% TCP candidates.
+%%--------------------------------------------------------------------
+
+tcp_opts() ->
+    #{ice_tcp => true, outbound_filter => webrtc_impair:filter(#{only_to => []})}.
+
+erlang_offers_ice_tcp(Config) ->
+    {Pc, P0} = start(Config, tcp_opts()),
+    ok = webrtc:create_data_channel(Pc, <<"tcp">>, #{}),
+    P1 = erlang_offer(Pc, P0, #{}),
+    {Id, _} = channel_open(Pc, <<"tcp">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"tcp">>}),
+    ok = webrtc:send_data(Pc, Id, text, <<"ping">>),
+    {ok, P3, _} = ?P:wait_event(P2, <<"message">>, #{<<"data">> => <<"ping">>}),
+    _ = erlang_message(Pc, <<"echo:ping">>),
+    tcp_selected(Pc),
+    put(peer, P3).
+
+peer_offers_ice_tcp(Config) ->
+    {Pc, P0} = start(Config, tcp_opts()),
+    P1 = peer_offer(Pc, P0, #{channels => [#{label => <<"tcp">>}]}),
+    {Id, _} = channel_open(Pc, <<"tcp">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"tcp">>}),
+    P3 = ?P:cmd(P2, #{cmd => send, label => <<"tcp">>, data => <<"from browser">>}),
+    {channel_message, Id, text, _} = erlang_message(Pc, <<"from browser">>),
+    tcp_selected(Pc),
+    put(peer, P3).
+
+%% Data may flow before nomination (RFC 8445 §12.1): wait for it.
+tcp_selected(Pc) ->
+    tcp_selected(Pc, 50).
+
+tcp_selected(Pc, Tries) ->
+    #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),
+    case [{L, R} || #{selected := true, local := L, remote := R} <- Pairs] of
+        [] when Tries > 0 ->
+            timer:sleep(100),
+            tcp_selected(Pc, Tries - 1);
+        Sel ->
+            ct:log("selected: ~p", [Sel]),
+            ?assertMatch([{#ice_cand{transport = tcp}, #ice_cand{transport = tcp}}], Sel)
     end.

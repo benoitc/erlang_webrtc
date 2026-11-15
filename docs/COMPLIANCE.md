@@ -22,11 +22,12 @@ What works today, end to end and against independent implementations (see [INTER
 - Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, ICE-TCP (passive and active), TURN relays reached over UDP, TCP or TLS.
 - Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved without blocking the transport; optional mDNS names for our own host candidates.
 - DTLS 1.3 (RFC 9147) by default with fallback to DTLS 1.2 (use_srtp, extended master secret): 1.3 verified with OpenSSL 4.1 and Chromium in both roles, 1.2 with OTP ssl, OpenSSL, Pion and aiortc.
-- SRTP and SRTCP (AES-CM and AES-GCM profiles).
+- SRTP and SRTCP (AES-CM and AES-GCM profiles), with CSRCs and header extensions encrypted by cryptex (RFC 9335) when the peer accepts it, verified with Pion.
+- One transport for a BUNDLE group, or one per group or unbundled section, offered and answered, verified with Chromium and Firefox.
 - RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset.
 - JSEP offer/answer with answers and re-offers checked against the offer, renegotiation, rollback from offers and provisional answers, pranswer; a new DTLS certificate is accepted only with an ICE restart and starts a new association (RFC 8842).
-- Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, per-layer NACK, RTX and keyframe requests.
+- Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, asking Firefox for layers it then sends, per-layer NACK, RTX, keyframe requests and RTP stream pause and resume (RFC 7728, between Erlang peers).
 - Congestion control: transport-wide CC feedback in both directions, a GCC delay and loss based estimator, a pacer with audio and retransmission priority, RFC 8083 circuit breakers that halt a stream (timeouts) or cut its rate by ten then halt it (congestion), and receiver report based control for peers without transport-cc. Chromium's estimate grows on our feedback and encodes its top simulcast layer.
 - Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay, floods and SSRC churn; per-connection state stays bounded (DTLS reassembly, receive streams, SRTP state, data channel message size).
 
@@ -65,6 +66,7 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | Fingerprints | RFC 8122 | updated by RFC 8842 | [dtls](compliance/dtls.md) |
 | SRTP | RFC 3711 | | [srtp](compliance/srtp.md) |
 | SRTP AES-GCM | RFC 7714 | | [srtp](compliance/srtp.md) |
+| Cryptex | RFC 9335 | | [srtp](compliance/srtp.md) |
 | RTP/RTCP | RFC 3550 | | [rtp](compliance/rtp.md) |
 | RTP usage in WebRTC | RFC 8834 | | [rtp](compliance/rtp.md) |
 | AVPF | RFC 4585 | | [rtp](compliance/rtp.md) |

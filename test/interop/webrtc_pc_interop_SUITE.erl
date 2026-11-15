@@ -29,7 +29,8 @@
     erlang_offers_ice_tcp/1,
     peer_offers_ice_tcp/1,
     erlang_offers_unbundled/1,
-    erlang_receives_simulcast/1
+    erlang_receives_simulcast/1,
+    cryptex_echo/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -50,7 +51,8 @@ cases() ->
         peer_sends_simulcast,
         erlang_sends_simulcast,
         erlang_offers_unbundled,
-        erlang_receives_simulcast
+        erlang_receives_simulcast,
+        cryptex_echo
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -164,7 +166,8 @@ pump(_Pc, P, true, true, _Deadline) ->
     P;
 pump(Pc, P0, Ours, Theirs, Deadline) ->
     case erlang:monotonic_time(millisecond) > Deadline of
-        true -> ct:fail({not_connected, #{erlang => Ours, peer => Theirs, events => ?P:events(P0)}});
+        true -> ct:fail({not_connected, #{erlang => Ours, peer => Theirs, events => ?P:events(P0),
+                                          transports => transport_states(Pc)}});
         false -> ok
     end,
     {P1, Theirs1} = forward_peer(Pc, P0, Theirs),
@@ -192,6 +195,17 @@ forward_peer(Pc, P0, Theirs) ->
         {error, P1, timeout} ->
             {P1, Theirs}
     end.
+
+%% ICE and DTLS state of every transport, for failure reports.
+transport_states(Pc) ->
+    #{transport := T, transports := Ts} = webrtc:get_stats(Pc),
+    [{K, transport_state(S)} || {K, S} <- [{primary, T} | maps:to_list(Ts)]].
+
+transport_state(#{ice := Ice, dtls := Dtls} = T) ->
+    #{ice => maps:without([pairs, local, remote], Ice), dtls => Dtls, dropped => maps:get(dropped, T, #{}),
+      pairs => [{St, maps:get(responses_received, P, 0)} || #{state := St} = P <- maps:get(pairs, Ice, [])]};
+transport_state(Other) ->
+    Other.
 
 peer_candidates() ->
     case get(peer_candidates) of
@@ -584,6 +598,44 @@ erlang_receives_simulcast_(Config) ->
     ct:log("packets per rid: ~p", [Counts]),
     ?assertEqual(lists:sort(?RIDS), lists:sort(maps:keys(Counts))),
     put(peer, P1).
+
+%% RFC 9335: the answer accepts cryptex, our packets leave with their
+%% header extensions encrypted (profile 0xC0DE), the peer decrypts them
+%% and its echo comes back.
+cryptex_echo(Config) ->
+    case ?config(peer, Config) of
+        pion -> cryptex_echo_(Config);
+        _ -> {skip, "peer does not negotiate cryptex"}
+    end.
+
+cryptex_echo_(Config) ->
+    Tap = {fun(_Dest, Bin, P) -> P ! {wire, Bin}, {[{0, Bin}], P} end, self()},
+    {Pc, P0} = start(Config, #{outbound_filter => Tap}),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"audio">>]}),
+    ?assertNotEqual(nomatch, binary:match(webrtc:remote_description(Pc), <<"a=cryptex">>)),
+    flush_wire(),
+    Payloads = [<<16#F8, 16#FF, 16#FE, N>> || N <- lists:seq(1, 20)],
+    [ok = webrtc:send_rtp(Pc, <<"0">>, Pl, #{timestamp => N * 960}) || {N, Pl} <- lists:zip(lists:seq(1, 20), Payloads)],
+    ?assertEqual(16#C0DE, wire_profile(5000)),
+    {rtp, <<"0">>, #rtp{}} = wait_erlang(Pc, fun({rtp, <<"0">>, #rtp{payload = Pl}}) -> lists:member(Pl, Payloads);
+                                                (_) -> false end),
+    put(peer, P1).
+
+flush_wire() ->
+    receive {wire, _} -> flush_wire() after 0 -> ok end.
+
+wire_profile(Timeout) ->
+    receive
+        {wire, <<2:2, _:1, 1:1, CC:4, _:1, PT:7, _/binary>> = Bin} when PT < 64; PT > 95 ->
+            Off = 12 + CC * 4,
+            <<_:Off/binary, P:16, _/binary>> = Bin,
+            P;
+        {wire, _} ->
+            wire_profile(Timeout)
+    after Timeout ->
+        timeout
+    end.
 
 %% Until every layer has delivered 50 packets.
 count_layers(Pc, Counts, Deadline) ->

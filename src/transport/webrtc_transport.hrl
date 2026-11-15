@@ -46,5 +46,7 @@
     tcp_listeners = [] :: [{reference(), term(), {inet:ip_address(), inet:port_number()}}],
     next_accept = 1 :: pos_integer(),
     %% Host name candidates (mDNS, FQDN) being resolved.
-    mdns :: webrtc_mdns_client:client()
+    mdns :: webrtc_mdns_client:client(),
+    %% Datagrams dropped before DTLS or SRTP, by reason.
+    dropped = #{} :: #{atom() => pos_integer()}
 }).

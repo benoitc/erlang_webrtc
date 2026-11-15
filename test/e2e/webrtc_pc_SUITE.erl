@@ -31,7 +31,8 @@
     simulcast_sfu_forward/1,
     unbundled/1,
     pause_resume/1,
-    simulcast_answerer/1
+    simulcast_answerer/1,
+    cryptex/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -62,7 +63,8 @@ all() ->
         simulcast_sfu_forward,
         unbundled,
         pause_resume,
-        simulcast_answerer
+        simulcast_answerer,
+        cryptex
     ].
 
 init_per_suite(Config) ->
@@ -307,6 +309,46 @@ pause_resume(_Config) ->
     {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_paused, <<"1">>} end, 5000),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 9335: with cryptex negotiated the header extensions leave
+%% encrypted (profile 0xC0DE); when one side does not offer it they stay
+%% in the clear (0xBEDE). Media flows in both cases.
+cryptex(_Config) ->
+    [cryptex_case(Opt, Profile) || {Opt, Profile} <- [{true, 16#C0DE}, {false, 16#BEDE}]],
+    ok.
+
+cryptex_case(Cryptex, Profile) ->
+    Self = self(),
+    Tap = {fun(_Dest, Bin, P) -> P ! {wire, Bin}, {[{0, Bin}], P} end, Self},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => Tap}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, cryptex => Cryptex}),
+    av(A),
+    av(B),
+    {Offer, Answer} = ?S:connect(A, B),
+    ?assertNotEqual(nomatch, binary:match(Offer, <<"a=cryptex">>)),
+    ?assertEqual(Cryptex, binary:match(Answer, <<"a=cryptex">>) =/= nomatch),
+    flush_wire(),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"secret">>, #{timestamp => 1, marker => true}),
+    _ = rtp(B, <<"1">>, <<"secret">>),
+    ?assertEqual(Profile, wire_profile(2000)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+flush_wire() ->
+    receive {wire, _} -> flush_wire() after 0 -> ok end.
+
+%% The extension profile of the first SRTP packet sent.
+wire_profile(Timeout) ->
+    receive
+        {wire, <<2:2, _:1, 1:1, CC:4, _:1, PT:7, _/binary>> = Bin} when PT < 64; PT > 95 ->
+            Off = 12 + CC * 4,
+            <<_:Off/binary, P:16, _/binary>> = Bin,
+            P;
+        {wire, _} ->
+            wire_profile(Timeout)
+    after Timeout ->
+        timeout
+    end.
 
 keyframe_request(_Config) ->
     A = pc(),

@@ -164,6 +164,9 @@ new_peer_connection() ->
 %%     the mid of their `ice_candidate' event. Answers follow the offer
 %%     whatever this option says, and later offers keep the transports
 %%     the last answer set.</li>
+%% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
+%%     extensions (RFC 9335), default `true'. Media is sent that way
+%%     when every section of the connection negotiated it.</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
 new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->

@@ -82,5 +82,7 @@
     %% §5.2.2, RFC 9143 §7.5).
     groups = [] :: [webrtc_jsep_transport:group()],
     %% The local description of the negotiation is the answer.
-    answerer = false :: boolean()
+    answerer = false :: boolean(),
+    %% Offer and accept encrypted CSRCs and header extensions (RFC 9335).
+    cryptex = true :: boolean()
 }).

@@ -38,9 +38,10 @@
 %%
 %% Per-SSRC state (rollover counter, highest sequence number, replay
 %% windows, SRTCP index) is created on the first packet of an SSRC that
-%% passes authentication. Only the payload is encrypted: the RTP header,
-%% CSRC list and header extension are authenticated in the clear (and
-%% are the AEAD associated data for GCM). MKI is not supported, as
+%% passes authentication. Without cryptex only the payload is
+%% encrypted: the RTP header, CSRC list and header extension are
+%% authenticated in the clear (and are the AEAD associated data for
+%% GCM). MKI is not supported, as
 %% RFC 8827 §6.5 forbids it in WebRTC.
 %%
 %% Options (`new/4', `from_session_keys/3', `dtls_contexts/4'):
@@ -52,6 +53,9 @@
 %%     least 64.</li>
 %% <li>`encrypt_rtcp' (default `true'): set the SRTCP E flag and encrypt
 %%     outgoing RTCP. Incoming RTCP is accepted with either flag.</li>
+%% <li>`cryptex' (default `false'): encrypt the CSRC list and header
+%%     extension of outgoing RTP too (RFC 9335; see `set_cryptex/2').
+%%     Incoming cryptex packets are always accepted.</li>
 %% </ul>
 %%
 %% `forget/2' drops the receive state of an SSRC (a stream that ended).
@@ -90,7 +94,8 @@
     forget/2,
     roc/3,
     set_roc/4,
-    set_rtcp_index/3
+    set_rtcp_index/3,
+    set_cryptex/2
 ]).
 
 -export_type([ctx/0, profile/0, opts/0, error_reason/0]).
@@ -100,7 +105,8 @@
 -type opts() :: #{
     replay_window => pos_integer(),
     rtcp_replay_window => pos_integer(),
-    encrypt_rtcp => boolean()
+    encrypt_rtcp => boolean(),
+    cryptex => boolean()
 }.
 -type error_reason() :: malformed | auth_failed | replay | too_old | key_exhausted | too_many_streams.
 
@@ -118,6 +124,8 @@
     window :: pos_integer(),
     rtcp_window :: pos_integer(),
     encrypt_rtcp :: boolean(),
+    %% Send with the CSRC list and header extension encrypted (RFC 9335).
+    cryptex = false :: boolean(),
     rtp_tx = #{} :: #{ssrc() => #rtp_stream{}},
     rtp_rx = #{} :: #{ssrc() => #rtp_stream{}},
     %% Next SRTCP index to send, per SSRC.
@@ -171,12 +179,21 @@ from_session_keys(Profile, Keys, Opts) when is_map(Opts) ->
         rtcp = webrtc_srtp_cipher:keys(T, CK, CS, CA, RtcpTL),
         window = window_opt(replay_window, 1024, Opts),
         rtcp_window = window_opt(rtcp_replay_window, 128, Opts),
-        encrypt_rtcp =
-            case maps:get(encrypt_rtcp, Opts, true) of
-                B when is_boolean(B) -> B;
-                Other -> erlang:error({badarg, {encrypt_rtcp, Other}})
-            end
+        encrypt_rtcp = bool_opt(encrypt_rtcp, true, Opts),
+        cryptex = bool_opt(cryptex, false, Opts)
     }.
+
+bool_opt(Key, Default, Opts) ->
+    case maps:get(Key, Opts, Default) of
+        B when is_boolean(B) -> B;
+        Other -> erlang:error({badarg, {Key, Other}})
+    end.
+
+%% @doc Send the next packets with or without cryptex (RFC 9335), once
+%% both sides announced it. Receiving accepts both forms.
+-spec set_cryptex(boolean(), ctx()) -> ctx().
+set_cryptex(On, #srtp{} = C) when is_boolean(On) ->
+    C#srtp{cryptex = On}.
 
 %% @doc Build the outbound and inbound contexts from DTLS-SRTP keying
 %% material (RFC 5764 §4.2). `Role' is the local DTLS role: a client
@@ -230,13 +247,12 @@ split_dtls_keying_material(Profile, Bin) ->
 %%====================================================================
 
 -spec protect_rtp(binary(), ctx()) -> {ok, binary(), ctx()} | {error, error_reason()}.
-protect_rtp(Packet, #srtp{rtp = Keys, rtp_tx = Tx} = C) when is_binary(Packet) ->
+protect_rtp(Packet, #srtp{rtp_tx = Tx} = C) when is_binary(Packet) ->
     case rtp_header(Packet) of
         {ok, HdrLen, Seq, SSRC} ->
             maybe
                 {ok, V, Index, S} ?= rtp_index(SSRC, Seq, Tx, C#srtp.window),
-                <<Hdr:HdrLen/binary, Payload/binary>> = Packet,
-                {ok, Out} ?= webrtc_srtp_cipher:rtp_protect(Keys, SSRC, Index, Hdr, Payload),
+                {ok, Out} ?= protect(Packet, HdrLen, SSRC, Index, C),
                 {ok, Out, C#srtp{rtp_tx = Tx#{SSRC => advance(S, V, Seq, Index)}}}
             end;
         error ->
@@ -253,7 +269,7 @@ unprotect_rtp(Packet, #srtp{rtp = Keys} = C) when is_binary(Packet) ->
             maybe
                 ok ?= room(SSRC, Rx),
                 {ok, V, Index, S} ?= rtp_index(SSRC, Seq, Rx, C#srtp.window),
-                {ok, Plain} ?= webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen),
+                {ok, Plain} ?= unprotect(Packet, HdrLen, SSRC, Index, Keys),
                 {ok, Plain, C#srtp{rtp_rx = Rx#{SSRC => advance(S, V, Seq, Index)}}}
             end;
         _ ->
@@ -261,6 +277,49 @@ unprotect_rtp(Packet, #srtp{rtp = Keys} = C) when is_binary(Packet) ->
     end;
 unprotect_rtp(_, #srtp{}) ->
     {error, malformed}.
+
+protect(Packet, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex}) ->
+    case Cryptex andalso cryptex_parts(Packet) of
+        {ok, Parts} ->
+            webrtc_srtp_cipher:rtp_protect_cryptex(Keys, SSRC, Index, Parts);
+        _ ->
+            <<Hdr:HdrLen/binary, Payload/binary>> = Packet,
+            webrtc_srtp_cipher:rtp_protect(Keys, SSRC, Index, Hdr, Payload)
+    end.
+
+%% A receiver recognises cryptex by the extension profile (RFC 9335
+%% §6.3).
+unprotect(<<_:3, 1:1, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, Keys) ->
+    Off = 12 + CC * 4,
+    case Packet of
+        <<_:Off/binary, Profile:16, _/binary>> when Profile =:= 16#C0DE; Profile =:= 16#C2DE ->
+            webrtc_srtp_cipher:rtp_unprotect_cryptex(Keys, SSRC, Index, Packet, CC);
+        _ ->
+            webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen)
+    end;
+unprotect(Packet, HdrLen, SSRC, Index, Keys) ->
+    webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen).
+
+%% The parts of a packet that cryptex encrypts (RFC 9335 §5): CSRCs
+%% without an extension get an empty one; extensions other than the
+%% one-byte and two-byte forms (RFC 8285) are sent as plain SRTP, like
+%% packets with neither CSRCs nor extensions.
+cryptex_parts(<<B0, Fixed:11/binary, Rest/binary>>) ->
+    CL = (B0 band 16#0F) * 4,
+    case {B0 band 16#10, Rest} of
+        {0, _} when CL =:= 0 ->
+            none;
+        {0, <<C:CL/binary, P/binary>>} ->
+            {ok, {<<(B0 bor 16#10), Fixed/binary>>, C, <<16#C0DE:16, 0:16>>, <<>>, P}};
+        {16#10, <<C:CL/binary, Profile:16, Len:16, E:Len/binary-unit:32, P/binary>>} ->
+            case Profile of
+                16#BEDE -> {ok, {<<B0, Fixed/binary>>, C, <<16#C0DE:16, Len:16>>, E, P}};
+                16#1000 -> {ok, {<<B0, Fixed/binary>>, C, <<16#C2DE:16, Len:16>>, E, P}};
+                _ -> none
+            end;
+        _ ->
+            none
+    end.
 
 %% Fixed header, CSRC list and header extension (RFC 3550 §5.1, §5.3.1).
 rtp_header(<<2:2, _P:1, X:1, CC:4, _M:1, _PT:7, Seq:16, _TS:32, SSRC:32, Rest/binary>>) ->

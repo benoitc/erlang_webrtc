@@ -78,9 +78,12 @@ datagram(Sock, Src, Bin, Now, St) ->
         Class ->
             case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
                 true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, St);
-                false -> St
+                false -> drop(unvalidated_source, St)
             end
     end.
+
+drop(Reason, #st{dropped = D} = St) ->
+    St#st{dropped = maps:update_with(Reason, fun(N) -> N + 1 end, 1, D)}.
 
 ice_actions(Acts, St) ->
     lists:foldl(fun ice_action/2, St, Acts).
@@ -120,7 +123,7 @@ ice_action({event, {data, Via, Peer, Bin}}, St) ->
     %% (RFC 8445 §12.2, RFC 8826 §4.2).
     case webrtc_ice_agent:is_valid_remote(Via, Peer, St#st.ice) of
         true -> webrtc_transport_secure:secure_relayed(Peer, Bin, St);
-        false -> St
+        false -> drop(unvalidated_relayed, St)
     end;
 ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
     webrtc_transport:to_pc(E, St),

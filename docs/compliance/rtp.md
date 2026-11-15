@@ -66,7 +66,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | WRTP-14 | 5.1.6 | Understand TMMBR, answer with TMMBN | webrtc_rtcp_fb | tmmbr_test, tmmbn_test | Unit tested (codec only; the bounding set of RFC 5104 §3.5.4 is not implemented) |
 | WRTP-15 | 5.2 | Header extensions follow RFC 8285 | webrtc_rtp_ext | webrtc_rtp_ext_tests | Unit tested |
 | WRTP-16 | 5.2.1 | Rapid synchronisation (RFC 6051) | | | Not implemented |
-| WRTP-17 | 5.2.2 | Client-to-mixer audio level (RFC 6464) | webrtc_rtp_ext | audio_level_test | Unit tested (header extension encryption, RFC 6904, belongs to SRTP and is not implemented) |
+| WRTP-17 | 5.2.2 | Client-to-mixer audio level (RFC 6464) | webrtc_rtp_ext | audio_level_test | Unit tested (the level is encrypted with cryptex, RFC 9335, see [srtp](srtp.md)) |
 | WRTP-18 | 5.2.4 | MID header extension | webrtc_rtp_ext | sdes_test | Unit tested |
 | WRTP-19 | 5.2.5 | Video orientation (CVO) header extension | webrtc_rtp_ext | video_orientation_test | Unit tested |
 | WRTP-20 | 6.1 | Senders understand generic NACK | webrtc_rtcp_fb, webrtc_nack_buffer | nack_test, webrtc_nack_buffer_tests:buffer_test | Unit tested |

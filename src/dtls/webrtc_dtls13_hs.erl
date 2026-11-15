@@ -66,13 +66,14 @@ offers13(#dtls{versions = Vs, suites13 = S13}) ->
 %% @doc Suites and extensions the ClientHello adds for DTLS 1.3, given
 %% the key share stored in the state.
 -spec client_hello_parts(#dtls{}) -> {[0..16#FFFF], [{non_neg_integer(), binary()}]}.
-client_hello_parts(#dtls{kx = {Group, Pub, _}, versions = Vs, suites13 = S13, cookie13 = Cookie}) ->
+client_hello_parts(#dtls{kx = {Group, Pub, _}, versions = Vs, suites13 = S13, cookie13 = Cookie, cid = Cid}) ->
     Versions = [?DTLS13 || lists:member(dtls13, Vs)] ++ [?DTLS12 || lists:member(dtls12, Vs)],
     Exts =
         [
             webrtc_dtls13_msg:supported_versions_ext(Versions),
             webrtc_dtls13_msg:key_share_ext([{webrtc_dtls_crypto:group_id(Group), Pub}])
-        ] ++ [webrtc_dtls13_msg:cookie_ext(Cookie) || Cookie =/= undefined],
+        ] ++ [webrtc_dtls13_msg:cookie_ext(Cookie) || Cookie =/= undefined]
+          ++ [webrtc_dtls13_msg:connection_id_ext(Cid) || is_binary(Cid), lists:member(dtls13, Vs)],
     {S13, Exts};
 client_hello_parts(_) ->
     {[], []}.
@@ -157,7 +158,15 @@ server_hello(#{hash := H} = Suite, SR, Exts, Body, St) ->
         Suite -> ok;
         _ -> fail(?ALERT_ILLEGAL_PARAMETER, suite_changed_after_hrr, St)
     end,
-    only_extensions([43, 51], Exts, St),
+    only_extensions([43, 51] ++ [54 || is_binary(St#dtls.cid)], Exts, St),
+    %% RFC 9147 §9: the server's connection ID, sent in our records from
+    %% the handshake epoch on.
+    PeerCid =
+        case webrtc_dtls13_msg:ext(server_hello, connection_id, Exts) of
+            undefined -> undefined;
+            {ok, C} -> C;
+            {error, _} -> fail(?ALERT_DECODE_ERROR, bad_connection_id, St)
+        end,
     {Group, _, Priv} = St#dtls.kx,
     PeerPub =
         case webrtc_dtls13_msg:ext(server_hello, key_share, Exts) of
@@ -181,6 +190,7 @@ server_hello(#{hash := H} = Suite, SR, Exts, Body, St) ->
         end,
     St1 = add(webrtc_dtls13_msg:transcript_msg(server_hello, Body), St#dtls{
         version = dtls13,
+        peer_cid = PeerCid,
         suite13 = Suite,
         group = Group,
         server_random = SR,
@@ -217,9 +227,10 @@ handle(Type, Body, Epoch, Now, St) ->
                     _ -> Msg0
                 end,
             Full = webrtc_dtls13_msg:transcript_msg(Type, Body),
-            case St#dtls.role of
-                client -> client(St#dtls.state, Type, Msg, Full, Now, St);
-                server -> webrtc_dtls13_server:handle(St#dtls.state, Type, Msg, Full, Now, St)
+            case {Type, St#dtls.role} of
+                {T, _} when T =:= new_connection_id; T =:= request_connection_id -> connection_id(T, Msg, St);
+                {_, client} -> client(St#dtls.state, Type, Msg, Full, Now, St);
+                {_, server} -> webrtc_dtls13_server:handle(St#dtls.state, Type, Msg, Full, Now, St)
             end;
         {error, _} ->
             %% A message type without a place in DTLS 1.3 here (a late
@@ -229,6 +240,19 @@ handle(Type, Body, Epoch, Now, St) ->
                 false -> fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St)
             end
     end.
+
+%% RFC 9147 §9: without negotiated connection IDs these messages are
+%% unexpected. A NewConnectionId for immediate use switches the CID of
+%% our records; a RequestConnectionId is acknowledged, as we keep a
+%% single CID to receive. Both are acknowledged (§5.7).
+connection_id(_Type, _Msg, #dtls{peer_cid = undefined} = St) ->
+    fail(?ALERT_UNEXPECTED_MESSAGE, connection_id_not_negotiated, St);
+connection_id(new_connection_id, {[Cid | _], immediate}, St) ->
+    St#dtls{peer_cid = Cid, ack_now = true};
+connection_id(new_connection_id, {_, _}, St) ->
+    St#dtls{ack_now = true};
+connection_id(request_connection_id, _N, St) ->
+    St#dtls{ack_now = true}.
 
 %% Handshake messages use epoch 2, post-handshake messages epoch 3 or
 %% later (RFC 9147 §6.1).

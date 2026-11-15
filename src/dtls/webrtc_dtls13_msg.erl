@@ -15,6 +15,7 @@
     supported_versions_ext/1,
     key_share_ext/1,
     cookie_ext/1,
+    connection_id_ext/1,
     selected_version_ext/0,
     server_share_ext/2,
     hrr_group_ext/1,
@@ -25,6 +26,7 @@
 -define(EXT_SUPPORTED_VERSIONS, 43).
 -define(EXT_COOKIE, 44).
 -define(EXT_KEY_SHARE, 51).
+-define(EXT_CONNECTION_ID, 54).
 -define(MESSAGE_HASH, 254).
 
 %%====================================================================
@@ -53,6 +55,11 @@ server_share_ext(Group, Key) ->
 hrr_group_ext(Group) ->
     {?EXT_KEY_SHARE, <<Group:16>>}.
 
+%% @doc The connection ID we want to receive (RFC 9146 §3).
+-spec connection_id_ext(binary()) -> {54, binary()}.
+connection_id_ext(Cid) ->
+    {?EXT_CONNECTION_ID, <<(byte_size(Cid)), Cid/binary>>}.
+
 -spec cookie_ext(binary()) -> {44, binary()}.
 cookie_ext(Cookie) ->
     {?EXT_COOKIE, <<(byte_size(Cookie)):16, Cookie/binary>>}.
@@ -66,7 +73,8 @@ ext(Ctx, Name, Exts) ->
         case Name of
             supported_versions -> ?EXT_SUPPORTED_VERSIONS;
             key_share -> ?EXT_KEY_SHARE;
-            cookie -> ?EXT_COOKIE
+            cookie -> ?EXT_COOKIE;
+            connection_id -> ?EXT_CONNECTION_ID
         end,
     case lists:keyfind(Type, 1, Exts) of
         false ->
@@ -90,7 +98,12 @@ ext_body(server_hello, key_share, <<G:16, L:16, K:L/binary>>) when L > 0 ->
 ext_body(hello_retry_request, key_share, <<G:16>>) ->
     G;
 ext_body(_, cookie, <<L:16, C:L/binary>>) when L > 0 ->
+    C;
+ext_body(_, connection_id, <<L, C:L/binary>>) ->
     C.
+
+cids(<<>>) -> [];
+cids(<<L, C:L/binary, Rest/binary>>) -> [C | cids(Rest)].
 
 shares(<<>>, Acc) ->
     Groups = [G || {G, _} <- Acc],
@@ -125,7 +138,8 @@ encode(key_update, update_not_requested) ->
 -spec known(term()) -> boolean().
 known(Type) ->
     lists:member(Type, [
-        encrypted_extensions, certificate_request, certificate, certificate_verify, finished, key_update, new_session_ticket
+        encrypted_extensions, certificate_request, certificate, certificate_verify, finished, key_update, new_session_ticket,
+        request_connection_id, new_connection_id
     ]).
 
 -spec decode(atom() | 0..255, binary()) -> {ok, term()} | {error, decode_error}.
@@ -151,6 +165,12 @@ body(certificate_verify, <<S:16, L:16, Sig:L/binary>>) ->
     #{scheme => S, signature => Sig};
 body(finished, VD) when byte_size(VD) =:= 32; byte_size(VD) =:= 48 ->
     VD;
+%% RFC 9147 §9: ConnectionId cids<0..2^16-1> (each opaque<0..2^8-1>)
+%% and the usage; and the number of CIDs asked for.
+body(new_connection_id, <<L:16, Cids:L/binary, Usage>>) when Usage =:= 0; Usage =:= 1 ->
+    {cids(Cids), case Usage of 0 -> immediate; 1 -> spare end};
+body(request_connection_id, <<N>>) ->
+    N;
 body(key_update, <<0>>) ->
     update_not_requested;
 body(key_update, <<1>>) ->

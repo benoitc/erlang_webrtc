@@ -10,7 +10,9 @@
 
 -export([
     split/1,
+    split/2,
     protect/5,
+    protect/6,
     open/3,
     reconstruct/3,
     select_epoch/2,
@@ -39,6 +41,7 @@
     | #{
         format := unified,
         epoch_bits := 0..3,
+        cid => binary(),
         seq_len := 1 | 2,
         enc_seq := non_neg_integer(),
         first := byte(),
@@ -60,9 +63,16 @@ overhead() -> 5 + 1 + ?TAG.
 %% negotiated) stop parsing too, as the CID length is unknown.
 -spec split(binary()) -> [rec()].
 split(Bin) ->
-    split(Bin, []).
+    split(Bin, undefined).
 
-split(<<T, V:16, E:16, S:48, L:16, Rest/binary>>, Acc) when
+%% @doc The same, with records carrying a connection ID of `CidLen'
+%% bytes (the one we offered, RFC 9147 §9); `undefined' when we offered
+%% none, and a record with a CID then ends parsing (§9: rejected).
+-spec split(binary(), undefined | pos_integer()) -> [rec()].
+split(Bin, CidLen) ->
+    split(Bin, CidLen, []).
+
+split(<<T, V:16, E:16, S:48, L:16, Rest/binary>>, CidLen, Acc) when
     T >= 20, T =< 26, V >= 16#FEFD, V =< 16#FEFF, L =< ?MAX_CIPHERTEXT, byte_size(Rest) >= L
 ->
     <<Frag:L/binary, Tail/binary>> = Rest,
@@ -74,22 +84,30 @@ split(<<T, V:16, E:16, S:48, L:16, Rest/binary>>, Acc) when
         seq => S,
         fragment => Frag
     },
-    split(Tail, [R | Acc]);
-split(<<H, Rest0/binary>>, Acc) when H band 16#E0 =:= 16#20, H band 16#10 =:= 0 ->
+    split(Tail, CidLen, [R | Acc]);
+split(<<H, Rest00/binary>>, CidLen, Acc) when
+    H band 16#E0 =:= 16#20, (H band 16#10 =:= 0 orelse is_integer(CidLen))
+->
     SeqLen =
         case H band 16#08 of
             0 -> 1;
             _ -> 2
         end,
+    {Cid, Rest0} =
+        case {H band 16#10, Rest00} of
+            {0, _} -> {<<>>, Rest00};
+            {_, <<C:CidLen/binary, R0/binary>>} -> {C, R0};
+            {_, _} -> {<<>>, <<>>}
+        end,
     case Rest0 of
         <<Seq:SeqLen/unit:8, Rest1/binary>> ->
             case H band 16#04 of
                 0 ->
-                    lists:reverse(maybe_add(unified(H, SeqLen, Seq, undefined, Rest1), Acc));
+                    lists:reverse(maybe_add(unified(H, Cid, SeqLen, Seq, undefined, Rest1), Acc));
                 _ ->
                     case Rest1 of
                         <<L:16, Body:L/binary, Tail/binary>> when L =< ?MAX_CIPHERTEXT ->
-                            split(Tail, maybe_add(unified(H, SeqLen, Seq, L, Body), Acc));
+                            split(Tail, CidLen, maybe_add(unified(H, Cid, SeqLen, Seq, L, Body), Acc));
                         _ ->
                             lists:reverse(Acc)
                     end
@@ -97,13 +115,14 @@ split(<<H, Rest0/binary>>, Acc) when H band 16#E0 =:= 16#20, H band 16#10 =:= 0 
         _ ->
             lists:reverse(Acc)
     end;
-split(_, Acc) ->
+split(_, _CidLen, Acc) ->
     lists:reverse(Acc).
 
-unified(H, SeqLen, Seq, L, Body) ->
+unified(H, Cid, SeqLen, Seq, L, Body) ->
     #{
         format => unified,
         epoch_bits => H band 3,
+        cid => Cid,
         seq_len => SeqLen,
         enc_seq => Seq,
         first => H,
@@ -126,16 +145,26 @@ maybe_add(R, Acc) ->
 %% number and length), encrypting the sequence number.
 -spec protect(webrtc_dtls_record:content_type(), non_neg_integer(), non_neg_integer(), iodata(),
     webrtc_dtls13_keys:keys()) -> binary().
-protect(Type, Epoch, Seq, Plain, #{cipher := C, key := K} = Keys) ->
+protect(Type, Epoch, Seq, Plain, Keys) ->
+    protect(Type, Epoch, Seq, Plain, Keys, undefined).
+
+%% @doc The same with the peer's connection ID in the header (C bit,
+%% RFC 9147 §4, §9), part of the AEAD additional data. No CID for
+%% `undefined' or an empty one.
+-spec protect(webrtc_dtls_record:content_type(), non_neg_integer(), non_neg_integer(), iodata(),
+    webrtc_dtls13_keys:keys(), undefined | binary()) -> binary().
+protect(Type, Epoch, Seq, Plain, #{cipher := C, key := K} = Keys, Cid0) ->
+    Cid = case Cid0 of undefined -> <<>>; _ -> Cid0 end,
     Inner = <<(iolist_to_binary(Plain))/binary, (webrtc_dtls_record:type_code(Type))>>,
     Len = byte_size(Inner) + ?TAG,
-    First = ?HDR_BITS bor (Epoch band 3),
+    CBit = case Cid of <<>> -> 0; _ -> 16#10 end,
+    First = ?HDR_BITS bor CBit bor (Epoch band 3),
     Low = Seq band 16#FFFF,
-    AAD = <<First, Low:16, Len:16>>,
+    AAD = <<First, Cid/binary, Low:16, Len:16>>,
     {Ct, Tag} = crypto:crypto_one_time_aead(C, K, nonce(Keys, Seq), Inner, AAD, ?TAG, true),
     Body = <<Ct/binary, Tag/binary>>,
     <<M:16, _/binary>> = mask(Keys, Body),
-    <<First, (Low bxor M):16, Len:16, Body/binary>>.
+    <<First, Cid/binary, (Low bxor M):16, Len:16, Body/binary>>.
 
 %% @doc Decrypt the record number, reconstruct it from `Next' (one
 %% plus the highest sequence number deprotected in the epoch) and open
@@ -143,15 +172,16 @@ protect(Type, Epoch, Seq, Plain, #{cipher := C, key := K} = Keys) ->
 %% and the content.
 -spec open(rec(), webrtc_dtls13_keys:keys(), non_neg_integer()) ->
     {ok, non_neg_integer(), webrtc_dtls_record:content_type(), binary()} | error.
-open(#{format := unified, seq_len := SL, enc_seq := Enc, first := First, length := L, body := Body}, Keys, Next) ->
+open(#{format := unified, seq_len := SL, enc_seq := Enc, first := First, length := L, body := Body} = R, Keys, Next) ->
     Bits = SL * 8,
     <<M:Bits, _/binary>> = mask(Keys, Body),
     Low = Enc bxor M,
     Seq = reconstruct(Low, Bits, Next),
+    Cid = maps:get(cid, R, <<>>),
     AAD =
         case L of
-            undefined -> <<First, Low:Bits>>;
-            _ -> <<First, Low:Bits, L:16>>
+            undefined -> <<First, Cid/binary, Low:Bits>>;
+            _ -> <<First, Cid/binary, Low:Bits, L:16>>
         end,
     CtLen = byte_size(Body) - ?TAG,
     <<Ct:CtLen/binary, Tag:?TAG/binary>> = Body,

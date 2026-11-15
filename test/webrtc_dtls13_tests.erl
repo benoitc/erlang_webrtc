@@ -4,6 +4,7 @@
 %% stateless cookie.
 -module(webrtc_dtls13_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("webrtc/src/dtls/webrtc_dtls.hrl").
 
 -define(LABEL, <<"EXTRACTOR-dtls_srtp">>).
 -define(T13, <<"tls13 ">>).
@@ -937,3 +938,60 @@ hkdf_rfc5869_test() ->
         ),
         webrtc_dtls13_keys:expand(sha256, PRK, Info, 42)
     ).
+
+%%====================================================================
+%% Connection ID (RFC 9147 §9, RFC 9146)
+%%====================================================================
+
+%% The CID of a protected record, as the peer sees it.
+record_cid(<<H, Rest/binary>>, Len) when H band 16#10 =/= 0 ->
+    <<Cid:Len/binary, _/binary>> = Rest,
+    Cid;
+record_cid(<<_, _/binary>>, _Len) ->
+    none.
+
+%% Both sides want CIDs: each sends the other's, the C bit set, and
+%% application data still flows.
+connection_id_test() ->
+    {C, S, _} = established(#{connection_id => <<"client-cid">>}, #{connection_id => <<"srv">>}),
+    {C1, S1, D1} = data(C, S, <<"to server">>, 100),
+    ?assertEqual(<<"srv">>, record_cid(D1, 3)),
+    {_, _, D2} = data(S1, C1, <<"to client">>, 100),
+    ?assertEqual(<<"client-cid">>, record_cid(D2, 10)).
+
+%% The server does not want one: no CID in either direction.
+connection_id_refused_test() ->
+    {C, S, W} = established(#{connection_id => true}, #{}),
+    ?assertEqual(false, lists:keymember(54, 1, maps:get(extensions, first_server_hello(W)))),
+    {C1, S1, D1} = data(C, S, <<"x">>, 100),
+    ?assertEqual(none, record_cid(D1, 8)),
+    {_, _, D2} = data(S1, C1, <<"y">>, 100),
+    ?assertEqual(none, record_cid(D2, 8)).
+
+%% A record with a CID we never offered is rejected.
+unexpected_cid_record_test() ->
+    {C, _, _} = established(#{connection_id => <<"abcd">>}, #{connection_id => <<"efgh">>}),
+    {ok, _, [{send, D}]} = webrtc_dtls:send(<<"x">>, C),
+    {_, Plain, _} = established(#{}, #{}),
+    ?assertMatch({_, []}, webrtc_dtls:handle_packet(D, 100, Plain)).
+
+%% A post-handshake message from `From', as it goes on the wire.
+post_handshake(Type, Body, Now, From) ->
+    {_, F1} = webrtc_dtls:queue_handshake(Type, Body, false, From),
+    F2 = webrtc_dtls13:flush(Now, F1),
+    {F2#dtls{out = []}, [D || {send, D} <- lists:reverse(F2#dtls.out)]}.
+
+%% NewConnectionId for immediate use switches the CID of the records
+%% the receiver sends; without negotiated CIDs it is unexpected.
+new_connection_id_test() ->
+    {C, S, _} = established(#{connection_id => <<"cc">>}, #{connection_id => <<"ss">>}),
+    Body = <<4:16, 3, "new", 0>>,
+    {_, [D]} = post_handshake(new_connection_id, Body, 100, S),
+    {C1, _} = webrtc_dtls:handle_packet(D, 100, C),
+    {ok, _, [{send, Out}]} = webrtc_dtls:send(<<"x">>, C1),
+    ?assertEqual(<<"new">>, record_cid(Out, 3)),
+    {C2, S2, _} = established(#{}, #{}),
+    {_, [D2]} = post_handshake(new_connection_id, Body, 100, S2),
+    {C3, Acts} = webrtc_dtls:handle_packet(D2, 100, C2),
+    ?assertEqual(failed, C3#dtls.state),
+    ?assertMatch([_ | _], [A || {send, _} = A <- Acts]).

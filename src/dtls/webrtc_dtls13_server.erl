@@ -136,6 +136,14 @@ proceed(Group, Shares, T0, CR, M, #dtls{suite13 = #{id := SuiteId, hash := H}} =
             {error, _} -> fail(?ALERT_ILLEGAL_PARAMETER, bad_ecdhe_point, St)
         end,
     SR = crypto:strong_rand_bytes(32),
+    %% RFC 9147 §9, RFC 9146 §3: when both sides want connection IDs,
+    %% ours goes in the ServerHello and the client's in our records.
+    PeerCid =
+        case {St#dtls.cid, webrtc_dtls13_msg:ext(client_hello, connection_id, Exts)} of
+            {Ours, {ok, C}} when is_binary(Ours) -> C;
+            {_, {error, _}} -> fail(?ALERT_DECODE_ERROR, bad_connection_id, St);
+            _ -> undefined
+        end,
     SH = webrtc_dtls_msg:encode_body(server_hello, #{
         version => ?DTLS12,
         random => SR,
@@ -144,10 +152,11 @@ proceed(Group, Shares, T0, CR, M, #dtls{suite13 = #{id := SuiteId, hash := H}} =
         extensions => [
             webrtc_dtls13_msg:selected_version_ext(),
             webrtc_dtls13_msg:server_share_ext(webrtc_dtls_crypto:group_id(Group), Pub)
-        ]
+        ] ++ [webrtc_dtls13_msg:connection_id_ext(St#dtls.cid) || PeerCid =/= undefined]
     }),
     St1 = St#dtls{
         version = dtls13,
+        peer_cid = PeerCid,
         client_random = CR,
         server_random = SR,
         group = Group,

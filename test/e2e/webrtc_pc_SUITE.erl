@@ -33,7 +33,8 @@
     pause_resume/1,
     simulcast_answerer/1,
     cryptex/1,
-    channel_priorities/1
+    channel_priorities/1,
+    dtls_connection_id/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -66,7 +67,8 @@ all() ->
         pause_resume,
         simulcast_answerer,
         cryptex,
-        channel_priorities
+        channel_priorities,
+        dtls_connection_id
     ].
 
 init_per_suite(Config) ->
@@ -389,6 +391,24 @@ arrivals(B, N, Acc) ->
 
 last_index(Tag, Order) ->
     lists:max([I || {I, T} <- lists:enumerate(Order), T =:= Tag]).
+
+%% RFC 9147 §9: both peers ask for a DTLS 1.3 connection ID; SRTP and
+%% data channels run over records that carry it.
+dtls_connection_id(_Config) ->
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, dtls => #{connection_id => true}}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, dtls => #{connection_id => true}}),
+    av(A),
+    av(B),
+    ok = webrtc:create_data_channel(A, <<"cid">>, #{}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"cid">>),
+    ok = webrtc:send_data(A, Id, text, <<"over cid">>),
+    _ = message(B, <<"over cid">>),
+    ok = webrtc:send_rtp(A, <<"0">>, <<"a">>, #{timestamp => 1}),
+    _ = rtp(B, <<"0">>, <<"a">>),
+    #{transport := #{dtls := #{version := 'dtlsv1.3', connection_id := true}}} = webrtc:get_stats(A),
+    webrtc:close(A),
+    webrtc:close(B).
 
 keyframe_request(_Config) ->
     A = pc(),

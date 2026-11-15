@@ -114,6 +114,7 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                     rtcp => #{report_interval => maps:get(rtcp_report_interval, Opts, 1000)}
                 }),
                 srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),
+                dtls_opts = maps:with([connection_id], maps:get(dtls, Opts, #{})),
                 filter = maps:get(outbound_filter, Opts, undefined),
                 mdns = webrtc_mdns_client:new(
                     (maps:get(mdns, Opts, #{}))#{hide_host => maps:get(mdns_host_candidates, Opts, false)},

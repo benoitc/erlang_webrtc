@@ -409,7 +409,7 @@ encode(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
             Rec =
                 case E of
                     0 -> webrtc_dtls_record:encode(Type, ?DTLS12, 0, Seq, Data);
-                    _ -> webrtc_dtls13_record:protect(Type, E, Seq, Data, maps:get(E, St#dtls.write_ciphers))
+                    _ -> webrtc_dtls13_record:protect(Type, E, Seq, Data, maps:get(E, St#dtls.write_ciphers), St#dtls.peer_cid)
                 end,
             {ok, Rec, Seq, St#dtls{write_seq = Seqs#{E => Seq + 1}}}
     end.

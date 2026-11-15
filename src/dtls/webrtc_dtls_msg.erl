@@ -37,6 +37,8 @@
     | new_session_ticket
     | encrypted_extensions
     | key_update
+    | request_connection_id
+    | new_connection_id
     | message_hash
     | 0..255.
 -type fragment() :: #{
@@ -69,6 +71,8 @@ type_code(finished) -> 20;
 type_code(new_session_ticket) -> 4;
 type_code(encrypted_extensions) -> 8;
 type_code(key_update) -> 24;
+type_code(request_connection_id) -> 9;
+type_code(new_connection_id) -> 10;
 type_code(message_hash) -> 254;
 type_code(N) when is_integer(N) -> N.
 
@@ -87,6 +91,8 @@ type_name(20) -> finished;
 type_name(4) -> new_session_ticket;
 type_name(8) -> encrypted_extensions;
 type_name(24) -> key_update;
+type_name(9) -> request_connection_id;
+type_name(10) -> new_connection_id;
 type_name(N) -> N.
 
 %%====================================================================

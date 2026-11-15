@@ -34,6 +34,8 @@
     pending_channels = [] :: list(),
     timer :: undefined | {reference(), integer()},
     srtp_profiles :: [non_neg_integer()],
+    %% DTLS engine options from the peer connection (`connection_id').
+    dtls_opts = #{} :: map(),
     connected = false :: boolean(),
     %% Optional outbound filter used by impairment tests:
     %% fun((Dest, Bin, FState) -> {[{DelayMs, Bin}], FState}).

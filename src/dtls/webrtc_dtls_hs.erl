@@ -325,10 +325,12 @@ server_client_hello12(M, Full, St) ->
         true ->
             send_hello_verify(Expected, St);
         false ->
+            %% A cookie that matches validates the client's address.
             negotiate(M, St#dtls{
                 client_random = CR,
                 transcript = [Full],
-                send_msg_seq = St#dtls.recv_msg_seq - 1
+                send_msg_seq = St#dtls.recv_msg_seq - 1,
+                addr_valid = St#dtls.addr_valid orelse St#dtls.use_cookie
             })
     end.
 

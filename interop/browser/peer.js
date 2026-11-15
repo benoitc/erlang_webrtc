@@ -113,8 +113,10 @@ const pageScript = () => {
     if (media.length) {
       // Simulcast: three layers of a 1280x720 camera (RFC 8853), sent
       // only, with bitrates that fit the initial bandwidth estimate.
+      // With simulcast_answer the track is added plainly and the layers
+      // come from the remote offer.
       const video = !media.includes('video') ? false
-        : c.simulcast ? { width: 1280, height: 720 } : true;
+        : (c.simulcast || c.simulcast_answer) ? { width: 1280, height: 720 } : true;
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: media.includes('audio'), video });
       for (const t of stream.getTracks()) {

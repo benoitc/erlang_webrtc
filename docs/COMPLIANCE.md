@@ -38,7 +38,6 @@ Known gaps that matter for a full WebRTC deployment:
 | Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
 | Bandwidth probing, RFC 8888 feedback as estimator input, ECN circuit breaker | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link) | [rtp](compliance/rtp.md) |
 | mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
-| Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |
 | SCTP priorities, PMTUD | Round robin scheduling between streams, fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
 
 Codec encoding and decoding are not part of the library. Opus, G.711, VP8 and H.264 are negotiated and their RTP payloads are transported and forwarded; producing or consuming the media is the application's job.

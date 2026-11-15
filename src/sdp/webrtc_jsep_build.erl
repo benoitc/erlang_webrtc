@@ -35,12 +35,8 @@ offer(_Opts, J0) ->
             server -> passive
         end,
     Active = [Mid || {_, Mid, Sec} <- Slots, Sec =/= rejected],
-    Groups =
-        case {Active, J1#jsep.bundle} of
-            {[], _} -> [];
-            {[Tag | _], true} -> [{Tag, Active, true}];
-            {_, false} -> [{Mid, [Mid], false} || Mid <- Active]
-        end,
+    Order = [Mid || {_, Mid, _} <- Slots],
+    Groups = webrtc_jsep_transport:offer(J1#jsep.groups, Active, Order, J1#jsep.bundle),
     J2 = ensure_creds(Groups, J1),
     Media = [offer_section(Slot, Setup, ctx(Mid, Groups, J2), J2) || {_, Mid, _} = Slot <- Slots],
     Session = session(webrtc_jsep_transport:bundles(Groups), J2),

@@ -8,7 +8,7 @@
 
 -include("webrtc_sdp.hrl").
 
--export([groups/1, key_of/2, bundles/1]).
+-export([groups/1, offer/4, key_of/2, bundles/1]).
 
 -export_type([group/0]).
 
@@ -29,8 +29,32 @@ groups(#sdp{media = Media} = Sdp) ->
     InGroups = lists:append(Grouped),
     All = [{hd(G), G, true} || G <- Grouped] ++
         [{Mid, [Mid], false} || Mid <- Active, not lists:member(Mid, InGroups)],
+    sort(All, Order).
+
+%% @doc Transports of an offer with the active sections `Active', in
+%% m= line order `Order'. The transports of the last answer stay, without
+%% their rejected sections. New sections join the first BUNDLE group
+%% when `Bundle' is set, and have their own transport otherwise or when
+%% the answer has no BUNDLE group.
+-spec offer([group()], [binary()], [binary()], boolean()) -> [group()].
+offer(Negotiated, Active, Order, Bundle) ->
+    Kept = [
+        {hd(Ms1), Ms1, B}
+     || {_, Ms, B} <- Negotiated, Ms1 <- [[M || M <- Ms, lists:member(M, Active)]], Ms1 =/= []
+    ],
+    New = [M || M <- Active, not lists:member(M, lists:append([Ms || {_, Ms, _} <- Kept]))],
+    Groups =
+        case {Bundle, Negotiated, [G || {_, _, true} = G <- Kept]} of
+            {_, _, _} when New =:= [] -> Kept;
+            {true, [], _} -> [{hd(New), New, true}];
+            {true, _, [{K, _, true} | _]} -> [{K1, Ms1 ++ [M || K1 =:= K, M <- New], B} || {K1, Ms1, B} <- Kept];
+            _ -> Kept ++ [{M, [M], false} || M <- New]
+        end,
+    sort(Groups, Order).
+
+sort(Groups, Order) ->
     Pos = fun({_, Ms, _}) -> lists:min([index(M, Order) || M <- Ms]) end,
-    lists:sort(fun(A, B) -> Pos(A) =< Pos(B) end, All).
+    lists:sort(fun(A, B) -> Pos(A) =< Pos(B) end, Groups).
 
 %% @doc The transport of `Mid', or `undefined' when it has none.
 -spec key_of(binary() | undefined, [group()]) -> binary() | undefined.

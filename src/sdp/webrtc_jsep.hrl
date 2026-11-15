@@ -75,5 +75,8 @@
     %% first (which uses ice_ufrag, ice_pwd and local_candidates), by
     %% transport key (webrtc_jsep_transport).
     ice_extra = #{} :: #{binary() => {binary(), binary()}},
-    local_cands = #{} :: #{binary() => {list(), boolean()}}
+    local_cands = #{} :: #{binary() => {list(), boolean()}},
+    %% Transports of the last answer: later offers keep them (RFC 9429
+    %% §5.2.2, RFC 9143 §7.5).
+    groups = [] :: [webrtc_jsep_transport:group()]
 }).

@@ -240,6 +240,7 @@ set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
             {ok, J1#jsep{pending_local = Sdp, signaling = have_local_pranswer}};
         answer ->
             {ok, J1#jsep{
+                groups = webrtc_jsep_transport:groups(Sdp),
                 current_local = Sdp,
                 current_remote = J#jsep.pending_remote,
                 current_remote_orig = J#jsep.pending_remote_orig,
@@ -292,6 +293,7 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
                 {ok, J2#jsep{pending_remote = Sdp, pending_remote_orig = Sdp0, signaling = have_remote_pranswer}};
             answer ->
                 {ok, J2#jsep{
+                    groups = webrtc_jsep_transport:groups(Sdp),
                     current_local = J#jsep.pending_local,
                     current_remote = Sdp,
                     current_remote_orig = Sdp0,

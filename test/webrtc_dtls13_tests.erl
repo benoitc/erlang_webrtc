@@ -327,10 +327,11 @@ no_ack_no_connection_test() ->
 partial_flight_ack_test() ->
     C = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
     S = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
-    {Cl0, Sv0} = pair(C, S, #{mtu => 300}, #{mtu => 300, use_cookie => false}),
+    SOpts = #{mtu => 300, use_cookie => false, address_validated => true},
+    {Cl0, Sv0} = pair(C, S, #{mtu => 300}, SOpts),
     W0 = run(Cl0, Sv0),
     Full = length(webrtc_dtls_sim:sent(W0, s)) - 1,
-    {Cl, Sv} = pair(C, S, #{mtu => 300}, #{mtu => 300, use_cookie => false}),
+    {Cl, Sv} = pair(C, S, #{mtu => 300}, SOpts),
     W = run(Cl, Sv, drop(s, 3)),
     #{ev := #{c := CE, s := SE}, now := Now} = W,
     ?assertMatch([_], connected(CE)),
@@ -627,7 +628,7 @@ server_without_13_suites_test() ->
 records_before_server_hello_test() ->
     C = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
     S = webrtc_dtls_cert:generate(#{key => {rsa, 2048}}),
-    {Cl, Sv} = pair(C, S, #{mtu => 300}, #{mtu => 300, use_cookie => false}),
+    {Cl, Sv} = pair(C, S, #{mtu => 300}, #{mtu => 300, use_cookie => false, address_validated => true}),
     Self = self(),
     F = fun
         (s, 1, D) -> Self ! {held, D}, [];
@@ -1303,3 +1304,98 @@ mtu_with_cid_test() ->
     ?assertMatch([_], connected(CE)),
     Sizes = [byte_size(D) || {_, D, _} <- webrtc_dtls_sim:sent(W, c) ++ webrtc_dtls_sim:sent(W, s)],
     ?assert(lists:all(fun(N) -> N =< 300 end, Sizes)).
+
+%%====================================================================
+%% Transmission (RFC 9147 §5.1, §5.8.2, §5.8.3, §4.4)
+%%====================================================================
+
+rsa() -> webrtc_dtls_cert:generate(#{key => {rsa, 2048}}).
+
+feed(Ds, Now, Ep) ->
+    lists:foldl(fun(D, {E, Out}) -> {E1, A} = webrtc_dtls:handle_packet(D, Now, E), {E1, Out ++ [B || {send, B} <- A]} end,
+                {Ep, []}, Ds).
+
+%% Without a cookie the server sends at most three times what the client
+%% sent until the address is validated; the rest goes out as the client
+%% retransmits, and the handshake completes.
+amplification_limit_test() ->
+    {Cl, Sv} = pair(rsa(), rsa(), #{}, #{use_cookie => false}),
+    {Cl1, CH} = webrtc_dtls:start(0, Cl),
+    In = [D || {send, D} <- CH],
+    {Sv1, Out1} = feed(In, 0, Sv),
+    Sent1 = lists:sum([byte_size(D) || D <- Out1]),
+    Recv1 = lists:sum([byte_size(D) || D <- In]),
+    ?assert(Sent1 =< 3 * Recv1),
+    ?assertMatch([_ | _], Sv1#dtls.amp_held),
+    %% The client's retransmission lets more out.
+    {_, Again} = webrtc_dtls:handle_timeout(webrtc_dtls:next_timeout(Cl1), Cl1),
+    {Sv2, Out2} = feed([D || {send, D} <- Again], 500, Sv1),
+    ?assert(Sent1 + lists:sum([byte_size(D) || D <- Out2]) =< 3 * (Recv1 + lists:sum([byte_size(D) || {send, D} <- Again]))),
+    ?assert(length(Sv2#dtls.amp_held) < length(Sv1#dtls.amp_held)),
+    {Cl2, Sv2b} = pair(rsa(), rsa(), #{}, #{use_cookie => false}),
+    #{ev := #{c := CE, s := SE}} = run(Cl2, Sv2b),
+    ?assertMatch([_], connected(CE)),
+    ?assertMatch([_], connected(SE)).
+
+%% With the cookie exchange the address is validated and the whole
+%% flight goes at once.
+cookie_validates_address_test() ->
+    {C, S} = pair(rsa(), rsa(), #{}, #{}),
+    #{ev := #{c := CE}, s := Ss} = run(C, S),
+    ?assertMatch([_], connected(CE)),
+    ?assert(Ss#dtls.addr_valid),
+    ?assertEqual([], Ss#dtls.amp_held).
+
+%% At most ten records per transmission: a flight needing more sends the
+%% rest after the peer's ACK, and the handshake completes.
+max_records_test() ->
+    {Cl, Sv} = pair(rsa(), rsa(), #{mtu => 256}, #{mtu => 256, use_cookie => false, address_validated => true}),
+    {_, CH} = webrtc_dtls:start(0, Cl),
+    {_, Out} = feed([D || {send, D} <- CH], 0, Sv),
+    Records = length(lists:append([webrtc_dtls13_record:split(D, undefined) || D <- Out])),
+    ?assert(Records =< 10),
+    {Cl2, Sv2} = pair(rsa(), rsa(), #{mtu => 256}, #{mtu => 256, use_cookie => false, address_validated => true}),
+    #{ev := #{c := CE, s := SE}} = run(Cl2, Sv2),
+    ?assertMatch([_], connected(CE)),
+    ?assertMatch([_], connected(SE)).
+
+%% A flight acknowledged without retransmission sets the next timer to
+%% 1.5 times its RTT; a retransmission keeps the backed-off value.
+rtt_timer_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {ok, C1, [{send, Ku}]} = webrtc_dtls:key_update(1000, C),
+    {_, SActs} = webrtc_dtls:handle_packet(Ku, 1060, S),
+    {C2, _} = feed([D || {send, D} <- SActs], 1100, C1),
+    ?assertEqual(150, C2#dtls.rtx_base),
+    {ok, C3, _} = webrtc_dtls:key_update(2000, C2),
+    ?assertEqual(2150, webrtc_dtls:next_timeout(C3)),
+    %% Lost: the doubled timer stays for the next flight.
+    {C4, _} = webrtc_dtls:handle_timeout(2150, C3),
+    ?assertEqual(300, C4#dtls.rtx_base).
+
+%% From the second retransmission on, records get smaller (half the MTU,
+%% at least 512 bytes).
+smaller_records_test() ->
+    {Cl, Sv} = pair(rsa(), rsa(), #{}, #{use_cookie => false, address_validated => true}),
+    {_, CH} = webrtc_dtls:start(0, Cl),
+    {Sv1, Out0} = feed([D || {send, D} <- CH], 0, Sv),
+    Big = fun(Ds) -> lists:max([byte_size(R) || D <- Ds, R <- [D]]) end,
+    ?assert(Big(Out0) > 600),
+    {Sv2, A1} = webrtc_dtls:handle_timeout(webrtc_dtls:next_timeout(Sv1), Sv1),
+    ?assert(Big([D || {send, D} <- A1]) > 600),
+    {_, A2} = webrtc_dtls:handle_timeout(webrtc_dtls:next_timeout(Sv2), Sv2),
+    ?assert(Big([D || {send, D} <- A2]) =< 600).
+
+%% The same limit for a DTLS 1.2 server without HelloVerifyRequest.
+amplification_limit_dtls12_test() ->
+    V12 = #{versions => ['dtlsv1.2']},
+    {Cl, Sv} = pair(rsa(), rsa(), V12, V12#{use_cookie => false}),
+    {_, CH} = webrtc_dtls:start(0, Cl),
+    In = [D || {send, D} <- CH],
+    {Sv1, Out} = feed(In, 0, Sv),
+    ?assert(lists:sum([byte_size(D) || D <- Out]) =< 3 * lists:sum([byte_size(D) || D <- In])),
+    ?assertMatch([_ | _], Sv1#dtls.amp_held),
+    {C2, S2} = pair(rsa(), rsa(), V12, V12#{use_cookie => false}),
+    #{ev := #{c := CE, s := SE}} = run(C2, S2),
+    ?assertMatch([_], connected(CE)),
+    ?assertMatch([_], connected(SE)).

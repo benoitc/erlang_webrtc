@@ -310,8 +310,7 @@ many_sources_reported_test() ->
     All = lists:sort(maps:keys(maps:get(receivers, webrtc_media:stats(SB)))),
     {Seen, Sizes, _} = lists:foldl(
         fun(_, {Seen0, Sizes0, S0}) ->
-            Now = webrtc_media:next_timeout(S0),
-            {S1, Acts} = webrtc_media:handle_timeout(Now, S0),
+            {S1, Acts} = next_report(S0, 50),
             Pkts = lists:append([P || {send, Bin} <- Acts, {ok, Plain, _} <- [webrtc_srtp:unprotect_rtcp(Bin, Rx)], {ok, P} <- [webrtc_rtcp:decode(Plain)]]),
             Blocks = lists:append([Rbs || #rtcp_rr{reports = Rbs} <- Pkts] ++ [Rbs || #rtcp_sr{reports = Rbs} <- Pkts]),
             %% No source is reported twice in one compound.
@@ -325,3 +324,47 @@ many_sources_reported_test() ->
     %% 80 blocks do not fit one compound; three intervals cover them all.
     ?assertEqual(All, lists:usort(Seen)),
     ?assert(lists:all(fun(Sz) -> Sz =< 1200 end, Sizes)).
+
+%% Run timers until a regular report (with report blocks) goes out.
+next_report(S0, Tries) when Tries > 0 ->
+    {S1, Acts} = webrtc_media:handle_timeout(webrtc_media:next_timeout(S0), S0),
+    case [B || {send, B} <- Acts] of
+        [] -> next_report(S1, Tries - 1);
+        _ -> {S1, Acts}
+    end.
+
+%%--------------------------------------------------------------------
+%% Feedback packet form (RFC 5506, RFC 4585 §3.1)
+%%--------------------------------------------------------------------
+
+%% B with the given rtcp-rsize, having received a video packet from A;
+%% returns A's receive context to read what B sends.
+feedback_pair(Rsize) ->
+    {_, _, MA, MB} = pair(),
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SA = webrtc_media:set_srtp(Profile, Material, server, 0, webrtc_media:configure(MA, webrtc_media:new(#{}))),
+    MB1 = [M#{rtcp_rsize => Rsize} || M <- MB],
+    SB = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB1, webrtc_media:new(#{cname => <<"b">>}))),
+    {ok, Out, _} = webrtc_media:send(<<"1">>, <<"frame">>, #{timestamp => 1}, 0, SA),
+    {SB1, _} = deliver(Out, SB, 0),
+    {_, Rx} = webrtc_srtp:dtls_contexts(Profile, Material, server, #{}),
+    {SB1, Rx}.
+
+pli_from(SB, Rx) ->
+    {Acts, _} = webrtc_media:request_keyframe(<<"1">>, 0, SB),
+    [Bin] = [B || {send, B} <- Acts],
+    {ok, Plain, _} = webrtc_srtp:unprotect_rtcp(Bin, Rx),
+    {ok, Pkts} = webrtc_rtcp:decode(Plain),
+    Pkts.
+
+%% Without rtcp-rsize, feedback is a compound: RR, SDES CNAME, then the
+%% feedback.
+compound_feedback_without_rsize_test() ->
+    {SB, Rx} = feedback_pair(false),
+    ?assertMatch([#rtcp_rr{}, #rtcp_sdes{chunks = [{_, [{cname, <<"b">>}]}]}, #rtcp_pli{}], pli_from(SB, Rx)).
+
+%% With rtcp-rsize negotiated, it goes out alone.
+reduced_size_feedback_test() ->
+    {SB, Rx} = feedback_pair(true),
+    ?assertMatch([#rtcp_pli{}], pli_from(SB, Rx)).

@@ -9,7 +9,7 @@
 
 -export([
     expire_idle/2,
-    nack_actions/4,
+    nack_actions/5,
     rtcp_in/3,
     rtp_in/3
 ]).
@@ -183,7 +183,7 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
         end,
     R1 = R0#rcv{rx = Rx, nack = Nack},
     M1 = learn(Ssrc, Mid, Now, M#media{receivers = (M#media.receivers)#{Ssrc => R1}}),
-    {Out, M2} = nack_actions(Mid, Ssrc, NackActions, M1),
+    {Out, M2} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
     Event =
         case webrtc_media_rid:rid(Ssrc, M2#media.rids) of
             undefined -> {rtp, Mid, Pkt};
@@ -210,9 +210,9 @@ new_receiver(Mid, Ssrc, Pt, M) ->
             end
     }.
 
-nack_actions(_Mid, _Ssrc, [], M) ->
+nack_actions(_Mid, _Ssrc, [], _Now, M) ->
     {[], M};
-nack_actions(Mid, Ssrc, Actions, M) ->
+nack_actions(Mid, Ssrc, Actions, Now, M) ->
     Pkts = lists:flatmap(
         fun
             ({nack, Seqs}) ->
@@ -229,7 +229,7 @@ nack_actions(Mid, Ssrc, Actions, M) ->
         Actions
     ),
     _ = Mid,
-    webrtc_media_out:send_rtcp(Pkts, M).
+    webrtc_media_out:send_feedback(Pkts, Now, M).
 
 rtcp_in(Bin, Now, M) ->
     case webrtc_srtp:unprotect_rtcp(Bin, M#media.in) of

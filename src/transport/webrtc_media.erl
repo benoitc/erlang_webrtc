@@ -70,7 +70,8 @@ new(Opts) ->
     #media{
         cname = maps:get(cname, Opts, <<"webrtc">>),
         rtcp_ssrc = rand32(),
-        cc = webrtc_cc:new(maps:get(cc, Opts, #{}))
+        cc = webrtc_cc:new(maps:get(cc, Opts, #{})),
+        rtcp_opts = maps:with([report_interval], maps:get(rtcp, Opts, #{}))
     }.
 
 %% @doc Apply the negotiated media sections (`media' of
@@ -127,6 +128,7 @@ configure(Sections, #media{} = M) ->
         rtx_ssrc = RtxSsrc,
         pt_mid = PtMid,
         mid_ext = MidExt,
+        reduced_size = Sections =/= [] andalso lists:all(fun(S) -> maps:get(rtcp_rsize, S, false) end, Sections),
         rids = webrtc_media_rid:configure(Sections, M#media.rids)
     }.
 
@@ -134,7 +136,8 @@ configure(Sections, #media{} = M) ->
 -spec set_srtp(webrtc_srtp:profile(), binary(), client | server, integer(), state()) -> state().
 set_srtp(Profile, Material, Role, Now, M) ->
     {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{}),
-    M#media{out = Out, in = In, rtcp_at = Now + ?RTCP_INTERVAL}.
+    Rtcp = webrtc_rtcp_sched:new(Now, (M#media.rtcp_opts)#{session_bandwidth => session_bandwidth(M)}),
+    M#media{out = Out, in = In, rtcp = Rtcp}.
 
 %% @doc Forget the SRTP contexts: the DTLS association they came from is
 %% gone. Sending fails with `not_ready' until `set_srtp/5'.
@@ -223,14 +226,14 @@ resume(Mid, Now, M) ->
 %% @doc Ask the remote sender of a transceiver for a keyframe (PLI), on
 %% every stream of the mid or on one simulcast layer with `{Mid, Rid}'.
 -spec request_keyframe(sender_key(), integer(), state()) -> {[{send, binary()}], state()}.
-request_keyframe({Mid, Rid}, _Now, M) ->
+request_keyframe({Mid, Rid}, Now, M) ->
     Ssrcs = [S || {ok, S} <- [webrtc_media_rid:source(Mid, Rid, M#media.rids)]],
     Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
-    webrtc_media_out:send_rtcp(Pkts, M);
-request_keyframe(Mid, _Now, M) ->
+    webrtc_media_out:send_feedback(Pkts, Now, M);
+request_keyframe(Mid, Now, M) ->
     Ssrcs = [S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid],
     Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
-    webrtc_media_out:send_rtcp(Pkts, M).
+    webrtc_media_out:send_feedback(Pkts, Now, M).
 
 %% @doc Change the congestion control options at run time (see
 %% `webrtc_cc:set_options/3'): `pacing', `pacing_factor',
@@ -256,7 +259,12 @@ handle_packet(Bin, Now, M) ->
     end.
 
 -spec next_timeout(state()) -> integer() | infinity.
-next_timeout(#media{rtcp_at = R, receivers = Rs, cc = Cc}) ->
+next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc}) ->
+    R =
+        case Rtcp of
+            undefined -> infinity;
+            _ -> webrtc_rtcp_sched:next_timeout(Rtcp)
+        end,
     lists:foldl(
         fun
             (#rcv{nack = undefined}, Acc) -> Acc;
@@ -273,17 +281,33 @@ handle_timeout(Now, #media{out = undefined} = M) ->
 handle_timeout(Now, M0) ->
     {Fb, A0, M1} = webrtc_media_out:cc_timeouts(Now, M0),
     {M2, A1} = webrtc_media_out:nack_timeouts(Now, M1),
-    case M2#media.rtcp_at =/= infinity andalso Now >= M2#media.rtcp_at of
-        true ->
-            %% Transport-wide feedback due now joins the compound report.
-            {A2, M3} = webrtc_media_out:reports(Now, Fb, webrtc_media_in:expire_idle(Now, M2)),
-            %% RFC 3550 §6.3.5: randomize in [0.5, 1.5] of the interval.
-            Next = Now + round(?RTCP_INTERVAL * (0.5 + rand:uniform())),
-            {M3#media{rtcp_at = Next}, A0 ++ A1 ++ A2};
-        false ->
-            {A2, M3} = webrtc_media_out:send_rtcp(Fb, M2),
-            {M3, A0 ++ A1 ++ A2}
+    M3 = rtcp_session(Now, M2),
+    Pending = M3#media.pending_fb ++ Fb,
+    case webrtc_rtcp_sched:expire(Now, M3#media.rtcp) of
+        {send, R} ->
+            %% Waiting and due feedback joins the regular compound.
+            M4 = webrtc_media_in:expire_idle(Now, M3#media{rtcp = R, pending_fb = []}),
+            {A2, M5} = webrtc_media_out:reports(Now, Pending, M4),
+            {M5, A0 ++ A1 ++ A2};
+        {wait, R} ->
+            {A2, M4} = webrtc_media_out:send_feedback(Pending, Now, M3#media{rtcp = R, pending_fb = []}),
+            {M4, A0 ++ A1 ++ A2}
     end.
+
+%% The RTCP bandwidth follows the send estimate (both directions are
+%% counted alike) and the membership follows the streams (RFC 3550
+%% §6.2, §6.3.3).
+rtcp_session(Now, #media{rtcp = R0} = M) ->
+    Sent = maps:get(rtp_sent, M#media.counters, 0),
+    WeSent = Sent > M#media.rtp_sent_mark,
+    Local = max(1, map_size(M#media.senders)),
+    Remote = map_size(M#media.receivers),
+    Senders = Remote + case WeSent of true -> Local; false -> 0 end,
+    R1 = webrtc_rtcp_sched:set_session_bandwidth(session_bandwidth(M), R0),
+    M#media{rtcp = webrtc_rtcp_sched:set_membership(Now, Local + max(1, Remote), Senders, WeSent, R1)}.
+
+session_bandwidth(#media{cc = Cc}) ->
+    2 * webrtc_cc:target(Cc).
 
 -spec stats(state()) -> map().
 stats(#media{} = M) ->

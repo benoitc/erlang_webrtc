@@ -5,7 +5,8 @@
 -define(URI_RID, <<"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id">>).
 -define(URI_RRID, <<"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
--define(RTCP_INTERVAL, 1000).
+%% Feedback packets kept while the RTCP bandwidth does not allow them.
+-define(MAX_PENDING_FEEDBACK, 32).
 -define(BUFFER_SIZE, 512).
 %% Receive streams: idle time after which one is forgotten, and the
 %% number kept per transceiver (simulcast layers and RTX) and in total.
@@ -69,7 +70,15 @@
     %% Transport-wide-cc extension ids we accept on incoming packets.
     twcc_ids = [] :: [pos_integer()],
     cc :: webrtc_cc:state(),
-    rtcp_at = infinity :: integer() | infinity,
+    %% RTCP scheduler, from the SRTP keys on (webrtc_rtcp_sched).
+    rtcp :: undefined | webrtc_rtcp_sched:state(),
+    rtcp_opts = #{} :: map(),
+    %% Feedback waiting for the RTCP bandwidth, oldest first.
+    pending_fb = [] :: list(),
+    %% Every section negotiated rtcp-rsize (RFC 5506).
+    reduced_size = false :: boolean(),
+    %% RTP packets sent at the last regular report (we_sent, §6.3).
+    rtp_sent_mark = 0 :: non_neg_integer(),
     %% First source to report next when they do not all fit.
     rtcp_rot = 0 :: non_neg_integer(),
     counters = #{} :: map()

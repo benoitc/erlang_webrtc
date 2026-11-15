@@ -64,6 +64,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Pass |
 | Peer sends three simulcast layers (rid q, h, f), Erlang receives 50+ packets on each and a keyframe request reaches one layer only | Skipped (3) | Skipped (3) | Pass | Pass |
 | Erlang sends three simulcast layers, the peer receives each one by rid | Pass | Skipped (4) | Skipped (4) | Pass |
+| Cryptex (RFC 9335): the answer accepts it, Erlang's RTP leaves with encrypted extensions (0xC0DE), the peer decrypts and echoes it | Pass | Skipped (12) | Skipped (12) | Skipped (12) |
 | Erlang offers to receive three simulcast layers, the peer answers sending them, Erlang receives 50+ packets on each | Skipped (10) | Skipped (10) | Skipped (11) | Pass |
 | Peer offers with mDNS host candidates only, Erlang resolves them, data channel both ways | | | Pass (5) | |
 | Erlang offers, peer answers with mDNS host candidates only, Erlang's checks to the resolved addresses answered | | | Pass (5) | |
@@ -81,6 +82,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 9. Chromium with `bundlePolicy: 'balanced'`; with `max-bundle` it refuses offers without BUNDLE, as the W3C policy requires.
 10. The peer answers with a single stream.
 11. Chromium 147 answers an offer to receive simulcast with `a=inactive`.
+12. The peer answers without `a=cryptex`.
 5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings

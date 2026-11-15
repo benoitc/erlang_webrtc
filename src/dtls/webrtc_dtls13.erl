@@ -20,6 +20,10 @@
 
 -import(webrtc_dtls, [fail/3, emit/2]).
 
+%% RFC 9147 §5.8.3, §5.8.2, §4.4.
+-define(MAX_RECORDS, 10).
+-define(MIN_RTX, 50).
+-define(SMALL_RECORD, 512).
 -define(MAX_EARLY, 32).
 -define(MAX_HELD, 64).
 %% RFC 9147 §4.5.3: records failing authentication per key.
@@ -243,10 +247,18 @@ ack(Recs, E, Now, St) ->
             ),
             St1 = St#dtls{acked = Acked},
             case [I || I <- St1#dtls.last_flight, unacked(I, Acked) =/= []] of
-                [] -> flight_done(St1);
+                [] -> flight_done(rtt_sample(Now, St1));
                 _ -> resend(Now, St1)
             end
     end.
+
+%% RFC 9147 §5.8.2: a flight acknowledged without retransmission sets
+%% the timer of the next ones to 1.5 times its round-trip time.
+rtt_sample(Now, #dtls{rtx_count = 0, flight_at = At} = St) when is_integer(At) ->
+    Rtt = max(0, Now - At),
+    St#dtls{rtx_base = min(max(?MIN_RTX, (3 * Rtt + 1) div 2), St#dtls.rtx_max_interval)};
+rtt_sample(_Now, St) ->
+    St.
 
 flight_done(St0) ->
     St = St0#dtls{last_flight = [], sent_recs = #{}, acked = #{}, rtx_at = infinity},
@@ -320,11 +332,12 @@ flush(Now, St0) ->
                 rcv_recs = [],
                 ack_at = infinity,
                 rtx_count = 0,
-                rtx_interval = St1#dtls.rtx_initial
+                rtx_interval = base(St1),
+                flight_at = Now
             },
             {St3, Dgrams} = transmit(Items, St2),
             St4 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St3, Dgrams),
-            St4#dtls{rtx_at = Now + St4#dtls.rtx_initial}
+            St4#dtls{rtx_at = Now + base(St4)}
     end.
 
 %% Part of the incoming flight arrived but we cannot answer yet: ACK
@@ -381,10 +394,13 @@ timeout(Now, St0) ->
                         end,
                     emit({failed, Reason}, stop(St1#dtls{state = failed}));
                 false ->
+                    %% The backed-off value stays until a flight goes
+                    %% through without retransmission (§5.8.2).
                     Interval = min(St1#dtls.rtx_interval * 2, St1#dtls.rtx_max_interval),
-                    {St2, Dgrams} = transmit(St1#dtls.last_flight, St1),
+                    Count = St1#dtls.rtx_count + 1,
+                    {St2, Dgrams} = transmit(St1#dtls.last_flight, St1#dtls{rtx_count = Count}),
                     St3 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St2, Dgrams),
-                    St3#dtls{rtx_count = St1#dtls.rtx_count + 1, rtx_interval = Interval, rtx_at = Now + Interval}
+                    St3#dtls{rtx_interval = Interval, rtx_base = Interval, rtx_at = Now + Interval}
             end;
         _ ->
             St1
@@ -439,21 +455,25 @@ encode(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
     end.
 
 %% Encode the unacknowledged parts of a flight, one fragment per
-%% record, remembering which record carries which bytes.
+%% record, remembering which record carries which bytes. At most
+%% MAX_RECORDS records go in one transmission (§5.8.3); the rest follow
+%% the next ACK or timer.
 transmit(Items, St0) ->
-    {Recs, St} = lists:foldl(
-        fun(Item, {Acc, S}) ->
-            {Rs, S1} = item_records(Item, S),
-            {[Rs | Acc], S1}
+    {Recs, St, _} = lists:foldl(
+        fun(Item, {Acc, S, Left}) ->
+            {Rs, S1} = item_records(Item, Left, S),
+            {[Rs | Acc], S1, Left - length(Rs)}
         end,
-        {[], St0},
+        {[], St0, ?MAX_RECORDS},
         Items
     ),
-    {St, webrtc_dtls12:pack(lists:append(lists:reverse(Recs)), St#dtls.mtu)}.
+    {St, webrtc_dtls12:pack(lists:append(lists:reverse(Recs)), record_mtu(St))}.
 
-item_records({handshake, E, Type, MS, Body} = Item, St) ->
-    Max = max(1, St#dtls.mtu - header(E, St) - 12),
-    Chunks = lists:append([chunks(Off, End, Max) || {Off, End} <- unacked(Item, St#dtls.acked)]),
+item_records(_Item, Left, St) when Left =< 0 ->
+    {[], St};
+item_records({handshake, E, Type, MS, Body} = Item, Left, St) ->
+    Max = max(1, record_mtu(St) - header(E, St) - 12),
+    Chunks = lists:sublist(lists:append([chunks(Off, End, Max) || {Off, End} <- unacked(Item, St#dtls.acked)]), Left),
     T = webrtc_dtls_msg:type_code(Type),
     L = byte_size(Body),
     {Recs, St1} = lists:foldl(
@@ -474,6 +494,15 @@ chunks(Off, End, _Max) when Off >= End -> [];
 chunks(Off, End, Max) ->
     N = min(Max, End - Off),
     [{Off, N} | chunks(Off + N, End, Max)].
+
+%% The timer a new flight starts with.
+base(#dtls{rtx_base = undefined, rtx_initial = I}) -> I;
+base(#dtls{rtx_base = B}) -> B.
+
+%% §4.4: from the second retransmission on, smaller records, in case
+%% the path MTU is lower than ours.
+record_mtu(#dtls{rtx_count = N, mtu = Mtu}) when N >= 2 -> max(min(Mtu, ?SMALL_RECORD), Mtu div 2);
+record_mtu(#dtls{mtu = Mtu}) -> Mtu.
 
 %% Protected records carry the peer's CID (RFC 9147 §9).
 header(0, _St) -> 13;

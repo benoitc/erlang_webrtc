@@ -85,6 +85,11 @@
 %% Send side and path state (single destination).
 -record(snd, {
     mtu :: pos_integer(),
+    %% DATA chunks are cut for the base packet size (`mtu' of the
+    %% configuration) whatever path MTU discovery finds: a chunk keeps
+    %% its size once sent, so a later fall back to the base can always
+    %% carry it. Larger packets bundle more chunks.
+    chunk_mtu :: pos_integer(),
     idata = false :: boolean(),
     pr = false :: boolean(),
     max_burst = 4 :: pos_integer(),

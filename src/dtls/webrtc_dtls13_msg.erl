@@ -183,6 +183,11 @@ encode(finished, VD) ->
 encode(new_session_ticket, #{lifetime := L, age_add := A, nonce := N, ticket := T, max_early_data := M}) ->
     Exts = [{?EXT_EARLY_DATA, <<M:32>>} || M > 0],
     <<L:32, A:32, (byte_size(N)), N/binary, (byte_size(T)):16, T/binary, (exts_block(Exts))/binary>>;
+encode(new_connection_id, {Cids, Usage}) ->
+    List = iolist_to_binary([vec8(C) || C <- Cids]),
+    <<(byte_size(List)):16, List/binary, (case Usage of immediate -> 0; spare -> 1 end)>>;
+encode(request_connection_id, N) when N > 0, N =< 255 ->
+    <<N>>;
 encode(key_update, update_requested) ->
     <<1>>;
 encode(key_update, update_not_requested) ->

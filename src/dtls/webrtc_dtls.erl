@@ -46,7 +46,8 @@
     status/1,
     role/1,
     info/1,
-    key_update/2
+    key_update/2,
+    rotate_connection_id/2
 ]).
 
 %% Used by webrtc_dtls_hs, webrtc_dtls_reasm and the DTLS 1.3 modules.
@@ -116,6 +117,12 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
      || V <- [version_atom(N) || N <- maps:get(versions, Opts, ['dtlsv1.3', 'dtlsv1.2'])],
         V =/= dtls13 orelse Suites13 =/= []
     ],
+    Cid =
+        case maps:get(connection_id, Opts, false) of
+            false -> undefined;
+            true -> crypto:strong_rand_bytes(8);
+            C when is_binary(C), byte_size(C) =< 255 -> C
+        end,
     #dtls{
         role = Role,
         state =
@@ -138,12 +145,8 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         resumption = maps:get(resumption, Opts, false),
         early_data = maps:get(early_data, Opts, false),
         ticket_lifetime = maps:get(ticket_lifetime, Opts, 7200),
-        cid =
-            case maps:get(connection_id, Opts, false) of
-                false -> undefined;
-                true -> crypto:strong_rand_bytes(8);
-                C when is_binary(C), byte_size(C) =< 255 -> C
-            end,
+        cid = Cid,
+        cids = [C || C <- [Cid], is_binary(C)],
         cookie_secret = crypto:strong_rand_bytes(32),
         mtu = maps:get(mtu, Opts, 1200),
         rtx_initial = Initial,
@@ -323,6 +326,19 @@ key_update(_Now, #dtls{version = dtls13, state = connected}) ->
 key_update(_Now, #dtls{state = connected}) ->
     {error, not_supported};
 key_update(_Now, _St) ->
+    {error, not_connected}.
+
+%% @doc DTLS 1.3 with connection IDs: send our next records with a
+%% fresh CID of the peer, so a new path cannot be linked to the old one
+%% by the CID (RFC 9146 §8, RFC 9147 §9). Without a spare CID one is
+%% requested and used once it arrives.
+-spec rotate_connection_id(integer(), state()) -> {ok, state(), [action()]} | {error, not_negotiated | not_connected}.
+rotate_connection_id(Now, #dtls{version = dtls13, state = connected, peer_cid = Cid} = St) when Cid =/= undefined ->
+    {St1, A} = run(Now, St, fun webrtc_dtls13_cid:rotate/1),
+    {ok, St1, A};
+rotate_connection_id(_Now, #dtls{state = connected}) ->
+    {error, not_negotiated};
+rotate_connection_id(_Now, _St) ->
     {error, not_connected}.
 
 %%====================================================================

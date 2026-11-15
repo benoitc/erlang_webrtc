@@ -133,7 +133,8 @@ ice_action({event, {connection_state, _} = E}, St) ->
     St#st{ice_usable = false};
 ice_action({event, {selected_pair, L, R}}, St) ->
     webrtc_transport:to_pc({selected_pair, L, R}, St),
-    webrtc_transport_secure:start_dtls_if_ready(webrtc_transport_secure:flush_dtls(St));
+    St1 = webrtc_transport_secure:path_changed(St#st.pair, {L, R}, St#st{pair = {L, R}}),
+    webrtc_transport_secure:start_dtls_if_ready(webrtc_transport_secure:flush_dtls(St1));
 ice_action({event, {local_candidate, C}}, St) ->
     local_candidate(C, St);
 ice_action({event, {consent_lost, _, _} = E}, St) ->

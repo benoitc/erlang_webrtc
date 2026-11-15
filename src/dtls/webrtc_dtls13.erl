@@ -93,9 +93,15 @@ record(#{format := plain}, _Now, St) ->
     %% DTLSPlaintext only exists in epoch 0.
     St;
 record(#{format := unified, epoch_bits := Bits} = R, Now, St) ->
-    case webrtc_dtls13_record:select_epoch(Bits, maps:keys(St#dtls.read_keys)) of
-        {ok, E} -> decrypt(E, R, Now, St);
-        error -> buffer(R, St)
+    %% RFC 9147 §9: a CID we do not receive on is not ours.
+    case webrtc_dtls13_cid:known(maps:get(cid, R, <<>>), St) of
+        true ->
+            case webrtc_dtls13_record:select_epoch(Bits, maps:keys(St#dtls.read_keys)) of
+                {ok, E} -> decrypt(E, R, Now, St);
+                error -> buffer(R, St)
+            end;
+        false ->
+            St
     end.
 
 %% Only ClientHello, ServerHello and HelloRetryRequest are sent in
@@ -244,11 +250,13 @@ ack(Recs, E, Now, St) ->
 
 flight_done(St0) ->
     St = St0#dtls{last_flight = [], sent_recs = #{}, acked = #{}, rtx_at = infinity},
-    case St of
-        #dtls{ku_pending = true} -> webrtc_dtls13_epoch:key_update_acked(St);
-        #dtls{state = wait_ack} -> webrtc_dtls13_hs:final_flight_acked(St);
-        _ -> St
-    end.
+    St1 =
+        case St of
+            #dtls{ku_pending = true} -> webrtc_dtls13_epoch:key_update_acked(St);
+            #dtls{state = wait_ack} -> webrtc_dtls13_hs:final_flight_acked(St);
+            _ -> St
+        end,
+    webrtc_dtls13_cid:flight_done(St1).
 
 %% @doc The peer's next flight acknowledges our last flight.
 -spec implicit_ack(#dtls{}) -> #dtls{}.
@@ -331,18 +339,27 @@ arm_ack(_Now, St) ->
 
 send_ack(#dtls{rcv_recs = []} = St) ->
     St;
-send_ack(#dtls{rcv_recs = Recs, write_epoch = E, mtu = Mtu} = St) ->
+send_ack(#dtls{rcv_recs = Recs0, write_epoch = E, mtu = Mtu} = St) ->
+    %% Erratum 8108: an ACK covers no record of a later epoch than its
+    %% own. Records the peer sent after its KeyUpdate wait until ours is
+    %% acknowledged too (webrtc_dtls13_epoch:key_update_acked/1).
+    {Recs, Later} = lists:partition(fun({RE, _}) -> RE =< E end, Recs0),
     N = max(1, (Mtu - webrtc_dtls13_record:overhead() - 2) div 16),
-    Body = webrtc_dtls13_record:encode_ack(lists:sublist(Recs, N)),
-    case encode(ack, E, Body, St) of
-        {ok, Rec, _, St1} ->
-            St2 = push({send, Rec}, St1),
-            case St2#dtls.handshake_done of
-                true -> St2#dtls{rcv_recs = []};
-                false -> St2
-            end;
-        {error, _} ->
-            St
+    case Recs of
+        [] ->
+            St;
+        _ ->
+            Body = webrtc_dtls13_record:encode_ack(lists:sublist(Recs, N)),
+            case encode(ack, E, Body, St) of
+                {ok, Rec, _, St1} ->
+                    St2 = push({send, Rec}, St1),
+                    case St2#dtls.handshake_done of
+                        true -> St2#dtls{rcv_recs = Later};
+                        false -> St2
+                    end;
+                {error, _} ->
+                    St
+            end
     end.
 
 %% @doc Retransmission and ACK timers.

@@ -155,7 +155,10 @@ handle_call(end_of_candidates, _From, St) ->
     end;
 handle_call({restart_ice, U, P}, _From, St) ->
     {I1, Acts} = webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, now_ms(), St#st.ice),
-    St0 = webrtc_transport_net:ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns)}),
+    %% The pair ICE selects next is a new path, even on the same
+    %% addresses (connection ID rotation).
+    Pair = case St#st.pair of undefined -> undefined; _ -> restart end,
+    St0 = webrtc_transport_net:ice_actions(Acts, St#st{ice = I1, mdns = webrtc_mdns_client:restart(St#st.mdns), pair = Pair}),
     %% The candidates are kept across the restart but belong to the new
     %% ICE generation: signal them again (RFC 8445 §9, RFC 8838 §4.4).
     St1 = lists:foldl(fun webrtc_transport_net:local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),

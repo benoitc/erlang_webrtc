@@ -17,6 +17,7 @@
     keyframe_request/1,
     renegotiation_adds_video/1,
     ice_restart/1,
+    connection_id_rotation/1,
     fingerprint_mismatch_fails/1,
     close_notifies_peer/1,
     concurrent_peer_connections/1,
@@ -53,6 +54,7 @@ all() ->
         keyframe_request,
         renegotiation_adds_video,
         ice_restart,
+        connection_id_rotation,
         fingerprint_mismatch_fails,
         close_notifies_peer,
         concurrent_peer_connections,
@@ -413,6 +415,49 @@ dtls_connection_id(_Config) ->
     #{transport := #{dtls := #{version := 'dtlsv1.3', connection_id := true}}} = webrtc:get_stats(A),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 9147 §9, RFC 9146 §8: after an ICE restart A's records carry
+%% another of B's connection IDs (one B gave as a spare), so the new
+%% path cannot be linked to the old one by the CID, and data still flows.
+connection_id_rotation(_Config) ->
+    Self = self(),
+    Tap = {fun(_Dest, Bin, S) ->
+                case Bin of
+                    <<H, Cid:8/binary, _/binary>> when H band 16#E0 =:= 16#20, H band 16#10 =/= 0 -> Self ! {cid, Cid};
+                    _ -> ok
+                end,
+                {[{0, Bin}], S}
+           end, undefined},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => Tap, dtls => #{connection_id => true}}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, dtls => #{connection_id => true}}),
+    ok = webrtc:create_data_channel(A, <<"cid">>, #{}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"cid">>),
+    ok = webrtc:send_data(A, Id, text, <<"before">>),
+    _ = message(B, <<"before">>),
+    [Before | _] = cids([]),
+    ok = webrtc:restart_ice(A),
+    _ = ?S:negotiate(A, B),
+    relay_for(A, B, 2000),
+    flush_cids(),
+    ok = webrtc:send_data(A, Id, text, <<"after">>),
+    _ = message(B, <<"after">>),
+    After = cids([]),
+    ct:log("before ~p, after ~p", [Before, After]),
+    ?assertMatch([_ | _], After),
+    ?assertNot(lists:member(Before, After)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+cids(Acc) ->
+    receive {cid, C} -> cids([C | Acc])
+    after 200 -> lists:usort(Acc)
+    end.
+
+flush_cids() ->
+    receive {cid, _} -> flush_cids()
+    after 0 -> ok
+    end.
 
 %% RFC 6904, RFC 8834 §5.2.2: the audio level travels encrypted when
 %% one side offers it and the other accepts (the default), in clear

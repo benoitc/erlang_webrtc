@@ -16,6 +16,7 @@
     secure_relayed/3,
     transmit_dtls/2,
     dtls_actions/2,
+    path_changed/3,
     media_actions/2,
     do_open_channel/3,
     dcep_actions/2
@@ -114,6 +115,17 @@ start_dtls_if_ready(#st{dtls = D} = St) ->
                 lists:reverse(St1#st.early_dtls)
             )
     end.
+
+%% ICE moved to another pair: with DTLS 1.3 connection IDs the records
+%% take a fresh one, so the new path cannot be linked to the old one by
+%% its CID (RFC 9146 §8, RFC 9147 §9).
+path_changed(Old, New, #st{dtls = D} = St) when Old =/= undefined, Old =/= New, D =/= undefined ->
+    case webrtc_dtls:rotate_connection_id(webrtc_transport:now_ms(), D) of
+        {ok, D1, A} -> dtls_actions(A, St#st{dtls = D1});
+        {error, _} -> St
+    end;
+path_changed(_Old, _New, St) ->
+    St.
 
 secure_datagram(dtls, Bin, Now, St) ->
     dtls_in(Bin, Now, St);

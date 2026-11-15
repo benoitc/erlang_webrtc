@@ -57,6 +57,8 @@ key_update_acked(#dtls{write_epoch = E, write_ciphers = WC} = St) ->
     Next = webrtc_dtls13_keys:next_secret(webrtc_dtls13_keys:prefix(), H, S),
     St1 = install_write(E + 1, Next, St#dtls{ku_pending = false}),
     St1#dtls{
+        %% Records of the new epoch held back from an earlier ACK.
+        ack_now = St1#dtls.ack_now orelse St1#dtls.rcv_recs =/= [],
         write_ciphers = maps:with([E + 1], St1#dtls.write_ciphers),
         write_seq = maps:with([0, E + 1], St1#dtls.write_seq)
     }.

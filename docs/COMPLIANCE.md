@@ -28,14 +28,10 @@ What works today, end to end and against independent implementations (see [INTER
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset, priorities through a weighted fair queueing scheduler.
 - JSEP offer/answer with answers and re-offers checked against the offer, renegotiation, rollback from offers and provisional answers, pranswer; a new DTLS certificate is accepted only with an ICE restart and starts a new association (RFC 8842).
 - Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, asking Firefox for layers it then sends, per-layer NACK, RTX, keyframe requests and RTP stream pause and resume (RFC 7728, between Erlang peers).
-- Congestion control: transport-wide CC feedback in both directions, a GCC delay and loss based estimator, bandwidth probing at the start (in simulation a 2 Mbps link reaches 70% in 200 ms), while application limited, after a drop and on a raised maximum, a pacer with audio and retransmission priority, RFC 8083 circuit breakers that halt a stream (timeouts) or cut its rate by ten then halt it (congestion), and receiver report based control for peers without transport-cc. Chromium's estimate grows on our feedback and encodes its top simulcast layer.
+- Congestion control: transport-wide CC feedback in both directions, RFC 8888 feedback with ECN when transport-cc is not negotiated, a GCC delay and loss based estimator, bandwidth probing at the start (in simulation a 2 Mbps link reaches 70% in 200 ms), while application limited, after a drop and on a raised maximum, a pacer with audio and retransmission priority, RFC 8083 circuit breakers that halt a stream (timeouts) or cut its rate by ten then halt it (congestion), and receiver report based control for peers without transport-cc. Chromium's estimate grows on our feedback and encodes its top simulcast layer.
 - Behavior under loss, bursts, reordering, duplication, jitter, a 1200 byte MTU, outages, spoofing, replay, floods and SSRC churn; per-connection state stays bounded (DTLS reassembly, receive streams, SRTP state, data channel message size).
 
-Known gaps that matter for a full WebRTC deployment:
-
-| Gap | Effect | Page |
-|---|---|---|
-| RFC 8888 feedback as estimator input, ECN circuit breaker | Peers that only send RFC 8888 feedback give no estimate | [rtp](compliance/rtp.md) |
+The gaps that once mattered for a full WebRTC deployment are closed; what remains not implemented is listed per area, with the reason, in the pages below.
 
 Codec encoding and decoding are not part of the library. Opus, G.711, VP8 and H.264 are negotiated and their RTP payloads are transported and forwarded; producing or consuming the media is the application's job.
 

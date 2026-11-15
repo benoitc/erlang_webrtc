@@ -42,7 +42,7 @@ handle_record(_R, _Now, #dtls{state = S} = St) when S =:= failed; S =:= closed -
     St;
 handle_record(#{epoch := E} = R, Now, #dtls{read_epoch = RE} = St) when E =:= RE ->
     case open_record(R, St) of
-        {ok, Plain} ->
+        {ok, Type, Plain} ->
             #{seq := Seq} = R,
             W = maps:get(E, St#dtls.replay, webrtc_dtls_record:replay_new()),
             case webrtc_dtls_record:replay_check(Seq, W) of
@@ -50,7 +50,7 @@ handle_record(#{epoch := E} = R, Now, #dtls{read_epoch = RE} = St) when E =:= RE
                     St1 = St#dtls{
                         replay = maps:put(E, webrtc_dtls_record:replay_update(Seq, W), St#dtls.replay)
                     },
-                    content(maps:get(type, R), Plain, E, Now, St1);
+                    content(Type, Plain, E, Now, St1);
                 replay ->
                     St
             end;
@@ -73,12 +73,20 @@ handle_record(#{epoch := E} = R, _Now, #dtls{read_epoch = RE, pending_read = P, 
 handle_record(_R, _Now, St) ->
     St.
 
-open_record(#{epoch := 0, fragment := F}, _St) ->
-    {ok, F};
-open_record(R, #dtls{read_cipher = C}) when C =/= undefined ->
-    case webrtc_dtls_record:unprotect(R, C) of
-        {ok, P} -> {ok, P};
-        {error, _} -> error
+open_record(#{epoch := 0, type := T, fragment := F}, _St) when T =/= tls12_cid ->
+    {ok, T, F};
+open_record(#{epoch := 0}, _St) ->
+    error;
+open_record(R, #dtls{read_cipher = C} = St) when C =/= undefined ->
+    %% RFC 9146 §6: a CID we do not receive on is not ours.
+    case webrtc_dtls13_cid:known(maps:get(cid, R, <<>>), St) of
+        true ->
+            case webrtc_dtls_record:open(R, C) of
+                {ok, T, P} -> {ok, T, P};
+                {error, _} -> error
+            end;
+        false ->
+            error
     end;
 open_record(_, _) ->
     error.
@@ -193,9 +201,8 @@ item_records({handshake, E, Type, Seq, Body}, St) ->
 
 overhead(0, _St) ->
     0;
-overhead(E, #dtls{write_ciphers = Cs}) ->
-    #{explicit_nonce := X} = maps:get(E, Cs),
-    X + 16.
+overhead(E, #dtls{write_ciphers = Cs, peer_cid = Cid}) ->
+    webrtc_dtls_record:overhead(maps:get(E, Cs), Cid) - 13.
 
 %% @doc Encode one DTLS 1.2 record (plaintext in epoch 0).
 -spec encode_record(webrtc_dtls_record:content_type(), non_neg_integer(), iodata(), #dtls{}) ->
@@ -211,8 +218,10 @@ encode_record(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
                     0 ->
                         webrtc_dtls_record:encode(Type, ?DTLS12, 0, Seq, Data);
                     _ ->
+                        %% RFC 9146: the peer's CID in records with
+                        %% negotiated keys.
                         webrtc_dtls_record:protect(
-                            Type, ?DTLS12, E, Seq, Data, maps:get(E, St#dtls.write_ciphers)
+                            Type, ?DTLS12, E, Seq, Data, maps:get(E, St#dtls.write_ciphers), St#dtls.peer_cid
                         )
                 end,
             {ok, Rec, St#dtls{write_seq = Seqs#{E => Seq + 1}}}

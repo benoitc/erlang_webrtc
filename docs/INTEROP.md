@@ -21,6 +21,14 @@ Resumption and 0-RTT (`dtls => #{resumption => true, early_data => true}`) were 
 | OTP ssl 11.7.8 | client, EMS required | refused with `extended_master_secret_required` | | | | Pass |
 | OpenSSL 4.1 s_server | client | yes | negotiated | printed only by s_client | to OpenSSL | Pass |
 | OpenSSL 4.1 s_client | server | yes | negotiated | yes | from OpenSSL | Pass |
+| mbedTLS 3.6 ssl_server2, CID | client (offering 1.3 and 1.2) | DTLS 1.2, CIDs both ways | AES128_CM_SHA1_80 | yes | both ways | Pass |
+| mbedTLS 3.6 ssl_client2, CID | server | DTLS 1.2, CIDs both ways | AES128_CM_SHA1_80 | yes | both ways | Pass |
+| mbedTLS 3.6 ssl_server2 without CID | client | DTLS 1.2, no CID | AES128_CM_SHA1_80 | | | Pass |
+| pion/dtls 3.1 server, 8 byte CID | client | DTLS 1.2, CIDs both ways | negotiated | yes | both ways | Pass |
+| pion/dtls 3.1 client, 8 byte CID | server | DTLS 1.2, CIDs both ways | negotiated | yes | both ways | Pass |
+| pion/dtls 3.1 server, send-only CID | client | DTLS 1.2, plain records to pion, CID records to us | negotiated | | both ways | Pass |
+
+The CID cases check the wire: every protected record we send carries the peer's CID. mbedTLS pads the inner plaintext of CID records to 16 bytes. Its `exp_label` option stops `ssl_server2` 3.6 after the handshake, so the keys are compared through the DTLS-SRTP key material it prints anyway.
 
 ## TURN relay (webrtc_turn_interop_SUITE)
 

@@ -9,6 +9,7 @@
 -module(webrtc_dtls13_record).
 
 -export([
+    overhead/1,
     split/1,
     split/2,
     protect/5,
@@ -53,6 +54,11 @@
 %% and the 16 byte AEAD tag.
 -spec overhead() -> pos_integer().
 overhead() -> 5 + 1 + ?TAG.
+
+%% @doc The same with the peer's connection ID in the header.
+-spec overhead(undefined | binary()) -> pos_integer().
+overhead(undefined) -> overhead();
+overhead(Cid) -> overhead() + byte_size(Cid).
 
 %%====================================================================
 %% Demultiplexing (RFC 9147 §4.1)

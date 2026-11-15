@@ -36,6 +36,12 @@
     openssl_any_client_our_12_server/1,
     openssl_any_server_our_12_client/1,
     openssl_downgrade_detected/1,
+    mbedtls_server_our_client/1,
+    mbedtls_client_our_server/1,
+    mbedtls_server_without_cid/1,
+    piondtls_server_our_client/1,
+    piondtls_client_our_server/1,
+    piondtls_send_only_cid/1,
     pc_dtls_version/1,
     pc_dtls_version_peer_offer/1
 ]).
@@ -48,6 +54,8 @@ all() ->
         {group, openssl},
         otp_server_without_ems_rejected,
         {group, openssl13},
+        {group, mbedtls},
+        {group, piondtls},
         {group, chromium},
         {group, firefox},
         {group, pion},
@@ -75,6 +83,8 @@ groups() ->
             openssl_downgrade_detected,
                               openssl13_server_resumption, openssl13_client_resumption,
                               openssl13_server_early_data, openssl13_client_early_data]},
+        {mbedtls, [], [mbedtls_server_our_client, mbedtls_client_our_server, mbedtls_server_without_cid]},
+        {piondtls, [], [piondtls_server_our_client, piondtls_client_our_server, piondtls_send_only_cid]},
         {chromium, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
         {firefox, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
         {pion, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
@@ -103,6 +113,16 @@ init_per_group(openssl13, Config) ->
                 nomatch -> {skip, "openssl without DTLS 1.3 (needs OpenSSL 4)"};
                 _ -> [{openssl, Exe} | Config]
             end
+    end;
+init_per_group(mbedtls, Config) ->
+    case mbedtls_programs() of
+        false -> {skip, "mbedTLS ssl_server2/ssl_client2 not found (set MBEDTLS_PROGRAMS)"};
+        Dir -> [{mbedtls, Dir} | Config]
+    end;
+init_per_group(piondtls, Config) ->
+    case webrtc_interop_peer:find(piondtls) of
+        {ok, Bin} -> [{piondtls, Bin} | Config];
+        {skip, R} -> {skip, R}
     end;
 init_per_group(Peer, Config) when Peer =:= chromium; Peer =:= firefox; Peer =:= pion; Peer =:= aiortc ->
     case webrtc_interop_peer:probe(Peer, ?config(priv_dir, Config)) of
@@ -757,3 +777,225 @@ client_resumption(Config, Ours, Early) ->
         _ ->
             ok
     end.
+
+%%====================================================================
+%% mbedTLS 3: DTLS 1.2 with connection IDs (RFC 9146)
+%%====================================================================
+
+%% The directory holding mbedTLS's ssl_server2 and ssl_client2 example
+%% programs: MBEDTLS_PROGRAMS, the PATH, or Homebrew's mbedtls@3.
+mbedtls_programs() ->
+    Candidates = [os:getenv("MBEDTLS_PROGRAMS", "")] ++
+        [filename:dirname(E) || E <- [os:find_executable("ssl_server2")], is_list(E)] ++
+        ["/opt/homebrew/opt/mbedtls@3/bin", "/usr/local/opt/mbedtls@3/bin"],
+    case [D || D <- Candidates, D =/= "", filelib:is_regular(filename:join(D, "ssl_server2"))] of
+        [D | _] -> D;
+        [] -> false
+    end.
+
+%% use_srtp prints the DTLS-SRTP key material (EXTRACTOR-dtls_srtp);
+%% exp_label is not used: with it ssl_server2 3.6 stops after the
+%% handshake.
+mbedtls_cmd(Config, Prog, Args) ->
+    lists:flatten([filename:join(?config(mbedtls, Config), Prog), " dtls=1 auth_mode=optional use_srtp=1 ", Args]).
+
+%% mbedTLS prints the exported key as hex bytes after the label.
+mbedtls_keymat(Out) ->
+    case re:run(Out, "EXTRACTOR-dtls_srtp[^\n]*\n?\s*([0-9A-Fa-f ]{120,})", [{capture, all_but_first, binary}]) of
+        {match, [Hex]} -> binary:decode_hex(binary:replace(Hex, [<<" ">>, <<"\n">>], <<>>, [global]));
+        nomatch -> undefined
+    end.
+
+%% The CIDs of our outgoing tls12_cid records, as they leave.
+cid_tap(Len) ->
+    fun(<<25, _:10/binary, Cid:Len/binary, _/binary>> = D) -> put(cids_out, [Cid | get_list(cids_out)]), D;
+       (D) -> D
+    end.
+
+get_list(K) -> case get(K) of undefined -> []; L -> L end.
+
+%% Our client (offering DTLS 1.3 and 1.2) against ssl_server2 with a
+%% CID: DTLS 1.2 is negotiated with CIDs both ways, our records carry
+%% its CID, its records ours, data flows and exported keys match.
+mbedtls_server_our_client(Config) ->
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    P = free_udp_port(),
+    Cmd = mbedtls_cmd(Config, "ssl_server2",
+                      io_lib:format("server_addr=127.0.0.1 server_port=~b crt_file=~s key_file=~s cid=1 "
+                                    "cid_val=6d626564746c73", [P, C, K])),
+    Port = open_port({spawn, Cmd}, [binary, stderr_to_stdout, exit_status]),
+    timer:sleep(500),
+    put(cids_out, []),
+    {Sock, _} = webrtc_dtls_udp:open(),
+    D0 = webrtc_dtls:new(#{role => client, cert => Mine, remote_fingerprints => [fp(Theirs)],
+                           connection_id => <<"erlang-cid">>}),
+    {ok, D1, Peer, Ev} = webrtc_dtls_udp:run(Sock, {{127, 0, 0, 1}, P}, D0,
+                                             #{start => true, stop => fun connected/1, out => cid_tap(7)}),
+    [Info] = [I || {connected, I} <- Ev],
+    ct:pal("negotiated with ssl_server2: ~p", [Info]),
+    ?assertMatch(#{version := 'dtlsv1.2', connection_id := true}, Info),
+    {ok, Ours} = webrtc_dtls:export_keying_material(?LABEL, no_context, 60, D1),
+    {ok, D2, A} = webrtc_dtls:send(<<"GET / HTTP/1.0\r\n\r\n">>, D1),
+    _ = webrtc_dtls_udp:send(Sock, Peer, A),
+    {_, _, _, Ev2} = webrtc_dtls_udp:run(Sock, Peer, D2, #{stop => fun(E) -> lists:keymember(data, 1, E) end,
+                                                           timeout => 5000, out => cid_tap(7)}),
+    Out = collect_port(Port, <<>>, deadline(2000), "NEVERMATCH"),
+    ct:pal("ssl_server2 output:~n~s", [Out]),
+    close_port(Port),
+    gen_udp:close(Sock),
+    ?assertMatch([{data, <<"HTTP/1.0 200 OK", _/binary>>} | _], [E || {data, _} = E <- Ev2]),
+    ?assertMatch([_ | _], get(cids_out)),
+    ?assertEqual([<<"mbedtls">>], lists:usort(get(cids_out))),
+    case mbedtls_keymat(Out) of
+        undefined -> ct:comment("ssl_server2 printed no exported key; data path verified");
+        Theirs1 -> ?assertEqual(Theirs1, Ours)
+    end.
+
+%% ssl_client2 with a CID against our server.
+mbedtls_client_our_server(Config) ->
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    {Sock, P} = webrtc_dtls_udp:open(),
+    Cmd = mbedtls_cmd(Config, "ssl_client2",
+                      io_lib:format("server_addr=127.0.0.1 server_port=~b crt_file=~s key_file=~s cid=1 "
+                                    "cid_val=6d626564746c73 read_timeout=5000", [P, C, K])),
+    put(cids_out, []),
+    Port = open_port({spawn, Cmd}, [binary, stderr_to_stdout, exit_status]),
+    D0 = webrtc_dtls:new(#{role => server, cert => Mine, remote_fingerprints => [fp(Theirs)],
+                           connection_id => <<"erlang-cid">>}),
+    {ok, D1, Peer, Ev} = webrtc_dtls_udp:run(Sock, undefined, D0,
+                                             #{stop => fun(E) -> lists:keymember(data, 1, E) end, out => cid_tap(7)}),
+    [Info] = [I || {connected, I} <- Ev],
+    ct:pal("negotiated with ssl_client2: ~p", [Info]),
+    ?assertMatch(#{version := 'dtlsv1.2', connection_id := true}, Info),
+    ?assertMatch([{data, <<"GET ", _/binary>>} | _], [E || {data, _} = E <- Ev]),
+    {ok, Ours} = webrtc_dtls:export_keying_material(?LABEL, no_context, 60, D1),
+    {ok, _, A} = webrtc_dtls:send(<<"HTTP/1.0 200 OK\r\n\r\nfrom erlang">>, D1),
+    _ = webrtc_dtls_udp:send(Sock, Peer, A),
+    Out = collect_port(Port, <<>>, deadline(5000), "from erlang"),
+    ct:pal("ssl_client2 output:~n~s", [Out]),
+    close_port(Port),
+    gen_udp:close(Sock),
+    ?assertMatch({match, _}, re:run(Out, "from erlang")),
+    ?assertEqual([<<"mbedtls">>], lists:usort(get(cids_out))),
+    case mbedtls_keymat(Out) of
+        undefined -> ct:comment("ssl_client2 printed no exported key; data path verified");
+        Theirs1 -> ?assertEqual(Theirs1, Ours)
+    end.
+
+%% ssl_server2 without CIDs ignores our extension: plain DTLS 1.2.
+mbedtls_server_without_cid(Config) ->
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    P = free_udp_port(),
+    Cmd = mbedtls_cmd(Config, "ssl_server2",
+                      io_lib:format("server_addr=127.0.0.1 server_port=~b crt_file=~s key_file=~s", [P, C, K])),
+    Port = open_port({spawn, Cmd}, [binary, stderr_to_stdout, exit_status]),
+    timer:sleep(500),
+    {Sock, _} = webrtc_dtls_udp:open(),
+    D0 = webrtc_dtls:new(#{role => client, cert => Mine, remote_fingerprints => [fp(Theirs)],
+                           connection_id => true}),
+    {ok, _, _, Ev} = webrtc_dtls_udp:run(Sock, {{127, 0, 0, 1}, P}, D0, #{start => true, stop => fun connected/1}),
+    close_port(Port),
+    gen_udp:close(Sock),
+    ?assertMatch([#{version := 'dtlsv1.2', connection_id := false}], [I || {connected, I} <- Ev]).
+
+%%====================================================================
+%% pion/dtls v3: DTLS 1.2 with connection IDs (RFC 9146)
+%%====================================================================
+
+piondtls(Config, Args) ->
+    open_port({spawn, lists:flatten([?config(piondtls, Config), " ", Args])}, [binary, stderr_to_stdout, exit_status]).
+
+piondtls_keys(Out) ->
+    case re:run(Out, "KEYS ([0-9a-f]+)", [{capture, all_but_first, binary}]) of
+        {match, [Hex]} -> binary:decode_hex(Hex);
+        nomatch -> undefined
+    end.
+
+%% The CID length pion's RandomCIDGenerator(8) gives us.
+-define(PION_CID, 8).
+
+%% Our client against pion's server: CIDs both ways (pion's 8 bytes in
+%% our records), data, matching exported keys.
+piondtls_server_our_client(Config) ->
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    P = free_udp_port(),
+    Port = piondtls(Config, io_lib:format("server 127.0.0.1:~b ~s ~s 8", [P, C, K])),
+    _ = collect_port(Port, <<>>, deadline(5000), "LISTENING"),
+    put(cids_out, []),
+    {Sock, _} = webrtc_dtls_udp:open(),
+    D0 = webrtc_dtls:new(#{role => client, cert => Mine, remote_fingerprints => [fp(Theirs)],
+                           connection_id => <<"erlang-cid">>}),
+    {ok, D1, Peer, Ev} = webrtc_dtls_udp:run(Sock, {{127, 0, 0, 1}, P}, D0,
+                                             #{start => true, stop => fun connected/1, out => cid_tap(?PION_CID)}),
+    [Info] = [I || {connected, I} <- Ev],
+    ct:pal("negotiated with pion/dtls: ~p", [Info]),
+    ?assertMatch(#{version := 'dtlsv1.2', connection_id := true}, Info),
+    {ok, Ours} = webrtc_dtls:export_keying_material(?LABEL, no_context, 60, D1),
+    {ok, D2, A} = webrtc_dtls:send(<<"from erlang">>, D1),
+    _ = webrtc_dtls_udp:send(Sock, Peer, A),
+    {_, _, _, Ev2} = webrtc_dtls_udp:run(Sock, Peer, D2, #{stop => fun(E) -> lists:keymember(data, 1, E) end,
+                                                           timeout => 5000, out => cid_tap(?PION_CID)}),
+    Out = collect_port(Port, <<>>, deadline(3000), "GOT .*\n"),
+    ct:pal("pion/dtls output:~n~s", [Out]),
+    close_port(Port),
+    gen_udp:close(Sock),
+    ?assert(lists:member({data, <<"from pion">>}, Ev2)),
+    ?assertMatch({match, _}, re:run(Out, "GOT from erlang")),
+    ?assertMatch([_], lists:usort(get(cids_out))),
+    ?assertEqual(Ours, piondtls_keys(Out)).
+
+%% pion's client against our server.
+piondtls_client_our_server(Config) ->
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    {Sock, P} = webrtc_dtls_udp:open(),
+    put(cids_out, []),
+    Port = piondtls(Config, io_lib:format("client 127.0.0.1:~b ~s ~s 8", [P, C, K])),
+    D0 = webrtc_dtls:new(#{role => server, cert => Mine, remote_fingerprints => [fp(Theirs)],
+                           connection_id => <<"erlang-cid">>}),
+    {ok, D1, Peer, Ev} = webrtc_dtls_udp:run(Sock, undefined, D0,
+                                             #{stop => fun(E) -> lists:keymember(data, 1, E) end,
+                                               out => cid_tap(?PION_CID)}),
+    [Info] = [I || {connected, I} <- Ev],
+    ?assertMatch(#{version := 'dtlsv1.2', connection_id := true}, Info),
+    ?assert(lists:member({data, <<"from pion">>}, Ev)),
+    {ok, Ours} = webrtc_dtls:export_keying_material(?LABEL, no_context, 60, D1),
+    {ok, _, A} = webrtc_dtls:send(<<"from erlang">>, D1),
+    _ = webrtc_dtls_udp:send(Sock, Peer, A),
+    Out = collect_port(Port, <<>>, deadline(5000), "GOT .*\n"),
+    ct:pal("pion/dtls output:~n~s", [Out]),
+    close_port(Port),
+    gen_udp:close(Sock),
+    ?assertMatch({match, _}, re:run(Out, "GOT from erlang")),
+    ?assertMatch([_], lists:usort(get(cids_out))),
+    ?assertEqual(Ours, piondtls_keys(Out)).
+
+%% pion asks for no CID itself (OnlySendCIDGenerator): our records to it
+%% are plain, its records to us carry ours.
+piondtls_send_only_cid(Config) ->
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    P = free_udp_port(),
+    Port = piondtls(Config, io_lib:format("server 127.0.0.1:~b ~s ~s 0", [P, C, K])),
+    _ = collect_port(Port, <<>>, deadline(5000), "LISTENING"),
+    put(cids_out, []),
+    {Sock, _} = webrtc_dtls_udp:open(),
+    D0 = webrtc_dtls:new(#{role => client, cert => Mine, remote_fingerprints => [fp(Theirs)],
+                           connection_id => <<"erlang-cid">>}),
+    {ok, D1, Peer, Ev} = webrtc_dtls_udp:run(Sock, {{127, 0, 0, 1}, P}, D0,
+                                             #{start => true, stop => fun connected/1, out => cid_tap(1)}),
+    ?assertMatch([#{version := 'dtlsv1.2', connection_id := true}], [I || {connected, I} <- Ev]),
+    {ok, D2, A} = webrtc_dtls:send(<<"from erlang">>, D1),
+    _ = webrtc_dtls_udp:send(Sock, Peer, A),
+    {_, _, _, Ev2} = webrtc_dtls_udp:run(Sock, Peer, D2, #{stop => fun(E) -> lists:keymember(data, 1, E) end,
+                                                           timeout => 5000, out => cid_tap(1)}),
+    Out = collect_port(Port, <<>>, deadline(3000), "GOT .*\n"),
+    close_port(Port),
+    gen_udp:close(Sock),
+    ?assert(lists:member({data, <<"from pion">>}, Ev2)),
+    ?assertMatch({match, _}, re:run(Out, "GOT from erlang")),
+    ?assertEqual([], get(cids_out)).

@@ -8,6 +8,8 @@
     {stun_integrity, fun(B) -> webrtc_stun:check_integrity(B, <<"key">>) end},
     {turn_channel, fun webrtc_turn_channel:decode/1},
     {dtls_record, fun webrtc_dtls_record:decode/1},
+    {dtls12_cid_record, fun(B) -> webrtc_dtls_record:decode(B, 8) end},
+    {dtls12_cid_open, fun(B) -> [webrtc_dtls_record:open(R, cid_cipher()) || R <- webrtc_dtls_record:decode(B, 4)] end},
     {dtls_fragment, fun webrtc_dtls_msg:decode_fragment/1},
     {dtls_client_hello, fun(B) -> webrtc_dtls_msg:decode_body(client_hello, B) end},
     {dtls_server_hello, fun(B) -> webrtc_dtls_msg:decode_body(server_hello, B) end},
@@ -86,3 +88,6 @@ ip() ->
     oneof([{byte(), byte(), byte(), byte()}, {word(), word(), word(), word(), word(), word(), word(), word()}]).
 
 word() -> range(0, 65535).
+
+cid_cipher() ->
+    webrtc_dtls_record:new_cipher(element(2, webrtc_dtls_crypto:suite(16#C02B)), <<0:128>>, <<0:32>>).

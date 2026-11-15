@@ -170,10 +170,11 @@ new_peer_connection() ->
 %%     whatever this option says, and later offers keep the transports
 %%     the last answer set.</li>
 %% <li>`dtls': DTLS options; `connection_id' (`true' or a binary) offers
-%%     and accepts a DTLS 1.3 connection ID (RFC 9147 §9), default off:
-%%     ICE already follows address changes and browsers do not use it.
-%%     When on, records move to a spare CID of the peer after an ICE
-%%     restart or a new selected pair (RFC 9146 §8).
+%%     and accepts a connection ID (DTLS 1.3, RFC 9147 §9; DTLS 1.2,
+%%     RFC 9146), default off: ICE already follows address changes and
+%%     browsers do not use it. With DTLS 1.3, records move to a spare CID
+%%     of the peer after an ICE restart or a new selected pair (RFC 9146
+%%     §8); DTLS 1.2 has no way to change it.
 %%     `resumption' (default false) issues DTLS 1.3 tickets and resumes
 %%     with them the next association between the same certificates,
 %%     skipping the certificate messages (each side's certificate is the

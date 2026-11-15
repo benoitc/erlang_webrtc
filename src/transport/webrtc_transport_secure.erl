@@ -42,7 +42,7 @@ configure_engines(Neg, St0) ->
     St2 =
         case St1#st.dtls of
             undefined when Role =/= undefined ->
-                D = webrtc_dtls:new(#{
+                D = webrtc_dtls:new((St1#st.dtls_opts)#{
                     role => Role,
                     cert => St1#st.cert,
                     remote_fingerprints => FPs,

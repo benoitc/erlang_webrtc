@@ -164,6 +164,9 @@ new_peer_connection() ->
 %%     the mid of their `ice_candidate' event. Answers follow the offer
 %%     whatever this option says, and later offers keep the transports
 %%     the last answer set.</li>
+%% <li>`dtls': DTLS options; `connection_id' (`true' or a binary) offers
+%%     and accepts a DTLS 1.3 connection ID (RFC 9147 §9), default off:
+%%     ICE already follows address changes and browsers do not use it.</li>
 %% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
 %%     extensions (RFC 9335), default `true'. Media is sent that way
 %%     when every section of the connection negotiated it.</li>

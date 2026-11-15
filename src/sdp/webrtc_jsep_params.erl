@@ -149,8 +149,18 @@ media_params(T, L, R, _Remote) ->
         rtx_ssrc => T#tr.rtx_ssrc,
         cname => undefined,
         remote_ssrcs => remote_ssrcs(R),
-        rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true}
+        rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true},
+        pause => pause(LocalCodecs, RemoteCodecs)
     }.
+
+%% RTP stream pause and resume (RFC 7728 §9): both descriptions have a
+%% `ccm pause' line; no hold-off when both say `nowait'.
+pause(Local, Remote) ->
+    Params = fun(Cs) -> [P || #{rtcp_fb := Fb} <- Cs, F <- Fb, P <- [webrtc_jsep_caps:pause_params(F)], P =/= undefined] end,
+    case {Params(Local), Params(Remote)} of
+        {[L | _], [R | _]} -> #{nowait => lists:member(<<"nowait">>, L) andalso lists:member(<<"nowait">>, R)};
+        _ -> undefined
+    end.
 
 remote_ssrcs(R) ->
     Ssrcs = webrtc_sdp_media:attrs(ssrc, R),

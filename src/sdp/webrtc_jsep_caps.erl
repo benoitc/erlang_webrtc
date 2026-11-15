@@ -16,7 +16,8 @@
     answer_extensions/2,
     extension_map/1,
     fmtp/2,
-    same_codec/2
+    same_codec/2,
+    pause_params/1
 ]).
 
 -export_type([extension/0]).
@@ -61,7 +62,9 @@ default_codecs(video) ->
         ?FB(<<"transport-cc">>),
         ?FB(<<"ccm">>, <<"fir">>),
         ?FB(<<"nack">>),
-        ?FB(<<"nack">>, <<"pli">>)
+        ?FB(<<"nack">>, <<"pli">>),
+        %% RFC 7728 pause and resume; point to point, so no hold-off.
+        ?FB(<<"ccm">>, <<"pause nowait">>)
     ],
     [
         codec(96, <<"VP8">>, 90000, undefined, [], Fb),
@@ -142,8 +145,40 @@ answer_codec(#{name := N} = O, L) ->
                 maps:get(fmtp, L)
         end,
     LFb = maps:get(rtcp_fb, L),
-    Fb = [F || F <- maps:get(rtcp_fb, O), lists:member(F, LFb)],
-    O#{fmtp => Fmtp, rtcp_fb => Fb}.
+    OFb = maps:get(rtcp_fb, O),
+    Fb = [F || F <- OFb, lists:member(F, LFb), pause_params(F) =:= undefined],
+    O#{fmtp => Fmtp, rtcp_fb => Fb ++ answer_pause(OFb, LFb)}.
+
+%% RFC 7728 §9: we implement every message (config 1, the default) and
+%% answer `nowait' only when it was offered.
+answer_pause(OFb, LFb) ->
+    case {[P || F <- OFb, P <- [pause_params(F)], P =/= undefined],
+          [P || F <- LFb, P <- [pause_params(F)], P =/= undefined]} of
+        {[Offered | _], [_ | _]} ->
+            Param = case lists:member(<<"nowait">>, Offered) of
+                        true -> <<"pause nowait">>;
+                        false -> <<"pause">>
+                    end,
+            [#{type => <<"ccm">>, param => Param}];
+        _ ->
+            []
+    end.
+
+%% @doc The attributes of a `ccm pause' feedback line (RFC 7728 §9), or
+%% undefined for other feedback.
+-spec pause_params(map()) -> undefined | [binary()].
+pause_params(#{type := T, param := P}) when is_binary(P) ->
+    case {string:lowercase(T), binary:split(P, <<" ">>, [global, trim_all])} of
+        {<<"ccm">>, [Pause | Attrs]} ->
+            case string:lowercase(Pause) of
+                <<"pause">> -> Attrs;
+                _ -> undefined
+            end;
+        _ ->
+            undefined
+    end;
+pause_params(_) ->
+    undefined.
 
 %% @doc Codecs of a remote description that we can send, with the
 %% remote payload types (the ones the remote expects to receive).

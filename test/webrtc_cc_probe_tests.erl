@@ -162,3 +162,21 @@ bounds_test() ->
     #{results := Rs} = ?P:info(P2),
     %% Two initial clusters, then ten.
     ?assertEqual(12, length(Rs)).
+
+%% Media leaving during a cluster counts towards it: less padding, and
+%% the cluster is complete once media and padding reach its size.
+media_in_cluster_test() ->
+    P0 = ?P:start(0, 300000, ?P:new(#{})),
+    {[{probe, 1, 250}], P1} = ?P:handle_timeout(0, P0),
+    {1, P2} = ?P:media(1, 1200, P1),
+    %% 900 kbps for 15 ms is 1687 bytes: 1450 sent, one packet more due
+    %% only once the rate allows it.
+    {[], P3} = ?P:handle_timeout(2, P2),
+    {Pad, P4} = drain(P3, 3, 30, []),
+    Ids = lists:usort([C || {_, C, _} <- Pad]),
+    ?assertEqual([1, 2], Ids),
+    %% Cluster 1 needed 5 packets: 2 sent, 3 of padding.
+    ?assertEqual(3, length([x || {_, 1, _} <- Pad])),
+    %% Outside a cluster media is not tagged.
+    {_, P5} = drain(P4, 31, 100, []),
+    ?assertMatch({undefined, _}, ?P:media(200, 1200, P5)).

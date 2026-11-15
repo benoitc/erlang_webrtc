@@ -28,13 +28,18 @@
 %% At most one cluster is in flight, and these probes are limited to
 %% 10 a minute.
 %%
+%% While a cluster is sent, media that leaves is part of it (`media/3'),
+%% as libwebrtc's pacer does: padding only makes up the difference with
+%% the cluster's rate, and the result counts every packet of the
+%% cluster, so media in flight does not make the link look slower.
+%%
 %% `handle_timeout/2' returns `{probe, Cluster, Size}' padding packets
 %% to send now; the caller tags them with the cluster in the
 %% transport-wide send history so `feedback/3' sees which results belong
 %% to a probe.
 -module(webrtc_cc_probe).
 
--export([new/1, start/3, update/3, max_raised/5, handle_timeout/2, next_timeout/1, feedback/3, info/1]).
+-export([new/1, start/3, update/3, max_raised/5, media/3, handle_timeout/2, next_timeout/1, feedback/3, info/1]).
 
 -export_type([state/0]).
 
@@ -67,8 +72,11 @@
 -record(cluster, {
     id :: pos_integer(),
     rate :: pos_integer(),
-    packets :: pos_integer(),
+    %% At least `bytes' (MIN_DURATION_MS at the rate) and MIN_PACKETS
+    %% packets, media and padding together.
+    bytes :: pos_integer(),
     sent = 0 :: non_neg_integer(),
+    sent_bytes = 0 :: non_neg_integer(),
     started :: undefined | integer(),
     %% {SendUs, Size} sent and {ArrivalUs, Size} received, from feedback.
     tx = [] :: [{integer(), non_neg_integer()}],
@@ -196,17 +204,31 @@ idle(_) -> false.
 
 schedule(Rates, _Now, #probe{next_id = Id0, queue = Q} = P) ->
     {Clusters, Next} = lists:mapfoldl(
-        fun(R, Id) -> {#cluster{id = Id, rate = R, packets = packets(R)}, Id + 1} end,
+        fun(R, Id) -> {#cluster{id = Id, rate = R, bytes = bytes(R)}, Id + 1} end,
         Id0,
         Rates
     ),
     P#probe{queue = Q ++ Clusters, next_id = Next}.
 
-packets(Rate) ->
-    Bytes = Rate * ?MIN_DURATION_MS div 8000,
-    max(?MIN_PACKETS, (Bytes + ?PACKET_SIZE - 1) div ?PACKET_SIZE).
+bytes(Rate) ->
+    max(?MIN_PACKETS * ?PACKET_SIZE, Rate * ?MIN_DURATION_MS div 8000).
 
-%% @doc Padding packets due now, `{probe, ClusterId, Size}'.
+%% @doc A media packet of `Size' bytes leaves now: while a cluster is
+%% being sent it is part of it, and the caller tags it with the cluster
+%% (`{probe, Id}') in the transport-wide send history.
+-spec media(integer(), non_neg_integer(), state()) -> {undefined | pos_integer(), state()}.
+media(Now, Size, #probe{sending = #cluster{id = Id, started = T0} = C} = P) when is_integer(T0) ->
+    {Id, finish(Now, C#cluster{sent = C#cluster.sent + 1, sent_bytes = C#cluster.sent_bytes + Size}, P)};
+media(_Now, _Size, P) ->
+    {undefined, P}.
+
+finish(Now, #cluster{sent = N, sent_bytes = B, bytes = Target} = C, P) when N >= ?MIN_PACKETS, B >= Target ->
+    P#probe{sending = undefined, waiting = P#probe.waiting ++ [C#cluster{finished = Now}]};
+finish(_Now, C, P) ->
+    P#probe{sending = C}.
+
+%% @doc Padding packets due now, `{probe, ClusterId, Size}': what the
+%% cluster's rate allows since it started, less what already left.
 -spec handle_timeout(integer(), state()) -> {[{probe, pos_integer(), pos_integer()}], state()}.
 handle_timeout(Now, P0) ->
     P = expire(Now, P0),
@@ -216,17 +238,14 @@ handle_timeout(Now, P0) ->
                 [] -> {[], P};
                 [C | Q] -> handle_timeout(Now, P#probe{sending = C#cluster{started = Now}, queue = Q})
             end;
-        #cluster{id = Id, rate = R, packets = N, sent = S, started = T0} = C ->
-            %% Packet I is due at T0 + I * Size * 8 / Rate.
-            Due = min(N, ((Now - T0) * R) div (?PACKET_SIZE * 8000) + 1),
-            Out = [{probe, Id, ?PACKET_SIZE} || _ <- lists:seq(1, max(0, Due - S))],
-            C1 = C#cluster{sent = max(S, Due)},
-            case C1#cluster.sent >= N of
-                true ->
-                    {Out, P#probe{sending = undefined, waiting = P#probe.waiting ++ [C1#cluster{finished = Now}]}};
-                false ->
-                    {Out, P#probe{sending = C1}}
-            end
+        #cluster{id = Id, rate = R, bytes = Target, sent = N, sent_bytes = B, started = T0} = C ->
+            %% One packet ahead of the rate, so the cluster starts at once.
+            Due = min(Target, (Now - T0) * R div 8000 + ?PACKET_SIZE),
+            ByBytes = max(0, (Due - B + ?PACKET_SIZE - 1) div ?PACKET_SIZE),
+            %% Bytes done but too few packets: the rest now.
+            K = case B >= Target of true -> max(0, ?MIN_PACKETS - N); false -> ByBytes end,
+            Out = [{probe, Id, ?PACKET_SIZE} || _ <- lists:seq(1, K)],
+            {Out, finish(Now, C#cluster{sent = N + K, sent_bytes = B + K * ?PACKET_SIZE}, P)}
     end.
 
 -spec next_timeout(state()) -> integer() | infinity.
@@ -237,8 +256,12 @@ next_timeout(#probe{sending = undefined, queue = [], alr_since = Alr, probed = P
     lists:max([Alr | Probed]) + ?ALR_INTERVAL;
 next_timeout(#probe{sending = undefined}) ->
     0;
-next_timeout(#probe{sending = #cluster{rate = R, sent = S, started = T0}}) ->
-    T0 + (S * ?PACKET_SIZE * 8000 + R - 1) div R.
+next_timeout(#probe{sending = #cluster{bytes = Target, sent_bytes = B}}) when B >= Target ->
+    %% Only packets are missing.
+    0;
+next_timeout(#probe{sending = #cluster{rate = R, sent_bytes = B, started = T0}}) ->
+    %% When the next padding packet is due.
+    T0 + ((B + 1 - ?PACKET_SIZE) * 8000 + R - 1) div R.
 
 %% @doc Transport-wide results of probe packets, `{Cluster, SendUs,
 %% ArrivalUs | lost, Size}'. Returns the bitrates of the clusters that
@@ -247,7 +270,7 @@ next_timeout(#probe{sending = #cluster{rate = R, sent = S, started = T0}}) ->
     {[pos_integer()], state()}.
 feedback(Results, Now, P) ->
     Waiting = [add_results(C, [R || {Id, _, _, _} = R <- Results, Id =:= C#cluster.id]) || C <- P#probe.waiting],
-    {Done, Left} = lists:partition(fun(C) -> length(C#cluster.tx) >= C#cluster.packets end, Waiting),
+    {Done, Left} = lists:partition(fun(C) -> length(C#cluster.tx) >= C#cluster.sent end, Waiting),
     lists:foldl(fun(C, {Bps, Acc}) -> conclude(C, Now, Bps, Acc) end, {[], P#probe{waiting = Left}}, Done).
 
 add_results(C, Rs) ->
@@ -275,7 +298,7 @@ conclude(C, _Now, Bps, P) ->
     end.
 
 %% ProbeBitrateEstimator::HandleProbeAndEstimateBitrate.
-estimate(#cluster{tx = Tx, rx = Rx, packets = N}) when length(Rx) < ?MIN_RECEIVED * N; length(Rx) < 2 ->
+estimate(#cluster{tx = Tx, rx = Rx, sent = N}) when length(Rx) < ?MIN_RECEIVED * N; length(Rx) < 2 ->
     _ = Tx,
     undefined;
 estimate(#cluster{tx = Tx, rx = Rx}) ->

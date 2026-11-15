@@ -43,10 +43,17 @@
     %% dtls}. The first transport is `transport'.
     extra = #{} :: #{binary() => map()},
     %% Options every transport starts with (credentials apart).
-    topts :: undefined | map()
+    topts :: undefined | map(),
+    %% Automatic ICE restart after consent trouble (RFC 8445 §8.1.1
+    %% allows no second nomination, so recovery is a restart): the
+    %% pending timer and the restarts made since ICE last connected.
+    restart_timer :: undefined | reference(),
+    auto_restarts = 0 :: non_neg_integer()
 }).
 
 -define(MAX_EARLY_CANDIDATES, 64).
+%% Restarts tried for one incident before ICE is reported failed.
+-define(MAX_AUTO_RESTARTS, 3).
 
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
@@ -154,16 +161,7 @@ handle_call({add_ice_candidate, Cand}, _From, St) ->
         _ -> add_candidate(Cand, St)
     end;
 handle_call(restart_ice, _From, St) ->
-    U = ice_string(8),
-    P = ice_string(24),
-    J = webrtc_jsep:restart_ice(U, P, St#st.jsep),
-    case St#st.transport of
-        undefined -> ok;
-        T -> ok = webrtc_transport:restart_ice(T, U, P)
-    end,
-    St1 = restart_extra(St#st{jsep = J}),
-    notify(negotiation_needed, St1),
-    {reply, ok, St1#st{local_candidates = [], gathering = new, local_restart = true}};
+    {reply, ok, restart_now(St)};
 handle_call(transport_pid, _From, #st{transport = T} = St) when is_pid(T) ->
     {reply, {ok, T}, St};
 handle_call(transport_pid, _From, St) ->
@@ -220,8 +218,70 @@ handle_info({'EXIT', T, Reason}, St) ->
         [] ->
             {noreply, St}
     end;
+handle_info({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
+    St = St0#st{restart_timer = undefined},
+    Busy = St#st.local_restart orelse St#st.ice_pending =/= undefined,
+    case troubled(St) of
+        [_ | _] = Bad when not Busy, St#st.auto_restarts < ?MAX_AUTO_RESTARTS ->
+            Reason = case lists:member(failed, Bad) of true -> consent_lost; false -> disconnected end,
+            notify({ice_restart, Reason}, St),
+            {noreply, update_connection(restart_now(St#st{auto_restarts = St#st.auto_restarts + 1}))};
+        _ ->
+            {noreply, update_connection(St)}
+    end;
 handle_info(_Other, St) ->
     {noreply, St}.
+
+%% New ICE credentials for every transport; the application sends the
+%% offer (negotiation_needed).
+restart_now(St) ->
+    U = ice_string(8),
+    P = ice_string(24),
+    J = webrtc_jsep:restart_ice(U, P, St#st.jsep),
+    case St#st.transport of
+        undefined -> ok;
+        T -> ok = webrtc_transport:restart_ice(T, U, P)
+    end,
+    St1 = restart_extra(St#st{jsep = J}),
+    notify(negotiation_needed, St1),
+    St1#st{local_candidates = [], gathering = new, local_restart = true}.
+
+%% ICE states of every transport that call for a restart.
+troubled(St) ->
+    [S || S <- [St#st.ice_state | [I || _ := #{ice := I} <- St#st.extra]], S =:= disconnected orelse S =:= failed].
+
+%% `ice_auto_restart': `disconnected' (default) restarts after
+%% `ice_restart_delay' ms disconnected, `failed' once consent is lost,
+%% `false' never. The controlling side restarts first; the controlled
+%% side waits three times as long, so the peer's restart offer normally
+%% comes first (no glare).
+auto_restart(#st{opts = O} = St) ->
+    Policy = maps:get(ice_auto_restart, O, disconnected),
+    Bad = troubled(St),
+    Delay = maps:get(ice_restart_delay, O, 2000) * case St#st.ice_role of controlled -> 3; _ -> 1 end,
+    Due =
+        case Policy of
+            disconnected -> Bad =/= [];
+            failed -> lists:member(failed, Bad);
+            false -> false
+        end,
+    case {Due, St#st.restart_timer} of
+        {true, undefined} ->
+            Ref = make_ref(),
+            erlang:send_after(Delay, self(), {auto_restart, Ref}),
+            St#st{restart_timer = Ref};
+        {false, _} when Bad =:= [] ->
+            %% Connected again: the incident is over.
+            Connected = lists:all(fun(S) -> S =:= connected orelse S =:= completed end,
+                                  [St#st.ice_state | [I || _ := #{ice := I} <- St#st.extra]]),
+            St#st{restart_timer = undefined, auto_restarts = case Connected of true -> 0; false -> St#st.auto_restarts end};
+        _ ->
+            St
+    end.
+
+%% While restarts remain, a failed ICE transport is only disconnected.
+recovering(#st{opts = O, auto_restarts = N}) ->
+    maps:get(ice_auto_restart, O, disconnected) =/= false andalso N < ?MAX_AUTO_RESTARTS.
 
 terminate(_Reason, St) ->
     _ = close_now(St),
@@ -469,7 +529,7 @@ transport_event({gathering_state, G}, St) ->
     St#st{gathering = G};
 transport_event({connection_state, S}, St) ->
     notify({ice_connection_state, S}, St),
-    update_connection(St#st{ice_state = S});
+    update_connection(auto_restart(St#st{ice_state = S}));
 transport_event({dtls_connected, _Info}, St) ->
     update_connection(St#st{dtls_state = connected});
 transport_event({dtls_failed, R}, St) ->
@@ -478,7 +538,7 @@ transport_event({dtls_failed, R}, St) ->
 transport_event({dtls_closed, _R}, St) ->
     update_connection(St#st{dtls_state = closed});
 transport_event({consent_lost, _, _}, St) ->
-    update_connection(St#st{ice_state = failed});
+    update_connection(auto_restart(St#st{ice_state = failed}));
 transport_event({datachannel, {connected, _}}, St) ->
     lists:foreach(
         fun({L, O}) ->
@@ -511,8 +571,9 @@ transport_event(_Other, St) ->
     St.
 
 update_connection(St) ->
-    States = [transport_state(St#st.ice_state, St#st.dtls_state)] ++
-        [transport_state(I, D) || _ := #{ice := I, dtls := D} <- St#st.extra],
+    Ice = fun(failed) -> case recovering(St) of true -> disconnected; false -> failed end; (I) -> I end,
+    States = [transport_state(Ice(St#st.ice_state), St#st.dtls_state)] ++
+        [transport_state(Ice(I), D) || _ := #{ice := I, dtls := D} <- St#st.extra],
     %% W3C RTCPeerConnectionState over every transport.
     L = lists:usort(States),
     New =
@@ -733,9 +794,9 @@ extra_event(K, Event, St) ->
             notify({ice_candidate, end_of_candidates, K}, St),
             St#st{jsep = webrtc_jsep:set_local_candidates(K, maps:get(cands, X), true, St#st.jsep)};
         {connection_state, S} ->
-            update_connection(Put(X#{ice => S}));
+            update_connection(auto_restart(Put(X#{ice => S})));
         {consent_lost, _, _} ->
-            update_connection(Put(X#{ice => failed}));
+            update_connection(auto_restart(Put(X#{ice => failed})));
         {dtls_connected, _} ->
             update_connection(Put(X#{dtls => connected}));
         {dtls_failed, R} ->

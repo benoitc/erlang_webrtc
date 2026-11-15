@@ -4,6 +4,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 -include("webrtc_rtp.hrl").
+-include("webrtc_ice.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
@@ -17,6 +18,8 @@
     keyframe_request/1,
     renegotiation_adds_video/1,
     ice_restart/1,
+    ice_auto_restart/1,
+    ice_auto_restart_off/1,
     connection_id_rotation/1,
     fingerprint_mismatch_fails/1,
     close_notifies_peer/1,
@@ -54,6 +57,8 @@ all() ->
         keyframe_request,
         renegotiation_adds_video,
         ice_restart,
+        ice_auto_restart,
+        ice_auto_restart_off,
         connection_id_rotation,
         fingerprint_mismatch_fails,
         close_notifies_peer,
@@ -614,6 +619,66 @@ ice_restart(_Config) ->
     _ = message(B, <<"after restart">>),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 8445 §8.1.1, JSEP §4.1.14: when the selected path stops working
+%% the controlling peer restarts ICE by itself (`ice_auto_restart'),
+%% asks for a new offer (negotiation_needed), and the new session picks
+%% the path that still works; the data channel and DTLS survive. The
+%% peers have an IPv4 and an IPv6 loopback address; A's packets of the
+%% selected family are dropped.
+ice_auto_restart(_Config) ->
+    Block = atomics:new(1, []),
+    Filter = {fun({IP, _}, Bin, S) ->
+                   case atomics:get(Block, 1) of
+                       F when F =/= 0, tuple_size(IP) =:= F -> {[], S};
+                       _ -> {[{0, Bin}], S}
+                   end
+              end, undefined},
+    Addrs = [{{127, 0, 0, 1}, 0}, {{0, 0, 0, 0, 0, 0, 0, 1}, 0}],
+    {ok, A} = webrtc:new_peer_connection(#{addresses => Addrs, outbound_filter => Filter, ice_restart_delay => 500}),
+    {ok, B} = webrtc:new_peer_connection(#{addresses => Addrs, ice_restart_delay => 500}),
+    ok = webrtc:create_data_channel(A, <<"keep">>, #{}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"keep">>),
+    Before = selected_address(A),
+    ct:log("selected before: ~p", [Before]),
+    atomics:put(Block, 1, tuple_size(Before)),
+    %% A's consent requests are lost: disconnected after the disconnect
+    %% timeout, then A restarts.
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {ice_restart, disconnected} end, 20000),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= negotiation_needed end, 1000),
+    _ = ?S:negotiate(A, B),
+    ok = ?S:wait_connected([A, B], 15000),
+    After = selected_address(A),
+    ct:log("selected after: ~p", [After]),
+    ?assertNotEqual(tuple_size(Before), tuple_size(After)),
+    ok = webrtc:send_data(A, Id, text, <<"after the restart">>),
+    _ = message(B, <<"after the restart">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% With `ice_auto_restart => false' nothing restarts by itself: the
+%% application sees the ICE state and decides.
+ice_auto_restart_off(_Config) ->
+    Block = atomics:new(1, []),
+    Filter = {fun(_Dest, Bin, S) ->
+                   case atomics:get(Block, 1) of 1 -> {[], S}; _ -> {[{0, Bin}], S} end
+              end, undefined},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => Filter, ice_auto_restart => false,
+                                           ice_restart_delay => 100}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, ice_auto_restart => false}),
+    ok = webrtc:create_data_channel(A, <<"x">>, #{}),
+    ?S:connect(A, B),
+    [_] = wait_selected(A, 50),
+    atomics:put(Block, 1, 1),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {ice_connection_state, disconnected} end, 20000),
+    ?assertMatch({error, timeout}, ?S:wait(A, fun({ice_restart, _}) -> true; (_) -> false end, 1500)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+selected_address(Pc) ->
+    [{L, _}] = wait_selected(Pc, 50),
+    L#ice_cand.address.
 
 relay_for(A, B, Ms) ->
     receive

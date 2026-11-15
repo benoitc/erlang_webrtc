@@ -157,7 +157,7 @@ new_peer_connection() ->
 %%     address (draft-ietf-mmusic-mdns-ice-candidates), default
 %%     `false'. Remote `.local' and DNS names are always resolved.</li>
 %% <li>`mdns': resolver options, see `webrtc_mdns' (`max_pending',
-%%     `schedule', `group', `listen', ...).</li>
+%%     `schedule', `group', `listen', `group6', `listen6', ...).</li>
 %% <li>`bundle': offer every m= section in one BUNDLE group (RFC 9143),
 %%     default `true'. With `false' every section gets its own ICE and
 %%     DTLS transport; relay candidates with `add_ice_candidate/3' and

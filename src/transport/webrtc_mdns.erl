@@ -22,8 +22,17 @@
 %%     group socket (`webrtc_mdns_responder').</li>
 %% </ul>
 %%
+%% Queries go out over IPv4 (224.0.0.251) and IPv6 (ff02::fb) multicast,
+%% the IPv6 ones once per interface (RFC 6762 §5, §20): a host that only
+%% answers over IPv6 is found too, and our names are announced and
+%% answered on both. A question for the family a name does not have is
+%% answered with NSEC (§6.1).
+%%
 %% Options: `group' (`{IP, Port}' the queries go to), `listen'
-%% (`{IP, Port}' of the multicast socket, `false' for none), `schedule',
+%% (`{IP, Port}' of the multicast socket, `false' for none), `group6'
+%% and `listen6' the same for IPv6 (`group6' defaults to
+%% `{ff02::fb, 5353}', or `false', no IPv6, when `group' is given),
+%% `schedule',
 %% `max_queries', `max_cache' (see `webrtc_mdns_resolver'),
 %% `fqdn_timeout' (ms, default 3000) and `check_source' (default true).
 %% Tests point `group' and `listen' at loopback ports.
@@ -33,7 +42,12 @@
 -export([start/1, stop/1, stop_async/1, resolve/2, register_name/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+-ifdef(TEST).
+-export([from_link/2]).
+-endif.
+
 -define(GROUP, {{224, 0, 0, 251}, 5353}).
+-define(GROUP6, {{16#ff02, 0, 0, 0, 0, 0, 0, 16#fb}, 5353}).
 -define(ACTIVE_N, 32).
 -define(MAX_WAITERS, 64).
 -define(MAX_FQDN, 8).
@@ -43,6 +57,12 @@
     qsock :: gen_udp:socket(),
     msock :: gen_udp:socket() | undefined,
     group :: {inet:ip4_address(), inet:port_number()},
+    %% IPv6: query and group sockets, the group, and the interfaces a
+    %% multicast goes out on (`[none]' for a unicast test group).
+    qsock6 :: gen_udp:socket() | undefined,
+    msock6 :: gen_udp:socket() | undefined,
+    group6 :: {inet:ip6_address(), inet:port_number()} | undefined,
+    ifs6 = [] :: [non_neg_integer() | none],
     resolver :: webrtc_mdns_resolver:resolver(),
     responder :: webrtc_mdns_responder:responder(),
     %% Name => [{Pid, Ref}] waiting for a multicast DNS answer.
@@ -50,7 +70,7 @@
     %% Lookup helper => {Monitor, Pid, Ref} for DNS lookups.
     fqdn = #{} :: #{pid() => {reference(), pid(), reference()}},
     fqdn_timeout :: pos_integer(),
-    nets :: [{inet:ip4_address(), inet:ip4_address()}] | any,
+    nets :: [{inet:ip_address(), inet:ip_address()}] | any,
     timer :: undefined | reference()
 }).
 
@@ -95,13 +115,19 @@ init(#{owner := Owner} = Opts) ->
     _ = monitor(process, Owner),
     {GroupIP, _} = Group = maps:get(group, Opts, ?GROUP),
     QOpts = [binary, inet, {active, ?ACTIVE_N}, {multicast_ttl, 255}, {multicast_loop, true}],
+    Group6 = maps:get(group6, Opts, case maps:is_key(group, Opts) of true -> false; false -> ?GROUP6 end),
     case gen_udp:open(0, QOpts) of
         {ok, QSock} ->
+            {Q6, M6, G6, Ifs6} = open6(Group6, Opts),
             {ok, #st{
                 owner = Owner,
                 qsock = QSock,
                 msock = open_listener(maps:get(listen, Opts, {{0, 0, 0, 0}, element(2, Group)}), GroupIP),
                 group = Group,
+                qsock6 = Q6,
+                msock6 = M6,
+                group6 = G6,
+                ifs6 = Ifs6,
                 resolver = webrtc_mdns_resolver:new(maps:with([schedule, max_queries, max_cache], Opts)),
                 responder = webrtc_mdns_responder:new(#{}),
                 fqdn_timeout = maps:get(fqdn_timeout, Opts, 3000),
@@ -130,6 +156,58 @@ open_listener({IP, Port}, Group) ->
             undefined
     end.
 
+%% IPv6 sockets, best effort: a host without IPv6 multicast keeps IPv4.
+open6(false, _Opts) ->
+    {undefined, undefined, undefined, []};
+open6({GIP, GPort} = G, Opts) ->
+    QOpts = [binary, inet6, {ipv6_v6only, true}, {active, ?ACTIVE_N}, {multicast_ttl, 255}, {multicast_loop, true}],
+    case gen_udp:open(0, QOpts) of
+        {ok, Q} ->
+            Multicast = is_multicast(GIP),
+            Ifs = case Multicast of true -> ifindexes6(); false -> [none] end,
+            M = open_listener6(maps:get(listen6, Opts, {{0, 0, 0, 0, 0, 0, 0, 0}, GPort}), GIP, Multicast, Ifs),
+            {Q, M, G, Ifs};
+        {error, _} ->
+            {undefined, undefined, undefined, []}
+    end.
+
+open_listener6(false, _G, _Multicast, _Ifs) ->
+    undefined;
+open_listener6({IP, Port}, G, Multicast, Ifs) ->
+    Base = [binary, inet6, {ipv6_v6only, true}, {ip, IP}, {active, ?ACTIVE_N}, {reuseaddr, true},
+        {multicast_loop, true}, {multicast_ttl, 255}],
+    case open_first(Port, [[{reuseport, true} | Base], Base]) of
+        {ok, S} ->
+            _ = [inet:setopts(S, [{add_membership, {G, I}}]) || Multicast, I <- Ifs],
+            S;
+        error ->
+            undefined
+    end.
+
+%% Indexes of the up, multicast capable interfaces with an IPv6 address.
+ifindexes6() ->
+    case net:getifaddrs(inet6) of
+        {ok, Ifs} ->
+            Names = lists:usort([N || #{name := N, flags := F} <- Ifs, lists:member(up, F), lists:member(multicast, F)]),
+            [I || N <- Names, {ok, I} <- [net:if_name2index(N)]];
+        {error, _} ->
+            []
+    end.
+
+%% A multicast leaves on every interface (the scope of ff02::fb is the
+%% link); a unicast group (tests) once.
+send6(undefined, _B, _St) ->
+    ok;
+send6(S, B, #st{group6 = {IP, Port}, ifs6 = Ifs}) ->
+    _ = [
+        case If of
+            none -> gen_udp:send(S, IP, Port, B);
+            _ -> gen_udp:send(S, #{family => inet6, addr => IP, port => Port, scope_id => If}, B)
+        end
+     || If <- Ifs
+    ],
+    ok.
+
 open_first(_Port, []) ->
     error;
 open_first(Port, [O | Os]) ->
@@ -141,13 +219,14 @@ open_first(Port, [O | Os]) ->
 %% Join on every multicast capable IPv4 interface; failures (an
 %% interface without multicast route) are not fatal.
 join(S, Group) ->
-    Ifs = [A || {A, _} <- ifaddrs(multicast)],
+    Ifs = [A || {A, _} <- ifaddrs(multicast), tuple_size(A) =:= 4],
     _ = [inet:setopts(S, [{add_membership, {Group, If}}]) || If <- Ifs],
     true.
 
-is_multicast({A, _, _, _}) -> A >= 224 andalso A =< 239.
+is_multicast({A, _, _, _}) -> A >= 224 andalso A =< 239;
+is_multicast({A, _, _, _, _, _, _, _}) -> A bsr 8 =:= 16#ff.
 
-handle_call({register_name, IP}, _From, #st{msock = undefined} = St) when is_tuple(IP) ->
+handle_call({register_name, IP}, _From, #st{msock = undefined, msock6 = undefined} = St) when is_tuple(IP) ->
     {reply, {error, no_listener}, St};
 handle_call({register_name, IP}, _From, St) when is_tuple(IP) ->
     case webrtc_mdns_responder:register(IP, St#st.responder) of
@@ -171,9 +250,9 @@ handle_cast(stop, St) ->
 handle_cast(_, St) ->
     {noreply, St}.
 
-handle_info({udp, S, IP, Port, Bin}, #st{qsock = S} = St) ->
+handle_info({udp, S, IP, Port, Bin}, #st{qsock = Q, qsock6 = Q6} = St) when S =:= Q; S =:= Q6 ->
     {noreply, arm(packet(unicast, {IP, Port}, Bin, St))};
-handle_info({udp, S, IP, Port, Bin}, #st{msock = S} = St) when S =/= undefined ->
+handle_info({udp, S, IP, Port, Bin}, #st{msock = M, msock6 = M6} = St) when S =:= M; S =:= M6 ->
     case Bin of
         <<_:16, 0:1, _/bits>> -> {noreply, query_in({IP, Port}, Bin, St)};
         _ -> {noreply, arm(packet(multicast, {IP, Port}, Bin, St))}
@@ -200,8 +279,8 @@ handle_info(_, St) ->
 
 terminate(_Reason, St) ->
     %% Goodbye packets for our names (RFC 6762 §10.1).
-    _ = [send_group(B, St) || St#st.msock =/= undefined, B <- webrtc_mdns_responder:goodbye(St#st.responder)],
-    _ = [gen_udp:close(S) || S <- [St#st.qsock, St#st.msock], S =/= undefined],
+    _ = [send_group(B, St) || B <- webrtc_mdns_responder:goodbye(St#st.responder)],
+    _ = [gen_udp:close(S) || S <- [St#st.qsock, St#st.msock, St#st.qsock6, St#st.msock6], S =/= undefined],
     ok.
 
 %%====================================================================
@@ -275,17 +354,31 @@ query_in(Src, Bin, St) ->
             St
     end.
 
-send_reply(group, B, St) -> send_group(B, St);
-send_reply({IP, Port}, B, #st{msock = S}) -> gen_udp:send(S, IP, Port, B).
+send_reply(group, B, St) ->
+    send_group(B, St);
+send_reply({{_, _, _, _} = IP, Port}, B, #st{msock = S}) when S =/= undefined ->
+    gen_udp:send(S, IP, Port, B);
+send_reply({{16#fe80, _, _, _, _, _, _, _} = IP, Port}, B, #st{msock6 = S, ifs6 = Ifs}) when S =/= undefined ->
+    %% The interface a link-local source came from is not known: try
+    %% each, only the right one reaches it.
+    _ = [gen_udp:send(S, #{family => inet6, addr => IP, port => Port, scope_id => If}, B) || If <- Ifs, If =/= none],
+    ok;
+send_reply({IP, Port}, B, #st{msock6 = S}) when S =/= undefined, tuple_size(IP) =:= 8 ->
+    gen_udp:send(S, IP, Port, B);
+send_reply(_, _, _) ->
+    ok.
 
-send_group(B, #st{msock = S, group = {IP, Port}}) ->
-    gen_udp:send(S, IP, Port, B).
+%% Announcements and multicast answers go to both groups.
+send_group(B, #st{msock = S, group = {IP, Port}} = St) ->
+    _ = S =/= undefined andalso gen_udp:send(S, IP, Port, B),
+    send6(St#st.msock6, B, St).
 
 actions(Acts, St) ->
     lists:foldl(fun action/2, St, Acts).
 
 action({send, Bin}, #st{qsock = S, group = {IP, Port}} = St) ->
     _ = gen_udp:send(S, IP, Port, Bin),
+    ok = send6(St#st.qsock6, Bin, St),
     St;
 action({result, Name, Result}, #st{waiters = W} = St) ->
     {Waiting, W1} =
@@ -299,11 +392,26 @@ action({result, Name, Result}, #st{waiters = W} = St) ->
 %% RFC 6762 §11: only accept packets from a local link.
 from_link(_, any) ->
     true;
+from_link({{A, _, _, _, _, _, _, _}, _}, _Nets) when A band 16#ffc0 =:= 16#fe80 ->
+    %% IPv6 link-local.
+    true;
+from_link({{_, _, _, _, _, _, _, _} = IP, _}, Nets) ->
+    lists:any(
+        fun({Net, Mask}) when tuple_size(Net) =:= 8 ->
+                lists:all(fun({X, Y, M}) -> X band M =:= Y band M end,
+                          lists:zip3(tuple_to_list(IP), tuple_to_list(Net), tuple_to_list(Mask)));
+           (_) ->
+                false
+        end,
+        Nets
+    );
 from_link({{A, B, C, D}, _}, Nets) ->
     lists:any(
         fun({{A1, B1, C1, D1}, {M1, M2, M3, M4}}) ->
-            (A band M1 =:= A1 band M1) andalso (B band M2 =:= B1 band M2) andalso
-                (C band M3 =:= C1 band M3) andalso (D band M4 =:= D1 band M4)
+                (A band M1 =:= A1 band M1) andalso (B band M2 =:= B1 band M2) andalso
+                    (C band M3 =:= C1 band M3) andalso (D band M4 =:= D1 band M4);
+           (_) ->
+                false
         end,
         Nets
     );
@@ -333,6 +441,10 @@ ifaddrs(Need) ->
 %% getifaddrs lists `addr' followed by its `netmask'.
 addr_masks([{addr, {_, _, _, _} = A}, {netmask, {_, _, _, _} = M} | Rest]) -> [{A, M} | addr_masks(Rest)];
 addr_masks([{addr, {_, _, _, _} = A} | Rest]) -> [{A, {255, 255, 255, 255}} | addr_masks(Rest)];
+addr_masks([{addr, {_, _, _, _, _, _, _, _} = A}, {netmask, {_, _, _, _, _, _, _, _} = M} | Rest]) ->
+    [{A, M} | addr_masks(Rest)];
+addr_masks([{addr, {_, _, _, _, _, _, _, _} = A} | Rest]) ->
+    [{A, list_to_tuple(lists:duplicate(8, 16#ffff))} | addr_masks(Rest)];
 addr_masks([_ | Rest]) -> addr_masks(Rest);
 addr_masks([]) -> [].
 

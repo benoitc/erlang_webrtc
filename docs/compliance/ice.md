@@ -161,8 +161,8 @@ Remote `.local` candidates are resolved by the transport with one-shot multicast
 | MDNS-12 | draft 3.1.2.2 | The related address of our other candidates becomes `0.0.0.0` or `::`, port 9 | webrtc_mdns_client | webrtc_mdns_client_tests:hidden_local_candidates_test | Unit tested |
 | MDNS-13 | RFC 6762 5.4, 6, 6.7, 7.1, 10.1 | Responder: legacy queries answered by unicast with ID and question and TTL 10, QU by unicast, QM by multicast at most once per second per name, known answers suppressed, goodbye on stop | webrtc_mdns_responder | webrtc_mdns_tests:responder_* | Unit tested |
 | MDNS-14 | draft 3.1.2.2 | A STUN check to learn whether a hidden address is public | | | Not implemented: with the option on, every host candidate is hidden |
-| MDNS-15 | RFC 6762 6.1 | Negative (NSEC) answers for the missing address family | | | Not implemented: such questions are not answered |
-| MDNS-16 | RFC 6762 5, 6 | IPv6 multicast transport (ff02::fb) | | | Not implemented: queries and answers use IPv4 multicast only (AAAA records are still asked and served); gen_udp cannot pick the outgoing interface of a link-local IPv6 multicast send |
+| MDNS-15 | RFC 6762 6.1 | Negative (NSEC) answers for the missing address family: the record's own name as next domain name and a one-window bitmap of the type it has | webrtc_mdns_responder, webrtc_mdns_msg | webrtc_mdns_tests:responder_nsec_test, responder_answers_ipv6 | Unit tested |
+| MDNS-16 | RFC 6762 5, 6, 11, 20 | IPv6 multicast transport (ff02::fb): queries, announcements and answers sent on every IPv6 multicast interface (the interface as scope id), the group joined on each; IPv6 link-local and on-link sources accepted | webrtc_mdns | webrtc_mdns_tests:ipv6_only_answer, responder_answers_ipv6, from_link_test, webrtc_pc_interop_SUITE chromium_mdns group | Unit tested; interop runs with both families on (Chromium answers over IPv4) |
 
 ## Notes
 

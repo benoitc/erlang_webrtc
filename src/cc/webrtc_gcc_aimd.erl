@@ -11,8 +11,9 @@
 %%     response time = RTT + 100 ms) when the incoming rate R_hat is
 %%     within three standard deviations of the average rate measured at
 %%     the previous decreases (exponential average, smoothing 0.95). An
-%%     R_hat above that range resets the average. The estimate never
-%%     goes above 1.5 R_hat + 10 kbps.</li>
+%%     R_hat above that range resets the average, and so does one below
+%%     it at a decrease (as libwebrtc does: the capacity fell). The
+%%     estimate never goes above 1.5 R_hat + 10 kbps.</li>
 %% <li>Decrease: A_hat = beta R_hat with beta 0.85, never above the
 %%     current estimate, then Hold. A further decrease waits one RTT
 %%     (between 10 and 200 ms) unless R_hat fell below half the
@@ -76,7 +77,8 @@ set_limits(Min, Max, A) -> set_rate(A#aimd.rate, A#aimd{min = Min, max = Max}).
 
 -spec info(state()) -> map().
 info(#aimd{} = A) ->
-    #{rate => A#aimd.rate, state => A#aimd.state, region => A#aimd.region, startup => A#aimd.startup}.
+    #{rate => A#aimd.rate, state => A#aimd.state, region => A#aimd.region, startup => A#aimd.startup,
+      avg_max => A#aimd.avg_max}.
 
 %% @doc Run the controller with the detector signal, the incoming rate
 %% R_hat (`undefined' while unknown), the RTT and the current time.
@@ -135,6 +137,18 @@ check_range(RHat, #aimd{avg_max = Avg, var_max = Var} = A) ->
         false -> A
     end.
 
+%% R_hat at a decrease far below the average: the capacity fell, the
+%% old average says nothing about the new level. Start it over, as the
+%% reference implementation does, so the increase after the next
+%% recovery is not held back by a stale average.
+below_range(_Kbps, #aimd{avg_max = undefined} = A) ->
+    A;
+below_range(Kbps, #aimd{avg_max = Avg, var_max = Var} = A) ->
+    case Kbps < Avg - 3 * math:sqrt(Var * Avg) of
+        true -> A#aimd{avg_max = undefined};
+        false -> A
+    end.
+
 multiplicative(R, Dt, #aimd{startup = Startup, startup_gain = G}) ->
     Gain =
         case Startup of
@@ -161,7 +175,7 @@ may_decrease(RHat, Rtt, Now, #aimd{last_decrease = Last, rate = R}) ->
 decrease(undefined, Now, #aimd{rate = R} = A) ->
     after_decrease(round(R * ?BETA), Now, A);
 decrease(RHat, Now, #aimd{rate = R} = A0) ->
-    A = update_max(RHat / 1000, A0),
+    A = update_max(RHat / 1000, below_range(RHat / 1000, A0)),
     after_decrease(min(round(?BETA * RHat), R), Now, A#aimd{region = near_max}).
 
 after_decrease(New, Now, A) ->

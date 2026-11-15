@@ -89,6 +89,12 @@ prop_rtp_roundtrip() ->
                             end;
                         {error, E} when E =:= replay; E =:= too_old ->
                             {T, R, Acc};
+                        {error, malformed} ->
+                            %% Only for a profile reserved for cryptex.
+                            case cryptex_profile(Pkt) of
+                                true -> {T, R, Acc};
+                                false -> {T, R, [{Pkt, malformed} | Acc]}
+                            end;
                         Other ->
                             {T, R, [{Pkt, Other} | Acc]}
                     end
@@ -99,6 +105,15 @@ prop_rtp_roundtrip() ->
             ?WHENFAIL(io:format("failures: ~p~n", [Ok]), Ok =:= [])
         end
     ).
+
+cryptex_profile(<<_:3, 1:1, CC:4, _/binary>> = Pkt) ->
+    Off = 12 + CC * 4,
+    case Pkt of
+        <<_:Off/binary, P:16, _/binary>> -> P =:= 16#C0DE orelse P =:= 16#C2DE;
+        _ -> false
+    end;
+cryptex_profile(_) ->
+    false.
 
 prop_rtcp_roundtrip() ->
     ?FORALL(

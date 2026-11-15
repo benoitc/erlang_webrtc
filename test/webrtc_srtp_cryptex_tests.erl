@@ -70,3 +70,10 @@ plain_packet_test() ->
     {ok, Out, _} = webrtc_srtp:protect_rtp(Pkt, Tx),
     {ok, Pkt, _} = webrtc_srtp:unprotect_rtp(Out, Rx),
     {ok, Out, _} = webrtc_srtp:protect_rtp(Pkt, webrtc_srtp:set_cryptex(false, Tx)).
+
+%% A plain packet with a profile reserved for cryptex would be misread
+%% by the receiver: refused.
+reserved_profile_test() ->
+    {_, Tx} = contexts(cm),
+    Pkt = <<16#90, 15, 0, 1, 0:32, 1:32, 16#C0DE:16, 0:16, "payload">>,
+    ?assertEqual({error, malformed}, webrtc_srtp:protect_rtp(Pkt, Tx)).

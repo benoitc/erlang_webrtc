@@ -28,8 +28,8 @@ world() ->
            refuse => false},
     W1 = lists:foldl(
         fun(N, W) ->
-            {A1, Acts} = ?AG:gather([], 0, maps:get(N, W)),
-            {A2, Acts2} = ?AG:tcp_listeners([{{listen, N}, listen(N)}], 0, A1),
+            {A1, Acts} = ?AG:tcp_listeners([{{listen, N}, listen(N)}], 0, maps:get(N, W)),
+            {A2, Acts2} = ?AG:gather([], 0, A1),
             route(N, Acts ++ Acts2, W#{N => A2})
         end,
         W0,

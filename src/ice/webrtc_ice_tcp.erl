@@ -111,7 +111,7 @@ connect(Id, _Now, S) ->
     end.
 
 %% @doc An outgoing connection is up: its pair is checked now.
--spec up({tcp, pos_integer()}, integer(), #ice{}) -> {#ice{}, [term()]}.
+-spec up({tcp, term()}, integer(), #ice{}) -> {#ice{}, [term()]}.
 up(Ref, _Now, S) ->
     case maps:find(Ref, S#ice.tcp) of
         {ok, #{pair := Id} = C} ->
@@ -128,7 +128,7 @@ up(Ref, _Now, S) ->
     end.
 
 %% @doc The peer connected to the listener `Listen' from `Peer'.
--spec accepted({tcp, pos_integer()}, term(), webrtc_ice_candidate:address(), integer(), #ice{}) ->
+-spec accepted({tcp, term()}, term(), webrtc_ice_candidate:address(), integer(), #ice{}) ->
     {#ice{}, [term()]}.
 accepted(Ref, Listen, Peer, _Now, S) ->
     Passive = [Id || Id := #ice_cand{socket = {tcp_listen, L}} <- S#ice.local, L =:= Listen],
@@ -142,7 +142,7 @@ accepted(Ref, Listen, Peer, _Now, S) ->
 
 %% @doc A connection failed or closed: its pair has no path any more; a
 %% pair still waiting for it fails.
--spec down({tcp, pos_integer()}, term(), integer(), #ice{}) -> {#ice{}, [term()]}.
+-spec down({tcp, term()}, term(), integer(), #ice{}) -> {#ice{}, [term()]}.
 down(Ref, _Reason, _Now, S) ->
     case maps:take(Ref, S#ice.tcp) of
         {#{pair := Id, state := connecting}, Conns} when Id =/= undefined ->
@@ -158,7 +158,7 @@ down(Ref, _Reason, _Now, S) ->
     end.
 
 %% @doc The local candidate a connection belongs to.
--spec base_of({tcp, pos_integer()}, #ice{}) -> {ok, pos_integer()} | error.
+-spec base_of({tcp, term()}, #ice{}) -> {ok, pos_integer()} | error.
 base_of(Ref, #ice{tcp = Conns}) ->
     case Conns of
         #{Ref := #{local := LId}} -> {ok, LId};

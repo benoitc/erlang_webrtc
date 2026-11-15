@@ -40,7 +40,11 @@
     filter :: undefined | {fun(), term()},
     %% Stream connections to TURN servers (TCP, TLS):
     %% {stream, N} => #{sock, kind, server, buf}.
-    streams = #{} :: #{{stream, pos_integer()} => map()},
+    streams = #{} :: #{{stream | tcp, term()} => map()},
+    %% ICE-TCP listeners (RFC 6544): [{ListenRef, ListenSocket, Addr}],
+    %% and the number of the next accepted connection.
+    tcp_listeners = [] :: [{reference(), term(), {inet:ip_address(), inet:port_number()}}],
+    next_accept = 1 :: pos_integer(),
     %% Host name candidates (mDNS, FQDN) being resolved.
     mdns :: webrtc_mdns_client:client()
 }).

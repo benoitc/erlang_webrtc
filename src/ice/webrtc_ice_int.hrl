@@ -115,7 +115,7 @@
     next_stream = 1 :: pos_integer(),
     %% ICE-TCP connections (RFC 6544): {tcp, N} => #{local, remote,
     %% state, pair}.
-    tcp = #{} :: #{{tcp, pos_integer()} => map()},
+    tcp = #{} :: #{{tcp, term()} => map()},
     next_tcp = 1 :: pos_integer(),
     %% Binding requests received before the remote credentials.
     early = [] :: [tuple()],

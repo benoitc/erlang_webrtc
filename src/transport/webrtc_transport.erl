@@ -100,7 +100,7 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
         [] ->
             {stop, no_usable_address};
         _ ->
-            {ok, #st{
+            {ok, webrtc_transport_net:tcp_listen(maps:get(ice_tcp, Opts, false), #st{
                 pc = Pc,
                 app = App,
                 sockets = Sockets,
@@ -117,11 +117,18 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                     (maps:get(mdns, Opts, #{}))#{hide_host => maps:get(mdns_host_candidates, Opts, false)},
                     lists:usort([webrtc_transport_net:family(IP) || {_, {IP, _}} <- Sockets])
                 )
-            }}
+            })}
     end.
 
 handle_call(gather, _From, St) ->
-    run(St, fun(Now, I) -> webrtc_ice_agent:gather(St#st.sockets, Now, I) end, ok);
+    Tcp = [{Ref, Addr} || {Ref, _, Addr} <- St#st.tcp_listeners],
+    %% TCP candidates first: gathering may complete within gather/3, and
+    %% candidates after end-of-candidates are ignored (RFC 8838 §14).
+    run(St, fun(Now, I) ->
+        {I1, A1} = webrtc_ice_agent:tcp_listeners(Tcp, Now, I),
+        {I2, A2} = webrtc_ice_agent:gather(St#st.sockets, Now, I1),
+        {I2, A1 ++ A2}
+    end, ok);
 handle_call({set_remote_ice, U, P}, _From, St) ->
     run(St, fun(Now, I) -> webrtc_ice_agent:set_remote_credentials(U, P, Now, I) end, ok);
 handle_call({add_remote_candidate, Cand}, _From, St) ->
@@ -219,6 +226,8 @@ handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
 handle_info({delayed_send, Sock, Dest, Bin}, St) ->
     webrtc_transport_net:udp_send(Sock, Dest, Bin),
     {noreply, St};
+handle_info({ice_tcp_accept, ListenRef, Sock}, St) ->
+    {noreply, arm(webrtc_transport_net:tcp_accepted(ListenRef, Sock, St))};
 handle_info({turn_stream, Ref, Result}, St) ->
     {noreply, arm(webrtc_transport_net:stream_opened(Ref, Result, St))};
 handle_info({Tag, Sock, Data}, St) when Tag =:= tcp; Tag =:= ssl ->
@@ -267,6 +276,7 @@ terminate(_Reason, St0) ->
     St2 = webrtc_transport_net:ice_actions([A || A <- Acts, element(1, A) =:= send orelse element(1, A) =:= close_stream],
                                            St1#st{ice = Ice}),
     _ = webrtc_transport_net:close_streams(St2),
+    _ = [gen_tcp:close(L) || {_, L, _} <- St2#st.tcp_listeners],
     _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
     ok.
 

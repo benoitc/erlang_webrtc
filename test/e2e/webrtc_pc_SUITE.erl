@@ -26,6 +26,7 @@
     fingerprint_change_ends_association/1,
     remote_ice_restart_rolled_back/1,
     pranswer_connects/1,
+    ice_tcp_only/1,
     simulcast_layers/1,
     simulcast_sfu_forward/1
 ]).
@@ -53,6 +54,7 @@ all() ->
         fingerprint_change_ends_association,
         remote_ice_restart_rolled_back,
         pranswer_connects,
+        ice_tcp_only,
         simulcast_layers,
         simulcast_sfu_forward
     ].
@@ -511,6 +513,26 @@ pranswer_connects(_Config) ->
     ok = webrtc:set_remote_description(A, answer, Answer),
     ok = webrtc:send_data(A, IdA, text, <<"final">>),
     _ = message(B, <<"final">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% RFC 6544: with UDP blocked both ways, ICE-TCP connects the peers;
+%% DTLS, SCTP and SRTP run over the TCP connection (RFC 4571 framing).
+ice_tcp_only(_Config) ->
+    NoUdp = fun() -> webrtc_impair:filter(#{only_to => []}) end,
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, ice_tcp => true, outbound_filter => NoUdp()}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, ice_tcp => true, outbound_filter => NoUdp()}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ok = webrtc:create_data_channel(A, <<"tcp">>, #{}),
+    ?S:connect(A, B, 20000),
+    IdA = channel_id(A, <<"tcp">>),
+    ok = webrtc:send_data(A, IdA, text, <<"over tcp">>),
+    _ = message(B, <<"over tcp">>),
+    ok = webrtc:send_rtp(A, <<"0">>, <<"rtp over tcp">>, #{timestamp => 1}),
+    _ = rtp(B, <<"0">>, <<"rtp over tcp">>),
+    [{L, R}] = wait_selected(A, 50),
+    ?assertEqual({tcp, tcp}, {element(4, L), element(4, R)}),
     webrtc:close(A),
     webrtc:close(B).
 

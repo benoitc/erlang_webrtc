@@ -534,7 +534,8 @@ stream_down(Ref, Reason, Now, S) ->
 
 %% @doc ICE-TCP (RFC 6544): the owner listens on these TCP addresses,
 %% `[{ListenRef, {IP, Port}}]'. Each gives a passive and an active host
-%% candidate.
+%% candidate. Call it before `gather/3': gathering may complete there,
+%% and candidates after end-of-candidates are ignored by the peer.
 -spec tcp_listeners([{term(), webrtc_ice_candidate:address()}], integer(), agent()) -> {agent(), [action()]}.
 tcp_listeners(Specs, Now, S) ->
     {S1, Acts} = webrtc_ice_tcp:listeners(Specs, Now, S),
@@ -543,7 +544,7 @@ tcp_listeners(Specs, Now, S) ->
 %% @doc A connection `{tcp, N}' (named by the owner) was accepted on
 %% listener `ListenRef' from `Peer'. Refused (`{close_stream, Ref}') when
 %% too many are open.
--spec tcp_accepted({tcp, pos_integer()}, term(), webrtc_ice_candidate:address(), integer(), agent()) ->
+-spec tcp_accepted({tcp, term()}, term(), webrtc_ice_candidate:address(), integer(), agent()) ->
     {agent(), [action()]}.
 tcp_accepted(Ref, Listen, Peer, Now, S) ->
     {S1, Acts} = webrtc_ice_tcp:accepted(Ref, Listen, Peer, Now, S),

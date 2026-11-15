@@ -22,7 +22,9 @@
     stream_data/3,
     stream_closed/3,
     stream_passive/2,
-    close_streams/1
+    close_streams/1,
+    tcp_listen/2,
+    tcp_accepted/3
 ]).
 
 %% Time allowed to open a stream connection to a TURN server.
@@ -83,7 +85,7 @@ datagram(Sock, Src, Bin, Now, St) ->
 ice_actions(Acts, St) ->
     lists:foldl(fun ice_action/2, St, Acts).
 
-ice_action({send, {stream, _} = Ref, _Server, Bin}, St) ->
+ice_action({send, {Kind, _} = Ref, _Dest, Bin}, St) when Kind =:= stream; Kind =:= tcp ->
     stream_send(Ref, Bin, St);
 ice_action({connect, Ref, Params}, St) ->
     connect(Ref, Params),
@@ -165,6 +167,10 @@ transmit(Acts, St) ->
 
 %% Opened from another process so the transport keeps serving packets;
 %% the socket is handed over before the result is sent.
+connect(Ref, #{transport := ice_tcp, remote := {IP, Port}, local := Local} = P) ->
+    Self = self(),
+    _ = spawn(fun() -> Self ! {turn_stream, Ref, open(tcp, IP, Port, Local, P, Self)} end),
+    ok;
 connect(Ref, #{server := {IP, Port}, transport := Kind, local := Local} = P) ->
     Self = self(),
     _ = spawn(fun() -> Self ! {turn_stream, Ref, open(Kind, IP, Port, Local, P, Self)} end),
@@ -217,7 +223,7 @@ stream_opened(Ref, {ok, Kind, Sock}, St) ->
             St;
         false ->
             ok = setopts(Kind, Sock, [{active, ?ACTIVE_N}]),
-            St1 = St#st{streams = (St#st.streams)#{Ref => #{sock => Sock, kind => Kind, buf => <<>>}}},
+            St1 = St#st{streams = (St#st.streams)#{Ref => conn(Ref, Kind, Sock)}},
             ice(fun(Now, I) -> webrtc_ice_agent:stream_up(Ref, Now, I) end, St1)
     end;
 stream_opened(Ref, {error, Reason}, St) ->
@@ -229,10 +235,10 @@ stream_opened(Ref, {error, Reason}, St) ->
 stream_data(Sock, Data, St) ->
     case by_sock(Sock, St) of
         {Ref, #{buf := Buf} = C} ->
-            case webrtc_turn_stream:split(<<Buf/binary, Data/binary>>) of
+            case split(Ref, <<Buf/binary, Data/binary>>) of
                 {ok, Msgs, Rest} ->
                     St1 = St#st{streams = (St#st.streams)#{Ref := C#{buf := Rest}}},
-                    Server = server_of(Ref, St1),
+                    Server = source_of(Ref, C, St1),
                     Now = webrtc_transport:now_ms(),
                     lists:foldl(fun(M, S) -> datagram(Ref, Server, M, Now, S) end, St1, Msgs);
                 {error, Reason} ->
@@ -268,7 +274,15 @@ ice(F, St) ->
     {I1, Acts} = F(webrtc_transport:now_ms(), St#st.ice),
     ice_actions(Acts, St#st{ice = I1}).
 
+stream_send({tcp, _} = Ref, Bin, St) when byte_size(Bin) =< 16#FFFF ->
+    %% RFC 4571: every packet is preceded by its 16-bit length.
+    raw_send(Ref, [<<(byte_size(Bin)):16>>, Bin], St);
+stream_send({tcp, _}, _Bin, St) ->
+    St;
 stream_send(Ref, Bin, St) ->
+    raw_send(Ref, Bin, St).
+
+raw_send(Ref, Bin, St) ->
     case maps:find(Ref, St#st.streams) of
         {ok, #{kind := tcp, sock := S}} -> _ = gen_tcp:send(S, Bin), St;
         {ok, #{kind := tls, sock := S}} -> _ = ssl:send(S, Bin), St;
@@ -296,6 +310,84 @@ by_sock(Sock, #st{streams = Streams}) ->
         [] -> error
     end.
 
-%% The server of a stream, from the allocation the agent keeps for it.
-server_of(Ref, #st{ice = I}) ->
-    webrtc_ice_agent:stream_server(Ref, I).
+%% Where the messages of a connection come from: the TURN server of a
+%% stream, the peer of an ICE-TCP connection.
+source_of({tcp, _}, #{peer := Peer}, _St) -> Peer;
+source_of(Ref, _C, #st{ice = I}) -> webrtc_ice_agent:stream_server(Ref, I).
+
+conn({tcp, _}, Kind, Sock) ->
+    {ok, Peer} = peername(Kind, Sock),
+    #{sock => Sock, kind => Kind, buf => <<>>, peer => Peer};
+conn(_Ref, Kind, Sock) ->
+    #{sock => Sock, kind => Kind, buf => <<>>}.
+
+peername(tcp, S) -> inet:peername(S);
+peername(tls, S) -> ssl:peername(S).
+
+split({tcp, _}, Buf) -> rfc4571_split(Buf, []);
+split(_Ref, Buf) -> webrtc_turn_stream:split(Buf).
+
+rfc4571_split(<<Len:16, Msg:Len/binary, Rest/binary>>, Acc) -> rfc4571_split(Rest, [Msg | Acc]);
+rfc4571_split(Rest, Acc) -> {ok, lists:reverse(Acc), Rest}.
+
+%%====================================================================
+%% ICE-TCP listeners (RFC 6544)
+%%====================================================================
+
+%% @doc With `ice_tcp', listen on TCP next to every UDP host address;
+%% an acceptor process per listener hands accepted sockets over.
+-spec tcp_listen(boolean(), #st{}) -> #st{}.
+tcp_listen(false, St) ->
+    St;
+tcp_listen(true, #st{sockets = Socks} = St) ->
+    Self = self(),
+    Listeners = lists:filtermap(
+        fun({_, {IP, _}}) ->
+            case gen_tcp:listen(0, [binary, family(IP), {ip, IP}, {active, false}, {backlog, 8}, {nodelay, true}]) of
+                {ok, L} ->
+                    {ok, {_, Port}} = inet:sockname(L),
+                    Ref = make_ref(),
+                    _ = spawn_link(fun() -> accept_loop(Ref, L, Self) end),
+                    {true, {Ref, L, {IP, Port}}};
+                {error, _} ->
+                    false
+            end
+        end,
+        Socks
+    ),
+    St#st{tcp_listeners = Listeners}.
+
+accept_loop(Ref, L, Owner) ->
+    case gen_tcp:accept(L) of
+        {ok, S} ->
+            _ =
+                case gen_tcp:controlling_process(S, Owner) of
+                    ok -> Owner ! {ice_tcp_accept, Ref, S};
+                    {error, _} -> gen_tcp:close(S)
+                end,
+            accept_loop(Ref, L, Owner);
+        {error, closed} ->
+            ok;
+        {error, _} ->
+            accept_loop(Ref, L, Owner)
+    end.
+
+%% @doc The peer connected to an ICE-TCP listener.
+-spec tcp_accepted(reference(), term(), #st{}) -> #st{}.
+tcp_accepted(ListenRef, Sock, #st{finished = true} = St) ->
+    _ = {ListenRef, gen_tcp:close(Sock)},
+    St;
+tcp_accepted(ListenRef, Sock, St) ->
+    case inet:peername(Sock) of
+        {ok, Peer} ->
+            Ref = {tcp, {in, St#st.next_accept}},
+            ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
+            St1 = St#st{
+                next_accept = St#st.next_accept + 1,
+                streams = (St#st.streams)#{Ref => #{sock => Sock, kind => tcp, buf => <<>>, peer => Peer}}
+            },
+            ice(fun(Now, I) -> webrtc_ice_agent:tcp_accepted(Ref, ListenRef, Peer, Now, I) end, St1);
+        {error, _} ->
+            _ = gen_tcp:close(Sock),
+            St
+    end.

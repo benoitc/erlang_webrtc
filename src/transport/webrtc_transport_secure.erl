@@ -183,7 +183,9 @@ dtls_action({event, {closed, R}}, St) ->
     finish(R, St);
 dtls_action({event, {failed, R}}, St) ->
     webrtc_transport:to_pc({dtls_failed, R}, St),
-    finish(R, St).
+    finish(R, St);
+dtls_action({event, _}, St) ->
+    St.
 
 %% DTLS closed (close_notify) or failed: nothing can be sent or received
 %% securely any more. Drop SRTP keys and SCTP, stop ICE (consent checks

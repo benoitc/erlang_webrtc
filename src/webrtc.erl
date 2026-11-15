@@ -166,7 +166,12 @@ new_peer_connection() ->
 %%     the last answer set.</li>
 %% <li>`dtls': DTLS options; `connection_id' (`true' or a binary) offers
 %%     and accepts a DTLS 1.3 connection ID (RFC 9147 §9), default off:
-%%     ICE already follows address changes and browsers do not use it.</li>
+%%     ICE already follows address changes and browsers do not use it.
+%%     `resumption' (default false) issues DTLS 1.3 tickets and resumes
+%%     with them the next association between the same certificates,
+%%     skipping the certificate messages (each side's certificate is the
+%%     one of the ticket, checked against the SDP fingerprints);
+%%     `ticket_lifetime' (s, default 7200).</li>
 %% <li>`encrypt_header_extensions': RFC 6904 encrypted header extension
 %%     elements (the audio level, RFC 8834 §5.2.2). `accept' (default)
 %%     answers an encrypted offer encrypted but offers the clear form

@@ -1399,3 +1399,59 @@ amplification_limit_dtls12_test() ->
     #{ev := #{c := CE, s := SE}} = run(C2, S2),
     ?assertMatch([_], connected(CE)),
     ?assertMatch([_], connected(SE)).
+
+%%====================================================================
+%% Post-handshake authentication (RFC 8446 §4.6.2)
+%%====================================================================
+
+pha_round(C, S, Now) ->
+    {ok, S1, [_ | _] = Req} = webrtc_dtls:request_client_auth(Now, S),
+    {C1, Answer} = feed([D || {send, D} <- Req], Now, C),
+    {S2, Acts} = lists:foldl(fun(D, {Sv, A}) -> {Sv1, A1} = webrtc_dtls:handle_packet(D, Now, Sv), {Sv1, A ++ A1} end,
+                             {S1, []}, Answer),
+    {C1, S2, Acts}.
+
+%% The server asks again, the client proves its certificate, data flows.
+pha_test() ->
+    Cc = webrtc_dtls_cert:generate(),
+    Sc = webrtc_dtls_cert:generate(),
+    {Cl, Sv} = pair(Cc, Sc, #{post_handshake_auth => true}, #{}),
+    #{c := C, s := S} = run(Cl, Sv),
+    {C1, S1, Acts} = pha_round(C, S, 100),
+    ?assert(lists:member({event, {peer_authenticated, maps:get(der, Cc)}}, Acts)),
+    ?assertEqual(undefined, S1#dtls.pha_state),
+    {C2, S2, _} = data(C1, S1, <<"after">>, 200),
+    %% Again, with a new context.
+    {_, _, Acts2} = pha_round(C2, S2, 300),
+    ?assert(lists:member({event, {peer_authenticated, maps:get(der, Cc)}}, Acts2)).
+
+%% Without the client's offer the server cannot ask, and a client that
+%% did not offer it refuses a CertificateRequest.
+pha_not_offered_test() ->
+    {C, S, _} = established(#{}, #{}),
+    ?assertEqual({error, not_offered}, webrtc_dtls:request_client_auth(100, S)),
+    Body = webrtc_dtls13_msg:encode(certificate_request, #{context => <<1, 2>>, extensions => [{signature_algorithms, [16#0403]}]}),
+    {_, [D]} = post_handshake(certificate_request, Body, 100, S),
+    {C1, _} = webrtc_dtls:handle_packet(D, 100, C),
+    ?assertEqual(failed, C1#dtls.state).
+
+%% A certificate that does not match the fingerprints fails.
+pha_wrong_certificate_test() ->
+    {C, S, _} = established(#{post_handshake_auth => true}, #{}),
+    #{der := Der, key := Key} = webrtc_dtls_cert:generate(),
+    {_, S1, Acts} = pha_round(C#dtls{cert_der = Der, key = Key}, S, 100),
+    ?assertEqual(failed, S1#dtls.state),
+    ?assertNot(lists:any(fun({event, {peer_authenticated, _}}) -> true; (_) -> false end, Acts)).
+
+%% The answer is lost once: the client retransmits it.
+pha_lost_answer_test() ->
+    Cc = webrtc_dtls_cert:generate(),
+    {Cl, Sv} = pair(Cc, webrtc_dtls_cert:generate(), #{post_handshake_auth => true}, #{}),
+    #{c := C, s := S} = run(Cl, Sv),
+    {ok, S1, Req} = webrtc_dtls:request_client_auth(100, S),
+    {C1, _Lost} = feed([D || {send, D} <- Req], 100, C),
+    At = webrtc_dtls:next_timeout(C1),
+    {_, Again} = webrtc_dtls:handle_timeout(At, C1),
+    {_, Acts} = lists:foldl(fun({send, D}, {Sv0, A}) -> {Sv1, A1} = webrtc_dtls:handle_packet(D, At, Sv0), {Sv1, A ++ A1} end,
+                            {S1, []}, Again),
+    ?assert(lists:member({event, {peer_authenticated, maps:get(der, Cc)}}, Acts)).

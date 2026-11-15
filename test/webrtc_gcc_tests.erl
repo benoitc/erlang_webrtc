@@ -71,6 +71,18 @@ aimd_decrease_test() ->
     A3 = webrtc_gcc_aimd:update(overuse, 5000000, 50, 500, A2),
     ?assertEqual(765000, webrtc_gcc_aimd:rate(A3)).
 
+%% A decrease far below the average of the previous ones starts the
+%% average over at the new level (libwebrtc's link capacity reset).
+aimd_capacity_fall_resets_average_test() ->
+    A1 = webrtc_gcc_aimd:update(overuse, 1000000, 50, 0, aimd()),
+    ?assertMatch(#{avg_max := 1000.0}, webrtc_gcc_aimd:info(A1)),
+    %% Within three standard deviations: averaged.
+    A2 = webrtc_gcc_aimd:update(overuse, 980000, 50, 500, A1),
+    ?assertMatch(#{avg_max := Avg} when Avg > 998, webrtc_gcc_aimd:info(A2)),
+    %% Far below: the average is the new level.
+    A3 = webrtc_gcc_aimd:update(overuse, 400000, 50, 1000, A2),
+    ?assertMatch(#{avg_max := 400.0}, webrtc_gcc_aimd:info(A3)).
+
 aimd_transitions_test() ->
     A1 = webrtc_gcc_aimd:update(overuse, 900000, 50, 0, aimd()),
     %% Hold -> Increase on normal; under-use -> Hold (rate unchanged).

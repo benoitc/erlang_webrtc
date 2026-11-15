@@ -77,6 +77,9 @@
     keepalive_interval = 15000 :: pos_integer(),
     stun_keepalive = 15000 :: pos_integer(),
     stun_servers = [] :: [{inet:ip_address(), inet:port_number()}],
+    %% Host candidates are signaled under mDNS names: a server-reflexive
+    %% candidate equal to its host is kept (draft-ietf-mmusic-mdns-ice-candidates §3.1.2.2).
+    hidden_hosts = false :: boolean(),
     turn_servers = [] :: [map()],
     %% Credentials.
     ufrag :: binary(),

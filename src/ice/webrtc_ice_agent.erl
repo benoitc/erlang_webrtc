@@ -142,7 +142,7 @@
     {consent_expiry, #ice.consent_expiry}, {disconnect_timeout, #ice.disconnect_timeout},
     {keepalive_interval, #ice.keepalive_interval}, {stun_keepalive, #ice.stun_keepalive},
     {stun_servers, #ice.stun_servers}, {turn_servers, #ice.turn_servers},
-    {components, #ice.components}
+    {components, #ice.components}, {hidden_hosts, #ice.hidden_hosts}
 ]).
 
 %%====================================================================
@@ -160,7 +160,8 @@
 %% `eoc_timeout' (39500), `nomination' (`best' | `first'),
 %% `nomination_timeout' (1000), `consent' (true), `consent_interval'
 %% (5000), `consent_expiry' (30000), `disconnect_timeout' (10000),
-%% `keepalive_interval' (15000), `stun_keepalive' (15000).
+%% `keepalive_interval' (15000), `stun_keepalive' (15000), `hidden_hosts'
+%% (false: host candidates are signaled as they are).
 -spec new(opts()) -> agent().
 new(Opts) ->
     Rand =

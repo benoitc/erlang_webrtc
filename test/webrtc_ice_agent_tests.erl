@@ -451,6 +451,21 @@ stun_srflx_test() ->
     {_, Acts2} = ?AG:handle_packet(s, Srv, Same, 10, A7),
     ?assertEqual([{gathering_state, complete}], events(Acts2)).
 
+%% With hidden hosts the same mapped address is a candidate of its own:
+%% the host goes out under a name, so this is the only one carrying the
+%% (public) address (draft-ietf-mmusic-mdns-ice-candidates §3.1.2.2).
+stun_srflx_hidden_host_test() ->
+    Srv = {{192, 0, 2, 10}, 3478},
+    A0 = ?AG:new(#{stun_servers => [Srv], hidden_hosts => true}),
+    {A1, _} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, [{0, {send, s, Srv, Req}}]} = tick(A1, 0),
+    {ok, M} = webrtc_stun:decode(Req),
+    Same = webrtc_stun:encode(webrtc_stun:success(M, [{xor_mapped_address, ?L}]), #{fingerprint => true}),
+    {_, Acts} = ?AG:handle_packet(s, Srv, Same, 10, A2),
+    {L, P} = ?L,
+    ?assertMatch([{local_candidate, #ice_cand{type = srflx, address = L, port = P, related_address = L}},
+                  {gathering_state, complete}], events(Acts)).
+
 %%--------------------------------------------------------------------
 %% Consent revocation (RFC 7675 §5.2)
 %%--------------------------------------------------------------------

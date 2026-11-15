@@ -93,9 +93,9 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
     %% The transport never outlives its peer connection, whatever the
     %% reason it went away.
     _ = monitor(process, Pc),
-    IceOpts = maps:with(
+    IceOpts = (maps:with(
         [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, consent, nomination], Opts
-    ),
+    ))#{hidden_hosts => maps:get(mdns_host_candidates, Opts, false)},
     Addrs = maps:get(addresses, Opts, webrtc_transport_net:local_addresses(Opts)),
     Sockets = [S || A <- Addrs, {ok, S} <- [webrtc_transport_net:open_socket(A)]],
     case Sockets of

@@ -19,7 +19,7 @@ A protocol is complete only when its mandatory requirements reach E2E tested, an
 
 What works today, end to end and against independent implementations (see [INTEROP.md](INTEROP.md)):
 
-- Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, TURN relay over UDP.
+- Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, TURN relays reached over UDP, TCP or TLS.
 - Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved without blocking the transport; optional mDNS names for our own host candidates.
 - DTLS 1.3 (RFC 9147) by default with fallback to DTLS 1.2 (use_srtp, extended master secret): 1.3 verified with OpenSSL 4.1 and Chromium in both roles, 1.2 with OTP ssl, OpenSSL, Pion and aiortc.
 - SRTP and SRTCP (AES-CM and AES-GCM profiles).
@@ -38,7 +38,7 @@ Known gaps that matter for a full WebRTC deployment:
 | Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
 | Bandwidth probing, RFC 8888 feedback as estimator input, ECN circuit breaker | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link) | [rtp](compliance/rtp.md) |
 | mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
-| ICE-TCP, TURN over TCP/TLS | UDP only | [transport](compliance/transport.md) |
+| ICE-TCP | Candidates are UDP only; TURN servers can be reached over TCP or TLS | [transport](compliance/transport.md) |
 | Several unbundled transports per peer connection | Offers whose active m= sections are not all bundled are refused | [sdp](compliance/sdp.md) |
 | SCTP priorities, PMTUD | Round robin scheduling between streams, fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
 

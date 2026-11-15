@@ -187,6 +187,7 @@ proceed(Group, Shares, T0, CR, M, #dtls{suite13 = #{id := SuiteId, hash := H}} =
     St1 = St#dtls{
         version = dtls13,
         resumption = Tickets,
+        pha = webrtc_dtls13_pha:offered(Exts),
         peer_cid = PeerCid,
         client_random = CR,
         server_random = SR,
@@ -282,6 +283,11 @@ handle(wait_client_finished, finished, VD, Full, _Now, St0) ->
     issue_ticket(webrtc_dtls_hs:maybe_verify(St3));
 handle(connected, key_update, Req, _Full, _Now, St) ->
     webrtc_dtls13_epoch:peer_key_update(Req, St);
+handle(connected, Type, M, Full, _Now, #dtls{pha_state = P} = St) when
+    P =/= undefined, (Type =:= certificate orelse Type =:= certificate_verify orelse Type =:= finished)
+->
+    %% Its answer acknowledges our CertificateRequest.
+    webrtc_dtls13_pha:server(Type, M, Full, webrtc_dtls13:implicit_ack(St));
 handle(_State, Type, _M, _Full, _Now, St) ->
     fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St).
 

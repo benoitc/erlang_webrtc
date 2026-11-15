@@ -29,6 +29,8 @@
     openssl13_rejected_fingerprint/1,
     openssl13_client_without_certificate/1,
     openssl13_server_resumption/1,
+    openssl13_client_pha/1,
+    openssl13_server_pha/1,
     openssl13_client_resumption/1,
     openssl13_server_early_data/1,
     openssl13_client_early_data/1,
@@ -82,7 +84,8 @@ groups() ->
             openssl_any_server_our_12_client,
             openssl_downgrade_detected,
                               openssl13_server_resumption, openssl13_client_resumption,
-                              openssl13_server_early_data, openssl13_client_early_data]},
+                              openssl13_server_early_data, openssl13_client_early_data,
+                              openssl13_client_pha, openssl13_server_pha]},
         {mbedtls, [], [mbedtls_server_our_client, mbedtls_client_our_server, mbedtls_server_without_cid]},
         {piondtls, [], [piondtls_server_our_client, piondtls_client_our_server, piondtls_send_only_cid]},
         {chromium, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
@@ -507,6 +510,35 @@ key_updates(Port, Sock, Peer, D0) ->
     {ok, _, [{send, Rec}]} = webrtc_dtls:send(<<"x">>, D5),
     ?assertEqual(1, binary:first(Rec) band 3),
     close_port(Port).
+
+%% Post-handshake authentication (RFC 8446 §4.6.2): s_client
+%% -enable_pha answers our CertificateRequest with its certificate, and
+%% data keeps flowing.
+openssl13_client_pha(Config) ->
+    #{port := Port, sock := Sock, peer := Peer, dtls := D0} = our_server(Config, "-dtls1_3", #{extra => "-enable_pha"}),
+    {ok, D1, A} = webrtc_dtls:request_client_auth(erlang:monotonic_time(millisecond), D0),
+    _ = webrtc_dtls_udp:send(Sock, Peer, A),
+    {ok, D2, _, Ev} = webrtc_dtls_udp:run(Sock, Peer, D1,
+                                          #{timeout => 5000, stop => fun(E) -> lists:keymember(peer_authenticated, 1, E) end}),
+    ?assertMatch([_], [C || {peer_authenticated, C} <- Ev]),
+    _ = exchange(Port, Sock, Peer, D2, <<"after pha">>),
+    close_port(Port).
+
+%% s_server asks us ("c") once we offered it.
+openssl13_server_pha(Config) ->
+    #{port := Port, sock := Sock, peer := Peer, dtls := D0} =
+        our_client(Config, "-dtls1_3", #{ours => #{post_handshake_auth => true}}),
+    port_command(Port, <<"c\n">>),
+    D1 = settle(Sock, Peer, D0, 1500),
+    Out = collect_port(Port, <<>>, deadline(1000), "NEVERMATCH"),
+    ct:pal("s_server after the request:~n~s", [Out]),
+    _ = exchange(Port, Sock, Peer, D1, <<"after pha">>),
+    close_port(Port),
+    %% s_server renegotiates the authentication and verifies our
+    %% certificate (self-signed, accepted as in the handshake).
+    ?assertMatch({match, _}, re:run(Out, "SSL_do_handshake -> 1")),
+    ?assertMatch({match, _}, re:run(Out, "verify return:1")),
+    ?assertEqual(nomatch, re:run(Out, "alert", [caseless])).
 
 openssl13_rejected_fingerprint(Config) ->
     {Mine, Theirs} = certs(#{}),

@@ -35,7 +35,6 @@ Known gaps that matter for a full WebRTC deployment:
 
 | Gap | Effect | Page |
 |---|---|---|
-| DTLS 1.3 post-handshake authentication | Not needed by WebRTC peers seen so far; see DTLS-59 | [dtls](compliance/dtls.md) |
 | RFC 8888 feedback as estimator input, ECN circuit breaker | Peers that only send RFC 8888 feedback give no estimate | [rtp](compliance/rtp.md) |
 | SCTP PMTUD | Fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
 

@@ -62,14 +62,19 @@
 %% `ice_lite', `sctp_port', `max_message_size', `codecs' and
 %% `extensions' (maps keyed by `audio' and `video'; an extension with
 %% `encrypt => true' is offered encrypted, RFC 6904), and
-%% `encrypt_header_extensions' (default true; false offers and accepts
-%% no encrypted extension).
+%% `encrypt_header_extensions': `accept' (default) answers an offered
+%% encrypted extension encrypted but offers none, `offer' also offers
+%% the encrypted forms, `false' neither offers nor accepts them.
 -spec new(map()) -> state().
 new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
     Codecs = maps:get(codecs, Opts, #{}),
     Exts = maps:get(extensions, Opts, #{}),
     %% RFC 8834 §5.2.2: header extension encryption can be turned off.
-    Encrypt = maps:get(encrypt_header_extensions, Opts, true),
+    %% By default an offered encrypted form is accepted but none is
+    %% offered: aiortc 1.16 cannot parse it and Chromium 149 then drops
+    %% the extension altogether.
+    EncryptMode = maps:get(encrypt_header_extensions, Opts, accept),
+    Encrypt = EncryptMode =/= false,
     Caps = maps:from_list([
         {K, {
             maps:get(K, Codecs, webrtc_jsep_caps:default_codecs(K)),
@@ -91,6 +96,7 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         sctp_port = maps:get(sctp_port, Opts, 5000),
         max_message_size = maps:get(max_message_size, Opts, 262144),
         bundle = maps:get(bundle, Opts, true),
+        encrypt_offer = EncryptMode =:= offer,
         cryptex = maps:get(cryptex, Opts, true)
     }.
 

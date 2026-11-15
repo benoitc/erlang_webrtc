@@ -579,10 +579,10 @@ audio_media(J) ->
 
 extmaps(Sdp) -> ?M:attrs(extmap, hd(Sdp#sdp.media)).
 
-%% RFC 6904 §4.1, RFC 8834 §5.2.2: the audio level is offered in both
-%% forms and answered encrypted.
+%% RFC 6904 §4.1, RFC 8834 §5.2.2: with `offer' the audio level is
+%% offered in both forms and answered encrypted.
 encrypted_audio_level_test() ->
-    {A, B, Offer, Answer} = exchange(audio(new()), audio(new())),
+    {A, B, Offer, Answer} = exchange(audio(new(#{encrypt_header_extensions => offer})), audio(new())),
     ?assert(lists:member(#{id => 1, direction => undefined, uri => ?AL, attributes => undefined}, extmaps(Offer))),
     ?assert(lists:member(#{id => 5, direction => undefined, uri => ?ENC, attributes => ?AL}, extmaps(Answer))),
     ?assertEqual([], [E || #{uri := ?AL} = E <- extmaps(Answer)]),
@@ -592,12 +592,16 @@ encrypted_audio_level_test() ->
 %% A peer that does not know the encrypt URI answers with the clear
 %% form; one that turned encryption off too.
 clear_fallback_test() ->
-    {A, _, _, Answer} = exchange(audio(new()), audio(new(#{encrypt_header_extensions => false}))),
+    {A, _, _, Answer} = exchange(audio(new(#{encrypt_header_extensions => offer})),
+                                 audio(new(#{encrypt_header_extensions => false}))),
     ?assert(lists:member(#{id => 1, direction => undefined, uri => ?AL, attributes => undefined}, extmaps(Answer))),
     ?assertMatch(#{send_extensions := #{?AL := 1}, send_encrypted := [], recv_encrypted := []}, audio_media(A)),
-    %% Our offer without encryption has no encrypt line.
-    {_, _, Offer2, _} = exchange(audio(new(#{encrypt_header_extensions => false})), audio(new())),
-    ?assertEqual([], [E || #{uri := ?ENC} = E <- extmaps(Offer2)]).
+    %% By default (accept) and with false, our offers have no encrypt
+    %% line.
+    [begin
+         {_, _, Offer2, _} = exchange(audio(new(O)), audio(new())),
+         ?assertEqual([], [E || #{uri := ?ENC} = E <- extmaps(Offer2)])
+     end || O <- [#{}, #{encrypt_header_extensions => false}]].
 
 %% An offer with the clear form only is answered in clear.
 plain_offer_test() ->
@@ -607,7 +611,7 @@ plain_offer_test() ->
 
 %% An answer with both forms of one extension is refused.
 both_forms_refused_test() ->
-    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, audio(new())),
+    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, audio(new(#{encrypt_header_extensions => offer}))),
     {ok, A2} = webrtc_jsep:set_local_description(offer, Offer, A1),
     {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), audio(new())),
     {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),

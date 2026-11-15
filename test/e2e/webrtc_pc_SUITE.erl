@@ -413,26 +413,29 @@ dtls_connection_id(_Config) ->
     webrtc:close(B).
 
 %% RFC 6904, RFC 8834 §5.2.2: the audio level travels encrypted when
-%% both sides accept it, in clear when one turned it off; MID stays in
+%% one side offers it and the other accepts (the default), in clear
+%% when the answerer turned it off; MID stays in
 %% clear and media still demultiplexes; with cryptex on as well the
 %% packet is cryptex; both SRTP profiles.
 header_extension_encryption(_Config) ->
     Level = webrtc_rtp_ext:audio_level(true, 42),
     %% Encrypted, AES-GCM (the default profile).
-    {Wire1, Got1} = audio_level_case(#{cryptex => false}, #{cryptex => false}),
+    {Wire1, Got1} = audio_level_case(#{cryptex => false, encrypt_header_extensions => offer}, #{cryptex => false}),
     ?assert(lists:any(fun(W) -> element_data(5, W) =/= Level end, Wire1)),
     ?assertEqual([<<"0">>], lists:usort([element_data(4, W) || W <- Wire1])),
     ?assertEqual({ok, {true, 42}}, Got1),
     %% Encrypted, AES-CM.
-    {Wire2, Got2} = audio_level_case(#{cryptex => false, srtp_profiles => [16#0001]}, #{cryptex => false}),
+    {Wire2, Got2} = audio_level_case(#{cryptex => false, encrypt_header_extensions => offer, srtp_profiles => [16#0001]},
+                                     #{cryptex => false}),
     ?assert(lists:any(fun(W) -> element_data(5, W) =/= Level end, Wire2)),
     ?assertEqual({ok, {true, 42}}, Got2),
     %% The peer turned encryption off: clear, under the clear id.
-    {Wire3, Got3} = audio_level_case(#{cryptex => false}, #{encrypt_header_extensions => false}),
+    {Wire3, Got3} = audio_level_case(#{cryptex => false, encrypt_header_extensions => offer},
+                                     #{encrypt_header_extensions => false}),
     ?assertEqual([Level], lists:usort([element_data(1, W) || W <- Wire3])),
     ?assertEqual({ok, {true, 42}}, Got3),
     %% Cryptex and RFC 6904 both negotiated: cryptex packets.
-    {Wire4, Got4} = audio_level_case(#{}, #{}),
+    {Wire4, Got4} = audio_level_case(#{encrypt_header_extensions => offer}, #{}),
     ?assert(lists:all(fun(<<_:12/binary, P:16, _/binary>>) -> P =:= 16#C0DE end, Wire4)),
     ?assertEqual({ok, {true, 42}}, Got4).
 

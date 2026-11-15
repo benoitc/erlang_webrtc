@@ -144,7 +144,8 @@ offer_section({_, Mid, #tr{direction = Dir} = T}, Setup, Ctx, J) ->
     Send = [E || Dir =:= sendrecv orelse Dir =:= sendonly, E <- T#tr.encodings],
     Recv = [R || Dir =:= sendrecv orelse Dir =:= recvonly, R <- T#tr.recv_rids],
     Rids = webrtc_jsep_simulcast:offer_attrs(Send, Recv),
-    rtp_section(T, Mid, Dir, T#tr.codecs, T#tr.extensions, Setup, Ctx, J, Rids).
+    Exts = [E || E <- T#tr.extensions, J#jsep.encrypt_offer orelse maps:get(encrypt, E, false) =/= true],
+    rtp_section(T, Mid, Dir, T#tr.codecs, Exts, Setup, Ctx, J, Rids).
 
 %%====================================================================
 %% Answer

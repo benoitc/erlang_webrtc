@@ -18,6 +18,7 @@
     ice_actions/2,
     local_candidate/2,
     udp_send/3,
+    udp_send/4,
     send_out/2,
     send_out_ect/2,
     transmit/2,
@@ -131,25 +132,12 @@ ice_action({send_ect, Sock, {IP, Port} = Dest, Bin}, #st{filter = undefined} = S
         {error, _} -> gen_udp:send(Sock, IP, Port, Bin)
     end,
     St;
+ice_action({send_ect, Sock, Dest, Bin}, #st{filter = {_, _}} = St) when is_port(Sock) ->
+    filtered(Sock, Dest, Bin, 2, St);
 ice_action({send_ect, Sock, Dest, Bin}, St) ->
     ice_action({send, Sock, Dest, Bin}, St);
-ice_action({send, Sock, Dest, Bin}, #st{filter = {F, FS}} = St) ->
-    %% Test hook (impairment): it runs in this process and must not
-    %% block; a crashing filter lets the datagram through.
-    {Out, FS1} =
-        try F(Dest, Bin, FS) of
-            {O, S1} when is_list(O) -> {O, S1}
-        catch
-            _:_ -> {[{0, Bin}], FS}
-        end,
-    lists:foreach(
-        fun
-            ({0, B}) -> udp_send(Sock, Dest, B);
-            ({Delay, B}) -> erlang:send_after(Delay, self(), {delayed_send, Sock, Dest, B})
-        end,
-        Out
-    ),
-    St#st{filter = {F, FS1}};
+ice_action({send, Sock, Dest, Bin}, #st{filter = {_, _}} = St) ->
+    filtered(Sock, Dest, Bin, 0, St);
 ice_action({event, {data, Via, Peer, Bin}}, St) ->
     %% Relayed non-STUN data: demultiplex as if received from Peer, under
     %% the same rule as direct traffic. TURN permissions are per IP
@@ -189,6 +177,46 @@ local_candidate(C, St) ->
 udp_send(Sock, {IP, Port}, Bin) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     ok.
+
+%% @doc The same with an ECN codepoint in the IP header (0: none).
+-spec udp_send(term(), webrtc_ice_candidate:address(), binary(), 0..3) -> ok.
+udp_send(Sock, Dest, Bin, 0) ->
+    udp_send(Sock, Dest, Bin);
+udp_send(Sock, {IP, Port} = Dest, Bin, Ecn) ->
+    Anc = case tuple_size(IP) of 4 -> [{tos, Ecn}]; 8 -> [{tclass, Ecn}] end,
+    _ = case gen_udp:send(Sock, Dest, Anc, Bin) of
+        ok -> ok;
+        {error, _} -> gen_udp:send(Sock, IP, Port, Bin)
+    end,
+    ok.
+
+%% Test hook (impairment): the filter runs in this process and must not
+%% block; a crashing filter lets the datagram through. It returns
+%% `{Delay, Bin}' or `{Delay, Bin, Ecn}': a router may mark an ECT
+%% datagram CE (RFC 3168), never a not-ECT one.
+filtered(Sock, Dest, Bin, Ecn, #st{filter = {F, FS}} = St) ->
+    {Out, FS1} =
+        try F(Dest, Bin, FS) of
+            {O, S1} when is_list(O) -> {O, S1}
+        catch
+            _:_ -> {[{0, Bin}], FS}
+        end,
+    lists:foreach(
+        fun(Item) ->
+            {Delay, B, E} =
+                case Item of
+                    {D, B0} -> {D, B0, Ecn};
+                    {D, B0, Mark} when Ecn =/= 0 -> {D, B0, Mark};
+                    {D, B0, _} -> {D, B0, 0}
+                end,
+            case Delay of
+                0 -> udp_send(Sock, Dest, B, E);
+                _ -> erlang:send_after(Delay, self(), {delayed_send, Sock, Dest, B, E})
+            end
+        end,
+        Out
+    ),
+    St#st{filter = {F, FS1}}.
 
 %% Send a datagram on the selected pair.
 send_out(Bin, St) ->

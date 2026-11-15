@@ -16,7 +16,10 @@
 %% through), `rate' (bits per second, or a ref from `rate_limit/1' to
 %% change it while running: a bottleneck that serves datagrams one after
 %% the other at that rate, after the other impairments) with `queue_ms'
-%% (default 200: datagrams that would wait longer are dropped), `seed'.
+%% (default 200: datagrams that would wait longer are dropped) and
+%% `ecn_ms' (a RED-like AQM: datagrams waiting longer may be marked CE,
+%% with a probability growing to 10% at three times that; the transport
+%% applies the mark to ECT datagrams only), `seed'.
 -module(webrtc_impair).
 
 -export([filter/1, blackhole/0, set_blackhole/2, rate_limit/1, set_rate/2]).
@@ -104,7 +107,16 @@ bottleneck(Bin, #{rate := Rate} = Opts, {Copies, #{busy_until := Busy} = S}) ->
         false ->
             Done = Start + (byte_size(Bin) * length(Copies) * 8000000) div max(Bps, 1),
             Wait = (Done - Now + 999) div 1000,
-            {[{D + Wait, B} || {D, B} <- Copies], S#{busy_until := Done}}
+            Queued = Start - Now,
+            case maps:get(ecn_ms, Opts, undefined) of
+                E when is_integer(E), Queued > E * 1000 ->
+                    {U, S1} = uniform(S),
+                    Mark = U < min(0.1, 0.1 * (Queued - E * 1000) / (2 * E * 1000)),
+                    {[case Mark of true -> {D + Wait, B, 3}; false -> {D + Wait, B} end || {D, B} <- Copies],
+                     S1#{busy_until := Done}};
+                _ ->
+                    {[{D + Wait, B} || {D, B} <- Copies], S#{busy_until := Done}}
+            end
     end;
 bottleneck(_Bin, _Opts, Result) ->
     Result.

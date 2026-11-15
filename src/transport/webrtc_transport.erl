@@ -251,6 +251,9 @@ handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
 handle_info({delayed_send, Sock, Dest, Bin}, St) ->
     webrtc_transport_net:udp_send(Sock, Dest, Bin),
     {noreply, St};
+handle_info({delayed_send, Sock, Dest, Bin, Ecn}, St) ->
+    webrtc_transport_net:udp_send(Sock, Dest, Bin, Ecn),
+    {noreply, St};
 handle_info({ice_tcp_accept, ListenRef, Sock}, St) ->
     {noreply, arm(webrtc_transport_net:tcp_accepted(ListenRef, Sock, St))};
 handle_info({turn_stream, Ref, Result}, St) ->

@@ -145,7 +145,9 @@ has_input(#gcc{delay_active = D, rr_active = RR, remb = R}) -> D orelse RR orels
 feedback([], _Now, G) ->
     {[], G};
 feedback(Results, Now, G0) ->
-    Received = [{S, A, Sz} || {S, A, Sz} <- Results, A =/= lost],
+    %% `{S, A, Sz, ce}': received but CE marked, which counts as a loss
+    %% for the loss-based estimate (RFC 3168 §5, RFC 8888 §6).
+    Received = [{S, A, Sz} || {S, A, Sz} <- Results, A =/= lost] ++ [{S, A, Sz} || {S, A, Sz, ce} <- Results],
     G1 = (from_reports(G0))#gcc{delay_active = true, last_feedback = Now},
     G2 =
         case Received of
@@ -154,10 +156,11 @@ feedback(Results, Now, G0) ->
         end,
     %% Send times come from the monotonic clock, which may be negative:
     %% until a decrease restarts the count, every packet counts.
+    Marks = [{S, case R of {_, _, _, ce} -> lost; _ -> element(2, R) end} || R <- Results, S <- [element(1, R)]],
     Counted =
         case G2#gcc.loss_from of
-            undefined -> [A || {_, A, _} <- Results];
-            From -> [A || {S, A, _} <- Results, S >= From]
+            undefined -> [A || {_, A} <- Marks];
+            From -> [A || {S, A} <- Marks, S >= From]
         end,
     Lost = length([lost || lost <- Counted]),
     G3 = loss_counts(length(Counted) - Lost, Lost, Now, G2),

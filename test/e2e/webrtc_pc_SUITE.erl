@@ -32,7 +32,8 @@
     unbundled/1,
     pause_resume/1,
     simulcast_answerer/1,
-    cryptex/1
+    cryptex/1,
+    channel_priorities/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -64,7 +65,8 @@ all() ->
         unbundled,
         pause_resume,
         simulcast_answerer,
-        cryptex
+        cryptex,
+        channel_priorities
     ].
 
 init_per_suite(Config) ->
@@ -349,6 +351,44 @@ wire_profile(Timeout) ->
     after Timeout ->
         timeout
     end.
+
+%% RFC 8831 §6.4, RFC 8260 §3.6: a high priority channel queued after a
+%% very low priority bulk transfer finishes first, and the peer learns
+%% the priority from DCEP.
+channel_priorities(_Config) ->
+    %% A 4 Mbps bottleneck keeps a backlog in the SCTP send queue, where
+    %% the scheduler chooses.
+    Limit = webrtc_impair:filter(#{rate => 4000000, queue_ms => 200, seed => 1}),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => Limit}),
+    B = pc(),
+    ok = webrtc:create_data_channel(A, <<"bulk">>, #{priority => very_low}),
+    ok = webrtc:create_data_channel(A, <<"urgent">>, #{priority => high}),
+    ?S:connect(A, B),
+    Bulk = channel_id(A, <<"bulk">>),
+    Urgent = channel_id(A, <<"urgent">>),
+    {ok, {datachannel_open, _, _, _, #{priority := 1024}}} =
+        ?S:wait(B, fun({datachannel_open, _, L, _, _}) -> L =:= <<"urgent">>; (_) -> false end, 5000),
+    Data = binary:copy(<<"x">>, 16000),
+    [ok = webrtc:send_data(A, Bulk, binary, <<"b", I, Data/binary>>) || I <- lists:seq(1, 30)],
+    [ok = webrtc:send_data(A, Urgent, binary, <<"u", I, Data/binary>>) || I <- lists:seq(1, 30)],
+    Order = arrivals(B, 60, []),
+    LastBulk = last_index(<<"b">>, Order),
+    LastUrgent = last_index(<<"u">>, Order),
+    ct:log("last bulk at ~p, last urgent at ~p", [LastBulk, LastUrgent]),
+    ?assert(LastUrgent < LastBulk),
+    webrtc:close(A),
+    webrtc:close(B).
+
+arrivals(_B, 0, Acc) ->
+    lists:reverse(Acc);
+arrivals(B, N, Acc) ->
+    receive
+        {webrtc, B, {channel_message, _, binary, <<Tag:1/binary, _/binary>>}} -> arrivals(B, N - 1, [Tag | Acc])
+    after 20000 -> ct:fail({missing, N})
+    end.
+
+last_index(Tag, Order) ->
+    lists:max([I || {I, T} <- lists:enumerate(Order), T =:= Tag]).
 
 keyframe_request(_Config) ->
     A = pc(),

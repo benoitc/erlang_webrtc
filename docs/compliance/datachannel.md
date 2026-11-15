@@ -12,7 +12,7 @@ Data channels are implemented by `webrtc_dcep`: the DCEP codec and a sans-IO man
 | DC-4 | 6.2 | Graceful shutdown and abort of the association close every channel | webrtc_dcep | dcep:shutdown_closes_channels_test | Unit tested |
 | DC-5 | 6.4 | Reliable or partially reliable (retransmissions or lifetime), ordered or unordered channels | webrtc_dcep | dcep:partial_reliability_channel_test, dcep:negotiated_test | Unit tested |
 | DC-6 | 6.4 | Priority carried in DATA_CHANNEL_OPEN and reported | webrtc_dcep | dcep:open_vector_test | Unit tested |
-| DC-7 | 6.4 | Priority interpreted as a weighted fair queueing weight by the SCTP scheduler | | | Non-compliant / known limitation: the scheduler is round robin between streams and ignores the priority |
+| DC-7 | 6.4 | Priority interpreted as a weighted fair queueing weight by the SCTP scheduler; `very_low`, `low`, `medium`, `high` map to 128, 256, 512, 1024 | webrtc_dcep, webrtc_sctp_send | webrtc_pc_SUITE:channel_priorities | E2E tested: behind a 4 Mbps bottleneck a high priority channel queued after a very low priority one finishes first |
 | DC-8 | 6.5 | Channels negotiated out of band on an agreed stream id, without DCEP; reusing a stream of an existing channel fails | webrtc_dcep | dcep:negotiated_test, dcep:id_parity_test | Unit tested |
 | DC-9 | 6.6 | One application message per SCTP user message; PPID 51 (string) and 53 (binary) | webrtc_dcep | dcep:open_ack_test | Unit tested |
 | DC-10 | 6.6 | Empty messages sent as one zero byte with PPID 56 / 57 and delivered as empty | webrtc_dcep | dcep:empty_messages_test | Unit tested |

@@ -170,6 +170,18 @@ loss_report_test() ->
     {[], G3} = webrtc_gcc:loss_report(255, 300, G2),
     ?assertEqual(T, webrtc_gcc:target(G3)).
 
+%% A receiver report that arrives before the first transport-wide
+%% feedback seeds the loss-based estimate; once transport-wide feedback
+%% flows, it drives the loss estimate and the seed no longer caps the
+%% target.
+loss_report_then_feedback_test() ->
+    G0 = webrtc_gcc:new(#{start_bitrate => 300000}),
+    {_, G1} = webrtc_gcc:loss_report(0, 0, G0),
+    ?assertMatch(#{loss_based := 315000}, webrtc_gcc:info(G1)),
+    {_, G2} = webrtc_gcc:feedback(results(0, 10, []), 200, G1),
+    #{loss_based := L} = webrtc_gcc:info(G2),
+    ?assert(L > 1000000).
+
 limits_test() ->
     G0 = webrtc_gcc:new(#{start_bitrate => 1000000}),
     {_, G1} = webrtc_gcc:feedback(results(0, 10, []), 200, G0),

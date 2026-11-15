@@ -142,7 +142,7 @@ feedback([], _Now, G) ->
     {[], G};
 feedback(Results, Now, G0) ->
     Received = [{S, A, Sz} || {S, A, Sz} <- Results, A =/= lost],
-    G1 = G0#gcc{delay_active = true, last_feedback = Now},
+    G1 = (from_reports(G0))#gcc{delay_active = true, last_feedback = Now},
     G2 =
         case Received of
             [] -> G1;
@@ -158,6 +158,12 @@ feedback(Results, Now, G0) ->
     Lost = length([lost || lost <- Counted]),
     G3 = loss_counts(length(Counted) - Lost, Lost, Now, G2),
     update_target(G3).
+
+%% Receiver reports drove the loss-based estimate until now (one can
+%% arrive before the first transport-wide feedback): from here the
+%% feedback drives it, so the value seeded from the reports is released.
+from_reports(#gcc{rr_active = true} = G) -> G#gcc{rr_active = false, loss_based = G#gcc.max};
+from_reports(G) -> G.
 
 delay_based(Received, Now, G) ->
     Acked = lists:foldl(fun({_, A, Sz}, R) -> webrtc_cc_rate:add(A div 1000, Sz, R) end, G#gcc.acked, Received),

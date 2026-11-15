@@ -37,7 +37,13 @@
     ice_pending :: undefined | #{ufrag := binary(), pwd := binary(), candidates := list(), gathering := atom()},
     %% Remote candidates trickled after the remote description but before
     %% our local description started the transport (bounded).
-    early_candidates = [] :: [binary() | end_of_candidates]
+    early_candidates = [] :: [binary() | end_of_candidates],
+    %% Transports after the first, when the sections are not all
+    %% bundled (RFC 9143): Key => #{pid, mids, remote, sent, cands, ice,
+    %% dtls}. The first transport is `transport'.
+    extra = #{} :: #{binary() => map()},
+    %% Options every transport starts with (credentials apart).
+    topts :: undefined | map()
 }).
 
 -define(MAX_EARLY_CANDIDATES, 64).
@@ -53,7 +59,7 @@ init(#{owner := App} = Opts) ->
     process_flag(trap_exit, true),
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
-    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions], Opts), #{
+    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle], Opts), #{
         ice_ufrag => ice_string(8),
         ice_pwd => ice_string(24),
         fingerprints => [FP],
@@ -81,7 +87,7 @@ handle_call({create_data_channel, Label, COpts}, _From, St) ->
     St1 = St#st{jsep = J},
     case St1#st.sctp_up of
         true ->
-            {reply, webrtc_transport:open_channel(St1#st.transport, Label, COpts), St1};
+            {reply, webrtc_transport:open_channel(data_pid(St1), Label, COpts), St1};
         false ->
             case webrtc_jsep:negotiated(St#st.jsep) of
                 #{data := #{}} -> ok;
@@ -135,6 +141,12 @@ handle_call({set_remote_description, Type, Sdp}, _From, St) ->
         {error, _} = E ->
             {reply, E, St}
     end;
+handle_call({add_ice_candidate, Cand, Mid}, From, St) ->
+    case extra_of_mid(Mid, St) of
+        {ok, #{pid := T}} when Cand =:= end_of_candidates -> {reply, webrtc_transport:end_of_candidates(T), St};
+        {ok, #{pid := T}} -> {reply, webrtc_transport:add_remote_candidate(T, Cand), St};
+        error -> handle_call({add_ice_candidate, Cand}, From, St)
+    end;
 handle_call({add_ice_candidate, Cand}, _From, St) ->
     case webrtc_jsep:remote_view(St#st.jsep) of
         %% RFC 9429 §4.1.17: candidates need a remote description.
@@ -149,8 +161,9 @@ handle_call(restart_ice, _From, St) ->
         undefined -> ok;
         T -> ok = webrtc_transport:restart_ice(T, U, P)
     end,
-    notify(negotiation_needed, St),
-    {reply, ok, St#st{jsep = J, local_candidates = [], gathering = new, local_restart = true}};
+    St1 = restart_extra(St#st{jsep = J}),
+    notify(negotiation_needed, St1),
+    {reply, ok, St1#st{local_candidates = [], gathering = new, local_restart = true}};
 handle_call(transport_pid, _From, #st{transport = T} = St) when is_pid(T) ->
     {reply, {ok, T}, St};
 handle_call(transport_pid, _From, St) ->
@@ -169,13 +182,16 @@ handle_call(get_stats, _From, St) ->
             undefined -> undefined;
             T -> webrtc_transport:stats(T)
         end,
-    {reply, #{connection_state => St#st.connection, ice_state => St#st.ice_state, transport => Transport}, St};
+    Extra = #{K => webrtc_transport:stats(P) || K := #{pid := P} <- St#st.extra},
+    {reply, #{connection_state => St#st.connection, ice_state => St#st.ice_state, transport => Transport,
+              transports => Extra}, St};
 handle_call({controlling_process, Pid}, _From, St) ->
     demonitor(St#st.app_mon, [flush]),
     case St#st.transport of
         undefined -> ok;
         T -> ok = webrtc_transport:set_app(T, Pid)
     end,
+    _ = [ok = webrtc_transport:set_app(X, Pid) || _ := #{pid := X} <- St#st.extra],
     {reply, ok, St#st{app = Pid, app_mon = monitor(process, Pid)}};
 handle_call(close, _From, St) ->
     {stop, normal, ok, close_now(St)}.
@@ -185,12 +201,25 @@ handle_cast(_Msg, St) ->
 
 handle_info({webrtc_transport, T, Event}, #st{transport = T} = St) ->
     {noreply, transport_event(Event, St)};
+handle_info({webrtc_transport, T, Event}, St) ->
+    case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
+        [K] -> {noreply, extra_event(K, Event, St)};
+        [] -> {noreply, St}
+    end;
 handle_info({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
     {stop, normal, close_now(St)};
 handle_info({'EXIT', T, Reason}, #st{transport = T} = St) ->
     ets:delete(webrtc_transports, self()),
     notify({connection_state, failed}, St),
     {stop, {transport_exit, Reason}, St#st{transport = undefined}};
+handle_info({'EXIT', T, Reason}, St) ->
+    case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
+        [_] ->
+            notify({connection_state, failed}, St),
+            {stop, {transport_exit, Reason}, St};
+        [] ->
+            {noreply, St}
+    end;
 handle_info(_Other, St) ->
     {noreply, St}.
 
@@ -284,9 +313,10 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     {ok, T} = webrtc_transport:start_link(TOpts),
     true = ets:insert(webrtc_transports, {self(), T}),
     ok = webrtc_transport:gather(T),
-    flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role}));
+    St1 = flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role, topts = maps:without([ufrag, pwd], TOpts)})),
+    ensure_extra(St1);
 ensure_transport(_Type, St) ->
-    St.
+    ensure_extra(St).
 
 flush_candidates(#st{transport = T, early_candidates = Early} = St) ->
     _ = [
@@ -311,7 +341,11 @@ sync_ice(_Side, rollback, St) ->
     St;
 sync_ice(_Side, _Type, #st{transport = undefined} = St) ->
     St;
-sync_ice(Side, _Type, St) ->
+sync_ice(Side, Type, St0) ->
+    St = push_extra(St0),
+    sync_ice1(Side, Type, St).
+
+sync_ice1(Side, _Type, St) ->
     case {Side, restart_pending(St), webrtc_jsep:signaling_state(St#st.jsep)} of
         {_, true, stable} -> flush_candidates(push_remote_ice(apply_restart(St)));
         {remote, true, _} -> defer_restart(St);
@@ -398,7 +432,8 @@ after_negotiation(#st{transport = T} = St) when is_pid(T) ->
             ((S =:= have_local_pranswer orelse S =:= have_remote_pranswer) andalso not restart_pending(St)),
     case {Ready, webrtc_jsep:negotiated(St#st.jsep)} of
         {true, #{} = Neg} ->
-            ok = webrtc_transport:configure(T, Neg),
+            ok = webrtc_transport:configure(T, view(Neg, primary_key(St))),
+            _ = [ok = webrtc_transport:configure(P, view(Neg, K)) || K := #{pid := P} <- St#st.extra],
             announce_tracks(Neg, St#st{configured = true});
         _ ->
             St
@@ -447,7 +482,7 @@ transport_event({consent_lost, _, _}, St) ->
 transport_event({datachannel, {connected, _}}, St) ->
     lists:foreach(
         fun({L, O}) ->
-            case webrtc_transport:open_channel(St#st.transport, L, O) of
+            case webrtc_transport:open_channel(data_pid(St), L, O) of
                 {ok, _} -> ok;
                 {error, R} -> notify({datachannel_open_failed, L, R}, St)
             end
@@ -476,16 +511,16 @@ transport_event(_Other, St) ->
     St.
 
 update_connection(St) ->
+    States = [transport_state(St#st.ice_state, St#st.dtls_state)] ++
+        [transport_state(I, D) || _ := #{ice := I, dtls := D} <- St#st.extra],
+    %% W3C RTCPeerConnectionState over every transport.
+    L = lists:usort(States),
     New =
-        case {St#st.ice_state, St#st.dtls_state} of
-            {_, failed} -> failed;
-            {failed, _} -> failed;
-            {_, closed} -> closed;
-            {closed, _} -> closed;
-            {I, connected} when I =:= connected; I =:= completed -> connected;
-            {disconnected, _} -> disconnected;
-            {new, new} -> new;
-            _ -> connecting
+        case [S || S <- [failed, closed, disconnected], lists:member(S, L)] of
+            [S | _] -> S;
+            [] when L =:= [connected] -> connected;
+            [] when L =:= [new] -> new;
+            [] -> connecting
         end,
     case New =:= St#st.connection of
         true ->
@@ -495,16 +530,31 @@ update_connection(St) ->
             St#st{connection = New}
     end.
 
+transport_state(Ice, Dtls) ->
+    case {Ice, Dtls} of
+        {_, failed} -> failed;
+        {failed, _} -> failed;
+        {_, closed} -> closed;
+        {closed, _} -> closed;
+        {I, connected} when I =:= connected; I =:= completed -> connected;
+        {disconnected, _} -> disconnected;
+        {new, new} -> new;
+        _ -> connecting
+    end.
+
 bundle_tag(St) ->
-    case webrtc_jsep:local_description(St#st.jsep) of
-        #sdp{media = [M | _]} -> webrtc_sdp_media:mid(M);
-        _ -> <<"0">>
+    case {primary_key(St), webrtc_jsep:local_description(St#st.jsep)} of
+        {undefined, #sdp{media = [M | _]}} -> webrtc_sdp_media:mid(M);
+        {undefined, _} -> <<"0">>;
+        {K, _} -> K
     end.
 
 close_now(#st{transport = undefined} = St) ->
     St;
 close_now(#st{transport = T} = St) ->
     ets:delete(webrtc_transports, self()),
+    ets:match_delete(webrtc_transports, {{self(), '_'}, '_'}),
+    _ = [ok = stop_transport(P) || _ := #{pid := P} <- St#st.extra],
     ok = stop_transport(T),
     notify({connection_state, closed}, St),
     St#st{transport = undefined, jsep = webrtc_jsep:close(St#st.jsep), connection = closed}.
@@ -526,6 +576,178 @@ stop_transport(T) ->
     receive
         {'EXIT', T, _} -> ok
     after 0 -> ok
+    end.
+
+%%====================================================================
+%% Transports after the first (RFC 9143: sections not all bundled)
+%%====================================================================
+
+primary_key(St) ->
+    case webrtc_jsep:transports(St#st.jsep) of
+        [#{key := K} | _] -> K;
+        [] -> undefined
+    end.
+
+%% Start the transports of the local description that have none yet.
+ensure_extra(#st{transport = undefined} = St) ->
+    St;
+ensure_extra(#st{topts = TOpts} = St) ->
+    Pc = self(),
+    lists:foldl(
+        fun(#{key := K, mids := Ms, ufrag := U, pwd := P}, Acc) ->
+            case maps:is_key(K, Acc#st.extra) of
+                true ->
+                    Acc;
+                false ->
+                    {ok, T} = webrtc_transport:start_link(TOpts#{ufrag => U, pwd => P}),
+                    true = ets:insert(webrtc_transports, [{{Pc, M}, T} || M <- Ms] ++ data_row(Pc, Ms, T, Acc)),
+                    ok = webrtc_transport:gather(T),
+                    X = #{pid => T, mids => Ms, remote => undefined, sent => 0, cands => [], ice => new, dtls => new,
+                           local_restart => false},
+                    push_extra(Acc#st{extra = (Acc#st.extra)#{K => X}})
+            end
+        end,
+        St,
+        case webrtc_jsep:transports(St#st.jsep) of
+            [_ | Rest] -> Rest;
+            [] -> []
+        end
+    ).
+
+data_row(Pc, Mids, T, St) ->
+    case data_mid(St) of
+        undefined -> [];
+        D -> [{{Pc, data}, T} || lists:member(D, Mids)]
+    end.
+
+data_mid(St) ->
+    case webrtc_jsep:negotiated(St#st.jsep) of
+        #{data := #{mid := D}} -> D;
+        _ -> webrtc_jsep:data_mid(St#st.jsep)
+    end.
+
+%% The transport carrying SCTP.
+data_pid(St) ->
+    D = data_mid(St),
+    case [P || _ := #{pid := P, mids := Ms} <- St#st.extra, lists:member(D, Ms)] of
+        [P | _] -> P;
+        [] -> St#st.transport
+    end.
+
+extra_of_mid(undefined, _St) ->
+    error;
+extra_of_mid(Mid, St) ->
+    case [X || _ := #{mids := Ms} = X <- St#st.extra, lists:member(Mid, Ms)] of
+        [X | _] -> {ok, X};
+        [] -> error
+    end.
+
+%% Remote credentials and candidates of every extra transport, from its
+%% sections of the remote description. New credentials restart it at
+%% once with new local ones, which the next description carries.
+push_extra(St) ->
+    case webrtc_jsep:remote_view(St#st.jsep) of
+        undefined ->
+            St;
+        #sdp{media = Media} = R ->
+            maps:fold(
+                fun(K, #{pid := T, mids := Ms} = X, Acc) ->
+                    Secs = [M || M <- Media, lists:member(webrtc_sdp_media:mid(M), Ms), M#sdp_media.port =/= 0],
+                    Order = [M || M <- Secs, webrtc_sdp_media:mid(M) =:= K] ++ Secs,
+                    case [C || M <- Order, {ok, C} <- [webrtc_sdp_media:ice_credentials(M, R)]] of
+                        [#{ufrag := U, pwd := P} | _] when map_get(local_restart, X), map_get(remote, X) =:= {U, P} ->
+                            %% Our restart waits for its answer.
+                            Acc;
+                        [#{ufrag := U, pwd := P} | _] ->
+                            Acc1 = extra_restart(K, X, {U, P}, Acc),
+                            ok = webrtc_transport:set_remote_ice(T, U, P),
+                            Cands = lists:flatmap(fun webrtc_sdp_media:candidates/1, Secs),
+                            Sent = case maps:get(remote, X) =:= {U, P} of true -> maps:get(sent, X); false -> 0 end,
+                            _ = [webrtc_transport:add_remote_candidate(T, C) || C <- lists:nthtail(min(Sent, length(Cands)), Cands)],
+                            _ = [ok = webrtc_transport:end_of_candidates(T) || lists:any(fun webrtc_sdp_media:end_of_candidates/1, Secs)],
+                            X1 = maps:get(K, Acc1#st.extra),
+                            Acc1#st{extra = (Acc1#st.extra)#{K => X1#{remote => {U, P}, sent => length(Cands)}}};
+                        [] ->
+                            Acc
+                    end
+                end,
+                St,
+                St#st.extra
+            )
+    end.
+
+extra_restart(_K, #{remote := undefined}, _Creds, St) -> St;
+extra_restart(_K, #{remote := Creds}, Creds, St) -> St;
+extra_restart(K, #{local_restart := true} = X, _New, St) ->
+    %% The answer to our restart: the transport has its new credentials.
+    St#st{extra = (St#st.extra)#{K => X#{local_restart := false}}};
+extra_restart(K, #{pid := T} = X, _New, St) ->
+    U = ice_string(8),
+    P = ice_string(24),
+    ok = webrtc_transport:restart_ice(T, U, P),
+    St#st{jsep = webrtc_jsep:set_transport_credentials(K, U, P, St#st.jsep),
+          extra = (St#st.extra)#{K => X#{cands => []}}}.
+
+%% Our ICE restart restarts every transport.
+restart_extra(St) ->
+    maps:fold(
+        fun(K, #{pid := T} = X, Acc) ->
+            U = ice_string(8),
+            P = ice_string(24),
+            ok = webrtc_transport:restart_ice(T, U, P),
+            Acc#st{jsep = webrtc_jsep:set_transport_credentials(K, U, P, Acc#st.jsep),
+                   extra = (Acc#st.extra)#{K => X#{cands => [], local_restart => true}}}
+        end,
+        St,
+        St#st.extra
+    ).
+
+%% What one transport is configured with: its ICE and DTLS parameters,
+%% its media and, when it carries it, the data channel.
+view(Neg, Key) ->
+    case [T || #{key := K} = T <- maps:get(transports, Neg, []), K =:= Key] of
+        [#{ice := Ice, dtls := Dtls}] ->
+            Data =
+                case maps:get(data, Neg) of
+                    #{transport := Key} = D -> D;
+                    #{transport := _} -> undefined;
+                    D -> D
+                end,
+            Neg#{ice => Ice, dtls => Dtls, media => [M || M <- maps:get(media, Neg), maps:get(transport, M, Key) =:= Key],
+                 data => Data};
+        [] ->
+            Neg
+    end.
+
+extra_event(K, Event, St) ->
+    X = maps:get(K, St#st.extra),
+    Put = fun(X1) -> St#st{extra = (St#st.extra)#{K => X1}} end,
+    case Event of
+        {local_candidate, Value} when is_binary(Value) ->
+            notify({ice_candidate, Value, K}, St),
+            {ok, C} = webrtc_sdp_candidate:parse(Value),
+            Cands = maps:get(cands, X) ++ [C],
+            St1 = Put(X#{cands => Cands}),
+            St1#st{jsep = webrtc_jsep:set_local_candidates(K, Cands, false, St1#st.jsep)};
+        {gathering_state, complete} ->
+            notify({ice_candidate, end_of_candidates, K}, St),
+            St#st{jsep = webrtc_jsep:set_local_candidates(K, maps:get(cands, X), true, St#st.jsep)};
+        {connection_state, S} ->
+            update_connection(Put(X#{ice => S}));
+        {consent_lost, _, _} ->
+            update_connection(Put(X#{ice => failed}));
+        {dtls_connected, _} ->
+            update_connection(Put(X#{dtls => connected}));
+        {dtls_failed, R} ->
+            notify({dtls_error, R}, St),
+            update_connection(Put(X#{dtls => failed}));
+        {dtls_closed, _} ->
+            update_connection(Put(X#{dtls => closed}));
+        {datachannel, _} ->
+            %% SCTP runs on this transport.
+            transport_event(Event, St);
+        _ ->
+            St
     end.
 
 notify(Event, #st{app = App}) ->

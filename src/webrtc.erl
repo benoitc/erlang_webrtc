@@ -55,7 +55,9 @@
 %%
 %% Signaling is the application's business: exchange the SDP returned by
 %% `create_offer/2' and `create_answer/2' and the candidates of
-%% `ice_candidate' events by any means.
+%% `ice_candidate' events by any means. Pass the mid of the event to
+%% `add_ice_candidate/3' on the other side: when the sections are not
+%% all bundled, it names the transport of the candidate.
 -module(webrtc).
 
 -export([
@@ -71,6 +73,7 @@
     set_local_description/3,
     set_remote_description/3,
     add_ice_candidate/2,
+    add_ice_candidate/3,
     restart_ice/1,
     send_rtp/4,
     send_rtp_packet/3,
@@ -144,6 +147,12 @@ new_peer_connection() ->
 %%     `false'. Remote `.local' and DNS names are always resolved.</li>
 %% <li>`mdns': resolver options, see `webrtc_mdns' (`max_pending',
 %%     `schedule', `group', `listen', ...).</li>
+%% <li>`bundle': offer every m= section in one BUNDLE group (RFC 9143),
+%%     default `true'. With `false' every section gets its own ICE and
+%%     DTLS transport; relay candidates with `add_ice_candidate/3' and
+%%     the mid of their `ice_candidate' event. Answers follow the offer
+%%     whatever this option says, and later offers keep the transports
+%%     the last answer set.</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
 new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
@@ -210,6 +219,13 @@ set_remote_description(Pc, Type, Sdp) ->
 add_ice_candidate(Pc, Cand) ->
     call(Pc, {add_ice_candidate, Cand}).
 
+%% @doc The same for the transport of m= section `Mid' (the sdpMid of the
+%% candidate): needed when the sections are not all bundled, every
+%% transport having its own candidates.
+-spec add_ice_candidate(pc(), binary() | end_of_candidates, binary() | undefined) -> ok | {error, term()}.
+add_ice_candidate(Pc, Cand, Mid) ->
+    call(Pc, {add_ice_candidate, Cand, Mid}).
+
 %% @doc New ICE credentials; renegotiate to complete the restart.
 -spec restart_ice(pc()) -> ok.
 restart_ice(Pc) ->
@@ -220,7 +236,7 @@ restart_ice(Pc) ->
 %% layer of the transceiver.
 -spec send_rtp(pc(), binary(), binary(), map()) -> ok | {error, term()}.
 send_rtp(Pc, Mid, Payload, Opts) ->
-    transport(Pc, fun(T) -> webrtc_transport:send_rtp(T, Mid, Payload, Opts) end).
+    transport(Pc, Mid, fun(T) -> webrtc_transport:send_rtp(T, Mid, Payload, Opts) end).
 
 %% @doc Forward an RTP packet (`#rtp{}') on a transceiver: SSRC and
 %% sequence number are replaced by the transceiver's.
@@ -233,7 +249,7 @@ send_rtp_packet(Pc, Mid, Pkt) ->
 -spec send_rtp_packet(pc(), binary(), tuple(), map()) -> ok | {error, term()}.
 send_rtp_packet(Pc, Mid, Pkt, Opts) ->
     Key = layer(Mid, Opts),
-    transport(Pc, fun(T) -> webrtc_transport:send_rtp_packet(T, Key, Pkt) end).
+    transport(Pc, Mid, fun(T) -> webrtc_transport:send_rtp_packet(T, Key, Pkt) end).
 
 %% @doc Ask the remote sender of a transceiver for a keyframe (PLI on
 %% every stream it sends).
@@ -246,7 +262,7 @@ request_keyframe(Pc, Mid) ->
 -spec request_keyframe(pc(), binary(), map()) -> ok | {error, term()}.
 request_keyframe(Pc, Mid, Opts) ->
     Key = layer(Mid, Opts),
-    transport(Pc, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
+    transport(Pc, Mid, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
 
 layer(Mid, #{rid := Rid}) when is_binary(Rid) -> {Mid, Rid};
 layer(Mid, _) -> Mid.
@@ -267,15 +283,15 @@ set_congestion_control(Pc, Opts) when is_map(Opts) ->
 %% time (`circuit_breaker_hold', default 15 s).
 -spec resume_stream(pc(), binary()) -> ok | {error, term()}.
 resume_stream(Pc, Mid) when is_binary(Mid) ->
-    transport(Pc, fun(T) -> webrtc_transport:resume_stream(T, Mid) end).
+    transport(Pc, Mid, fun(T) -> webrtc_transport:resume_stream(T, Mid) end).
 
 -spec send_data(pc(), non_neg_integer(), text | binary, iodata()) -> ok | {error, term()}.
 send_data(Pc, Id, Type, Data) ->
-    transport(Pc, fun(T) -> webrtc_transport:send_data(T, Id, Type, iolist_to_binary(Data)) end).
+    transport(Pc, data, fun(T) -> webrtc_transport:send_data(T, Id, Type, iolist_to_binary(Data)) end).
 
 -spec close_data_channel(pc(), non_neg_integer()) -> ok | {error, term()}.
 close_data_channel(Pc, Id) ->
-    transport(Pc, fun(T) -> webrtc_transport:close_channel(T, Id) end).
+    transport(Pc, data, fun(T) -> webrtc_transport:close_channel(T, Id) end).
 
 -spec local_description(pc()) -> binary() | undefined.
 local_description(Pc) -> call(Pc, local_description).
@@ -306,6 +322,14 @@ call(Pc, Msg) ->
 
 %% Media and data go straight to the transport process, found in the
 %% `webrtc_transports' table that the peer connection keeps up to date.
+%% The transport of a mid (or of the data channel), when the sections
+%% are not all bundled; otherwise the only one.
+transport(Pc, Key, F) ->
+    case ets:lookup(webrtc_transports, {Pc, Key}) of
+        [{_, T}] -> run_transport(Pc, T, F);
+        [] -> transport(Pc, F)
+    end.
+
 transport(Pc, F) ->
     case ets:lookup(webrtc_transports, Pc) of
         [{_, T}] ->

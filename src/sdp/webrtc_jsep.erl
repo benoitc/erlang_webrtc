@@ -33,6 +33,8 @@
     restart_ice/3,
     set_local_candidates/3,
     set_local_candidates/4,
+    set_transport_credentials/4,
+    data_mid/1,
     transports/1,
     create_offer/2,
     create_answer/2,
@@ -175,6 +177,16 @@ set_local_candidates(Key, Cands, EndOfCandidates, J) ->
         [#{key := Key} | _] -> set_local_candidates(Cands, EndOfCandidates, J);
         _ -> J#jsep{local_cands = (J#jsep.local_cands)#{Key => {Cands, EndOfCandidates}}}
     end.
+
+%% @doc The mid of the data channel section, once it has one.
+-spec data_mid(state()) -> binary() | undefined.
+data_mid(#jsep{data_mid = D}) -> D.
+
+%% @doc New local ICE credentials for a transport after the first (an
+%% ICE restart of that transport); used by the next offer or answer.
+-spec set_transport_credentials(binary(), binary(), binary(), state()) -> state().
+set_transport_credentials(Key, U, P, J) ->
+    J#jsep{ice_extra = (J#jsep.ice_extra)#{Key => {U, P}}}.
 
 %% @doc The transports of the local description (current or pending,
 %% else the offer to be created), first one first: `#{key, mids, ufrag,

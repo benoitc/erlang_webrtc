@@ -28,7 +28,8 @@
     pranswer_connects/1,
     ice_tcp_only/1,
     simulcast_layers/1,
-    simulcast_sfu_forward/1
+    simulcast_sfu_forward/1,
+    unbundled/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -56,7 +57,8 @@ all() ->
         pranswer_connects,
         ice_tcp_only,
         simulcast_layers,
-        simulcast_sfu_forward
+        simulcast_sfu_forward,
+        unbundled
     ].
 
 init_per_suite(Config) ->
@@ -218,6 +220,60 @@ audio_video_rtp(_Config) ->
     webrtc:close(A),
     webrtc:close(B).
 
+%% Without BUNDLE every m= section has its own ICE and DTLS transport
+%% (RFC 9143, RFC 9429 §5.2.1): media and data flow on each of them.
+unbundled(_Config) ->
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, bundle => false}),
+    B = pc(),
+    av(A),
+    av(B),
+    ok = webrtc:create_data_channel(A, <<"solo">>, #{}),
+    {Offer, Answer} = ?S:connect(A, B),
+    ?assertEqual(nomatch, binary:match(Offer, <<"a=group:BUNDLE">>)),
+    ?assertEqual(nomatch, binary:match(Answer, <<"a=group:BUNDLE">>)),
+    Ufrags = re:run(Answer, <<"a=ice-ufrag:(\\S+)">>, [global, {capture, all_but_first, binary}]),
+    ?assertMatch({match, [_, _, _]}, Ufrags),
+    {match, U} = Ufrags,
+    ?assertEqual(3, length(lists:usort(U))),
+    {ok, _} = ?S:wait(B, fun({track, <<"1">>, video}) -> true; (_) -> false end, 5000),
+    Id = channel_id(A, <<"solo">>),
+    ok = webrtc:send_rtp(A, <<"0">>, <<"a0">>, #{timestamp => 1}),
+    _ = rtp(B, <<"0">>, <<"a0">>),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"v1">>, #{timestamp => 1, marker => true}),
+    _ = rtp(B, <<"1">>, <<"v1">>),
+    ok = webrtc:send_rtp(B, <<"1">>, <<"back">>, #{timestamp => 1}),
+    _ = rtp(A, <<"1">>, <<"back">>),
+    ok = webrtc:send_data(A, Id, text, <<"over its own transport">>),
+    _ = message(B, <<"over its own transport">>),
+    #{transports := Ts} = webrtc:get_stats(A),
+    %% The primary transport, plus one per other section.
+    ?assertEqual(2, map_size(Ts)),
+    %% An ICE restart restarts every transport; each keeps its DTLS
+    %% association.
+    ok = webrtc:restart_ice(A),
+    {Offer2, _} = ?S:negotiate(A, B),
+    {match, U2} = re:run(Offer2, <<"a=ice-ufrag:(\\S+)">>, [global, {capture, all_but_first, binary}]),
+    {match, U1} = re:run(Offer, <<"a=ice-ufrag:(\\S+)">>, [global, {capture, all_but_first, binary}]),
+    ?assertEqual([], [X || X <- U2, lists:member(X, U1)]),
+    relay_for(A, B, 2000),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"v2">>, #{timestamp => 2, marker => true}),
+    _ = rtp(B, <<"1">>, <<"v2">>),
+    ok = webrtc:send_data(A, Id, text, <<"after restart">>),
+    _ = message(B, <<"after restart">>),
+    %% A restart offered by the peer restarts them too.
+    ok = webrtc:restart_ice(B),
+    {Offer3, _} = ?S:negotiate(B, A),
+    %% Negotiated transports stay as they are (RFC 9429 §5.2.2).
+    ?assertEqual(nomatch, binary:match(Offer3, <<"a=group:BUNDLE">>)),
+    relay_for(A, B, 2000),
+    ok = webrtc:send_rtp(B, <<"0">>, <<"a3">>, #{timestamp => 3}),
+    _ = rtp(A, <<"0">>, <<"a3">>),
+    ok = webrtc:send_data(A, Id, text, <<"after peer restart">>),
+    _ = message(B, <<"after peer restart">>),
+    webrtc:close(A),
+    webrtc:close(B),
+    ?assertEqual([], ets:match_object(webrtc_transports, {{A, '_'}, '_'})).
+
 keyframe_request(_Config) ->
     A = pc(),
     B = pc(),
@@ -268,8 +324,8 @@ ice_restart(_Config) ->
 
 relay_for(A, B, Ms) ->
     receive
-        {webrtc, A, {ice_candidate, C, _}} -> _ = webrtc:add_ice_candidate(B, C), relay_for(A, B, Ms);
-        {webrtc, B, {ice_candidate, C, _}} -> _ = webrtc:add_ice_candidate(A, C), relay_for(A, B, Ms)
+        {webrtc, A, {ice_candidate, C, M}} -> _ = webrtc:add_ice_candidate(B, C, M), relay_for(A, B, Ms);
+        {webrtc, B, {ice_candidate, C, M}} -> _ = webrtc:add_ice_candidate(A, C, M), relay_for(A, B, Ms)
     after Ms -> ok
     end.
 

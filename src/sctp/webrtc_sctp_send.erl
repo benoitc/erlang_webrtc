@@ -56,6 +56,7 @@
 new(#cfg{} = C) ->
     #snd{
         mtu = C#cfg.mtu,
+        chunk_mtu = C#cfg.mtu,
         max_burst = C#cfg.max_burst,
         buffer_limit = C#cfg.send_buffer,
         os = C#cfg.os,
@@ -96,7 +97,7 @@ start(#{tsn := Itsn, rwnd := Rwnd, idata := IData, pr := PR, os := OS}, S0) ->
 %% Largest user data in one DATA / I-DATA chunk so that a packet with
 %% this single chunk fits the MTU.
 -spec max_payload(#snd{}) -> pos_integer().
-max_payload(#snd{mtu = Mtu, idata = IData}) ->
+max_payload(#snd{chunk_mtu = Mtu, idata = IData}) ->
     Hdr =
         case IData of
             true -> ?SCTP_IDATA_HEADER_SIZE;

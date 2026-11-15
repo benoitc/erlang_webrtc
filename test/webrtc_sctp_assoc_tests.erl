@@ -1098,21 +1098,44 @@ pmtu_off_test() ->
     ?assertMatch(#{pmtu := 1200, search := off}, info(a, N)),
     ?assertEqual(0, stat(a, pmtu_probes, N)).
 
-%% The path shrinks after the search: packets bundling several small
-%% messages at the large size are lost, the retransmission timeout falls
-%% back to the base and the retransmissions, bundled again at the base
-%% size, get through. (A DATA chunk keeps its size once sent: a chunk
-%% fragmented at the large size cannot shrink.)
+%% The path shrinks after the search. Packets bundling several messages
+%% at the large size are lost; the retransmission timeout falls back to
+%% the base, and since DATA chunks are always cut for the base size, the
+%% retransmissions get through, a large message's fragments included.
 pmtu_black_hole_test() ->
     N0 = ?NET:run(60000, established(pmtu_opts(), pmtu_opts(), #{mtu => infinity})),
     ?assertMatch(#{pmtu := 1412}, info(a, N0)),
     N1 = ?NET:set(filter, path_limit(1200), N0),
     Msgs = [payload(I, 300) || I <- lists:seq(1, 20)],
-    N2 = lists:foldl(fun(M, Acc) -> send(a, 0, M, #{}, Acc) end, N1, Msgs),
-    N3 = wait_messages(b, 20, N2),
-    ?assertEqual([{0, 53, M} || M <- Msgs], received(b, N3)),
+    Large = payload(99, 40000),
+    N2 = send(a, 1, Large, #{}, lists:foldl(fun(M, Acc) -> send(a, 0, M, #{}, Acc) end, N1, Msgs)),
+    N3 = wait_messages(b, 21, N2),
+    ?assertEqual(lists:sort([{0, 53, M} || M <- Msgs] ++ [{1, 53, Large}]), lists:sort(received(b, N3))),
     ?assert(stat(a, pmtu_black_holes, N3) >= 1),
-    ?assertMatch(#{pmtu := 1163}, info(a, N3)).
+    ?assertMatch(#{pmtu := 1163}, info(a, N3)),
+    ?assertMatch(#{error_count := E} when E < 10, ?A:stats(?NET:engine(a, N3))).
+
+%% After the search packets are larger, DATA chunks are not.
+pmtu_chunks_stay_base_test() ->
+    N0 = ?NET:run(60000, established(pmtu_opts(), pmtu_opts(), #{mtu => infinity})),
+    ?assertMatch(#{pmtu := 1412}, info(a, N0)),
+    Self = self(),
+    Tap = fun(a, Bin, _) ->
+                  {ok, #sctp_packet{chunks = Cs}} = webrtc_sctp_chunk:decode(Bin),
+                  [Self ! {chunk, byte_size(D)} || #sctp_data{data = D} <- Cs],
+                  keep;
+             (_, _, _) -> keep
+          end,
+    N1 = wait_messages(b, 1, send(a, 0, payload(7, 20000), #{}, ?NET:set(filter, Tap, N0))),
+    _ = N1,
+    Sizes = sizes([]),
+    ?assert(lists:max(Sizes) =< 1163 - 12 - 16),
+    ?assert(length(Sizes) >= 18).
+
+sizes(Acc) ->
+    receive {chunk, N} -> sizes([N | Acc])
+    after 0 -> Acc
+    end.
 
 %% A path change: base size, initial cwnd and RTO, then a new search.
 path_changed_test() ->

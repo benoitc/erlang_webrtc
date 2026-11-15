@@ -232,4 +232,8 @@ handle_timeout(Now, #cb{streams = Ss, rtcp_timeout = T} = Cb) ->
 
 -spec stats(state()) -> map().
 stats(#cb{streams = Ss}) ->
-    maps:map(fun(_, S) -> #{tripped => S#s.tripped, packets => S#s.total_packets, bytes => S#s.total_bytes} end, Ss).
+    maps:map(fun(_, S) ->
+                     #{tripped => S#s.tripped, packets => S#s.total_packets, bytes => S#s.total_bytes,
+                       %% Loss of the last report (CE marks included, RFC 8083 §4.4).
+                       loss => case S#s.reports of [{_, L, _, _} | _] -> L; [] -> undefined end}
+             end, Ss).

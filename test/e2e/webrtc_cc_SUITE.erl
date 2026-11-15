@@ -195,7 +195,7 @@ probing_fills_link_at_start(Config) ->
 
 %% The application caps the estimate at 800 kbps on a 3 Mbps link, then
 %% lifts the cap: a probe at the new maximum gets the estimate near the
-%% link within a second instead of the 8% a second ramp.
+%% link within seconds instead of the 8% a second ramp.
 probing_on_raised_maximum(Config) ->
     {A, B} = pair(Config, #{rate => 3000000, queue_ms => 300}),
     ok = webrtc:set_congestion_control(A, #{max_bitrate => 800000}),

@@ -76,7 +76,9 @@ process_test_() ->
         fun fqdn_lookup/0,
         fun bad_name/0,
         fun owner_exit_stops_resolver/0,
-        fun responder_answers_queries/0
+        fun responder_answers_queries/0,
+        fun ipv6_only_answer/0,
+        fun responder_answers_ipv6/0
     ]}.
 
 legacy_unicast() ->
@@ -182,6 +184,61 @@ responder_answers_queries() ->
     gen_udp:close(Q),
     gen_udp:close(G).
 
+-define(LO6, {0, 0, 0, 0, 0, 0, 0, 1}).
+
+free_port6() ->
+    {ok, S} = gen_udp:open(0, [inet6, {ip, ?LO6}]),
+    {ok, P} = inet:port(S),
+    ok = gen_udp:close(S),
+    P.
+
+%% RFC 6762 §20: a responder reachable over IPv6 only. The IPv4 group
+%% stays silent; the answer comes back over the IPv6 query socket.
+ipv6_only_answer() ->
+    G6 = free_port6(),
+    {ok, F} = gen_udp:open(G6, [binary, inet6, {ip, ?LO6}, {active, true}]),
+    {ok, M} = webrtc_mdns:start(#{group => {?LO, free_port()}, listen => false, group6 => {?LO6, G6},
+                                  listen6 => false, schedule => [100, 100]}),
+    Ref = webrtc_mdns:resolve(M, ?NAME),
+    receive
+        {udp, F, IP, P, Q} ->
+            {ok, #{id := Id, questions := [#{name := ?NAME, type := a}]}} = ?MSG:decode(Q),
+            ok = gen_udp:send(F, IP, P, ?MSG:encode_response(Id, [{?NAME, a}], [{?NAME, {127, 0, 0, 1}, 10, false}], []))
+    after 2000 -> error(no_ipv6_query)
+    end,
+    ?assertEqual({ok, [{127, 0, 0, 1}]}, result(Ref)),
+    ok = webrtc_mdns:stop(M),
+    gen_udp:close(F).
+
+%% Our names are announced on the IPv6 group too, and an IPv6 query is
+%% answered there, with NSEC for the family the name lacks.
+responder_answers_ipv6() ->
+    G6 = free_port6(),
+    L6 = free_port6(),
+    {ok, G} = gen_udp:open(G6, [binary, inet6, {ip, ?LO6}, {active, true}]),
+    {ok, M} = webrtc_mdns:start(#{group => {?LO, free_port()}, listen => false, group6 => {?LO6, G6},
+                                  listen6 => {?LO6, L6}}),
+    {ok, Name} = webrtc_mdns:register_name(M, {192, 0, 2, 10}),
+    receive {udp, G, _, L6, Ann} -> ?assertMatch({ok, #{answers := [#{name := Name}]}}, ?MSG:decode(Ann))
+    after 2000 -> error(no_ipv6_announcement)
+    end,
+    ok = gen_udp:send(G, ?LO6, L6, ?MSG:encode_query(0, [{Name, aaaa, false}])),
+    receive {udp, G, _, L6, R} -> ?assertMatch({ok, #{answers := [#{type := nsec}]}}, ?MSG:decode(R))
+    after 2000 -> error(no_ipv6_reply)
+    end,
+    ok = webrtc_mdns:stop(M),
+    gen_udp:close(G).
+
+%% RFC 6762 §11: sources of either family against networks of both.
+from_link_test() ->
+    Nets = [{{10, 0, 0, 0}, {255, 0, 0, 0}}, {{16#2001, 16#db8, 0, 0, 0, 0, 0, 0}, {16#ffff, 16#ffff, 16#ffff, 16#ffff, 0, 0, 0, 0}}],
+    ?assert(webrtc_mdns:from_link({{10, 1, 2, 3}, 5353}, Nets)),
+    ?assertNot(webrtc_mdns:from_link({{203, 0, 113, 9}, 5353}, Nets)),
+    ?assert(webrtc_mdns:from_link({{16#2001, 16#db8, 0, 0, 1, 2, 3, 4}, 5353}, Nets)),
+    ?assertNot(webrtc_mdns:from_link({{16#2001, 16#db9, 0, 0, 1, 2, 3, 4}, 5353}, Nets)),
+    %% Link-local IPv6 is on the link.
+    ?assert(webrtc_mdns:from_link({{16#fe80, 0, 0, 0, 1, 2, 3, 4}, 5353}, Nets)).
+
 %%--------------------------------------------------------------------
 %% Responder, sans-IO
 %%--------------------------------------------------------------------
@@ -215,14 +272,29 @@ responder_rate_limit_test() ->
 responder_ignores_test() ->
     {Name, R} = responder(),
     Ignored = [
-        %% wrong family, other name, a response, garbage
-        ?MSG:encode_query(0, [{Name, aaaa, false}]),
+        %% other name, a response, garbage
         ?MSG:encode_query(0, [{<<"other.local">>, a, false}]),
         ?MSG:encode_response(0, [], [{Name, {10, 0, 0, 1}, 120, true}], []),
         <<1, 2, 3>>
     ],
     [?assertMatch({_, []}, ?RS:handle_query(?SRC, 5353, B, 0, R)) || B <- Ignored],
     ?assertMatch({_, []}, ?RS:handle_query(?SRC, 5353, ?MSG:encode_query(0, [{Name, a, false}]), 0, ?RS:new(#{}))).
+
+%% RFC 6762 §6.1: a question for the family the name does not have is
+%% answered with an NSEC record listing the one it has.
+responder_nsec_test() ->
+    {Name, R} = responder(),
+    {_, Out} = ?RS:handle_query(?SRC, 5353, ?MSG:encode_query(0, [{Name, aaaa, false}]), 0, R),
+    [{group, #{answers := [#{name := Name, type := nsec, ttl := 120, data := Rdata}]}}] = decode_out(Out),
+    %% Next domain name is the name itself, then window 0 with bit 1 (A).
+    {ok, Labels} = ?MSG:name_labels(Name),
+    NameWire = iolist_to_binary([[<<(byte_size(L))>>, L] || L <- Labels] ++ [<<0>>]),
+    ?assertEqual(<<NameWire/binary, 0, 1, 16#40>>, Rdata),
+    {ok, N6, R6} = ?RS:register({16#fe80, 0, 0, 0, 0, 0, 0, 1}, ?RS:new(#{})),
+    {_, Out6} = ?RS:handle_query(?SRC, 5353, ?MSG:encode_query(0, [{N6, a, false}]), 0, R6),
+    %% AAAA is type 28: window 0, 4 octets, bit 28.
+    [{group, #{answers := [#{type := nsec, data := Rdata6}]}}] = decode_out(Out6),
+    ?assertEqual(<<0, 4, 0, 0, 0, 16#08>>, binary:part(Rdata6, byte_size(Rdata6), -6)).
 
 responder_known_answer_test() ->
     {Name, R} = responder(),

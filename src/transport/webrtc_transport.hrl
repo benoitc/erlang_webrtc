@@ -50,5 +50,8 @@
     %% Host name candidates (mDNS, FQDN) being resolved.
     mdns :: webrtc_mdns_client:client(),
     %% Datagrams dropped before DTLS or SRTP, by reason.
-    dropped = #{} :: #{atom() => pos_integer()}
+    dropped = #{} :: #{atom() => pos_integer()},
+    %% The selected pair, to tell a path change (connection ID
+    %% rotation); `restart' after an ICE restart.
+    pair :: undefined | restart | {term(), term()}
 }).

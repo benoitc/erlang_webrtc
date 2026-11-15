@@ -995,3 +995,144 @@ new_connection_id_test() ->
     {C3, Acts} = webrtc_dtls:handle_packet(D2, 100, C2),
     ?assertEqual(failed, C3#dtls.state),
     ?assertMatch([_ | _], [A || {send, _} = A <- Acts]).
+
+%%====================================================================
+%% Resumption key schedule (RFC 8448 §3 and §4)
+%%====================================================================
+
+hx(S) -> binary:decode_hex(iolist_to_binary(string:replace(S, " ", "", all))).
+
+rfc8448_resumption_test() ->
+    K = webrtc_dtls13_keys,
+    Master = hx("18 df 06 84 3d 13 a0 8b f2 a4 49 84 4c 5f 8a 47 80 01 bc 4d 4c 62 79 84 d5 a4 1d a8 d0 40 29 19"),
+    RMS = K:resumption_master_secret(?T13, sha256, Master,
+        hx("20 91 45 a9 6e e8 e2 a1 22 ff 81 00 47 cc 95 26 84 65 8d 60 49 e8 64 29 42 6d b8 7c 54 ad 14 3d")),
+    ?assertEqual(hx("7d f2 35 f2 03 1d 2a 05 12 87 d0 2b 02 41 b0 bf da f8 6c c8 56 23 1f 2d 5a ba 46 c4 34 ec 19 6c"), RMS),
+    Psk = K:resumption_psk(?T13, sha256, RMS, <<0, 0>>),
+    ?assertEqual(hx("4e cd 0e b6 ec 3b 4d 87 f5 d6 02 8f 92 2c a4 c5 85 1a 27 7f d4 13 11 c9 e6 2d 2c 94 92 e1 c4 f3"), Psk),
+    Early = K:early_secret(?T13, sha256, Psk),
+    ?assertEqual(hx("9b 21 88 e9 b2 fc 6d 64 d7 1d c3 29 90 0e 20 bb 41 91 50 00 f6 78 aa 83 9c bb 79 7c b7 d8 33 2c"), Early),
+    BK = K:binder_key(?T13, sha256, Early),
+    ?assertEqual(hx("69 fe 13 1a 3b ba d5 d6 3c 64 ee bc c3 0e 39 5b 9d 81 07 72 6a 13 d0 74 e3 89 db c8 a4 e4 72 56"), BK),
+    ?assertEqual(hx("3a dd 4f b2 d8 fd f8 22 a0 ca 3c f7 67 8e f5 e8 8d ae 99 01 41 c5 92 4d 57 bb 6f a3 1b 9e 5f 9d"),
+                 K:binder(?T13, sha256, BK,
+                          hx("63 22 4b 2e 45 73 f2 d3 45 4c a8 4b 9d 00 9a 04 f6 be 9e 05 71 1a 83 96 47 3a ef a0 1e 92 4a 14"))),
+    ?assertEqual(hx("3f bb e6 a6 0d eb 66 c3 0a 32 79 5a ba 0e ff 7e aa 10 10 55 86 e7 be 5c 09 67 8d 63 b6 ca ab 62"),
+                 K:client_early_secret(?T13, sha256, Early,
+                     hx("08 ad 0f a0 5d 7c 72 33 b1 77 5b a2 ff 9f 4c 5b 8b 59 27 6b 7f 22 7f 13 a9 76 24 5f 5d 96 09 13"))).
+
+%%====================================================================
+%% Resumption and 0-RTT (RFC 8446 §2.2, §2.3)
+%%====================================================================
+
+resume_opts() -> #{resumption => true}.
+
+info(E) -> webrtc_dtls:info(E).
+
+%% A full handshake leaves a ticket with the client; the next
+%% handshake between the same certificates resumes with it, and gets a
+%% new ticket for the one after.
+resumption_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, resume_opts(), resume_opts()),
+    W1 = run(C1, S1),
+    #{c := Cs1} = W1,
+    ?assertMatch(#{resumed := false}, info(Cs1)),
+    lists:foreach(
+        fun(_) ->
+            {C2, S2} = pair(C, S, resume_opts(), resume_opts()),
+            #{c := Cs2, s := Ss2, ev := #{c := CE, s := SE}} = run(C2, S2),
+            ?assertMatch([_], connected(CE)),
+            ?assertMatch([_], connected(SE)),
+            ?assertMatch(#{resumed := true}, info(Cs2)),
+            ?assertMatch(#{resumed := true}, info(Ss2)),
+            ?assertEqual(webrtc_dtls:export_keying_material(?LABEL, no_context, 60, Cs2),
+                         webrtc_dtls:export_keying_material(?LABEL, no_context, 60, Ss2)),
+            {Cs3, Ss3, _} = data(Cs2, Ss2, <<"after resumption">>, 1000),
+            _ = data(Ss3, Cs3, <<"back">>, 1000)
+        end,
+        [1, 2]
+    ).
+
+%% The ticket's client certificate is no longer among the server's
+%% fingerprints (the client changed certificate): a full handshake.
+resumption_refused_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, resume_opts(), resume_opts()),
+    _ = run(C1, S1),
+    C2 = webrtc_dtls_cert:generate(),
+    {Cl, Sv} = pair(C2, S, resume_opts(), resume_opts()),
+    #{c := Cs, s := Ss, ev := #{c := CE}} = run(Cl, Sv),
+    ?assertMatch([_], connected(CE)),
+    ?assertMatch(#{resumed := false}, info(Cs)),
+    ?assertMatch(#{resumed := false}, info(Ss)).
+
+zero_rtt_opts() -> #{resumption => true, early_data => true}.
+
+%% 0-RTT: data sent right after the ClientHello reaches the server in
+%% epoch 1 and is delivered once the connection is up.
+early_data_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    _ = run(C1, S1),
+    {C2, S2} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    {Cl1, A1} = webrtc_dtls:start(0, C2),
+    {ok, Cl2, A2} = webrtc_dtls:send(<<"early hello">>, Cl1),
+    W0 = webrtc_dtls_sim:run(Cl2, S2, fun webrtc_dtls_sim:pass/3, #{start => false}),
+    #{s := Ss, c := Cs, ev := #{s := SE}} = webrtc_dtls_sim:deliver(W0, c, A1 ++ A2),
+    ?assert(lists:member({data, <<"early hello">>}, SE)),
+    ?assertMatch(#{resumed := true, early_data := accepted}, info(Ss)),
+    ?assertMatch(#{early_data := accepted}, info(Cs)),
+    %% The same first flight again (a replay) to another server: the
+    %% early data is refused (single use, §8.1) and the server answers
+    %% with a cookie instead.
+    {_, S3} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    {Ss3, Out} = lists:foldl(fun({send, D}, {Sv, Acc}) -> {Sv1, A} = webrtc_dtls:handle_packet(D, 0, Sv), {Sv1, Acc ++ A} end,
+                             {S3, []}, A1 ++ A2),
+    ?assertNotEqual(accepted, maps:get(early_data, info(Ss3), undefined)),
+    ?assertNot(lists:member({event, {data, <<"early hello">>}}, Out)).
+
+%% Without a ticket nothing can be sent before the handshake.
+no_ticket_no_early_data_test() ->
+    {C1, _} = pair(zero_rtt_opts(), zero_rtt_opts()),
+    {Cl, _} = webrtc_dtls:start(0, C1),
+    ?assertEqual({error, not_connected}, webrtc_dtls:send(<<"x">>, Cl)).
+
+%% RFC 8446 §4.2.9: no NewSessionTicket for a client that offered no
+%% psk_key_exchange_modes; a client with resumption on offers them in
+%% its first ClientHello, before it holds any ticket.
+tickets_need_psk_modes_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    {C1, S1} = pair(#{}, resume_opts()),
+    #{s := Ss1} = run(C1, S1),
+    ?assertEqual(0, Ss1#dtls.ticket_nonce),
+    {C2, S2} = pair(resume_opts(), resume_opts()),
+    #{s := Ss2} = run(C2, S2),
+    ?assertEqual(1, Ss2#dtls.ticket_nonce).
+
+%% A HelloRetryRequest rejects 0-RTT (RFC 8446 §4.1.2): the client
+%% reports it, still resumes and sends the data once connected.
+early_data_rejected_on_retry_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    _ = run(C1, S1),
+    %% This server takes no early data, so it sends its cookie first.
+    {C2, S2} = pair(C, S, zero_rtt_opts(), resume_opts()),
+    {Cl1, A1} = webrtc_dtls:start(0, C2),
+    {ok, Cl2, A2} = webrtc_dtls:send(<<"early hello">>, Cl1),
+    W0 = webrtc_dtls_sim:run(Cl2, S2, fun webrtc_dtls_sim:pass/3, #{start => false}),
+    #{s := Ss, c := Cs, ev := #{s := SE, c := CE}} = webrtc_dtls_sim:deliver(W0, c, A1 ++ A2),
+    ?assert(Cs#dtls.hrr),
+    ?assert(lists:member(early_data_rejected, CE)),
+    ?assertNot(lists:member({data, <<"early hello">>}, SE)),
+    ?assertMatch(#{resumed := true, early_data := rejected}, info(Cs)),
+    ?assertMatch(#{resumed := true}, info(Ss)),
+    _ = data(Cs, Ss, <<"early hello">>, 1000).

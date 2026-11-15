@@ -35,7 +35,8 @@
     cryptex/1,
     channel_priorities/1,
     dtls_connection_id/1,
-    header_extension_encryption/1
+    header_extension_encryption/1,
+    dtls_resumption/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -70,7 +71,8 @@ all() ->
         cryptex,
         channel_priorities,
         dtls_connection_id,
-        header_extension_encryption
+        header_extension_encryption,
+        dtls_resumption
     ].
 
 init_per_suite(Config) ->
@@ -484,6 +486,30 @@ find_element(Id, <<I:4, L:4, Rest/binary>>) ->
         Id -> Data;
         _ -> find_element(Id, Tail)
     end.
+
+%% RFC 8446 §2.2: the second association between the same certificates
+%% resumes with the ticket of the first, without certificate messages;
+%% data channels work on it.
+dtls_resumption(_Config) ->
+    CA = webrtc_dtls_cert:generate(),
+    CB = webrtc_dtls_cert:generate(),
+    Opts = fun(C) -> #{loopback => true, certificate => C, dtls => #{resumption => true}} end,
+    Resumed = [begin
+                   {ok, A} = webrtc:new_peer_connection(Opts(CA)),
+                   {ok, B} = webrtc:new_peer_connection(Opts(CB)),
+                   ok = webrtc:create_data_channel(A, <<"r">>, #{}),
+                   ?S:connect(A, B),
+                   Id = channel_id(A, <<"r">>),
+                   ok = webrtc:send_data(A, Id, text, <<"hi">>),
+                   _ = message(B, <<"hi">>),
+                   %% Let the ticket arrive before closing.
+                   timer:sleep(200),
+                   #{transport := #{dtls := #{resumed := R}}} = webrtc:get_stats(A),
+                   webrtc:close(A),
+                   webrtc:close(B),
+                   R
+               end || _ <- [1, 2]],
+    ?assertEqual([false, true], Resumed).
 
 keyframe_request(_Config) ->
     A = pc(),

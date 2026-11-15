@@ -8,6 +8,11 @@ Run it with `make test-interop` after building the adapters (`make -C interop al
 
 DTLS 1.3 is offered by default. It was negotiated with OpenSSL 4.1 (`-dtls1_3`, both roles, all three suites, KeyUpdate, HelloRetryRequest, matching exported keys) and Chromium (both DTLS roles, data channel and SRTP keyed from the 1.3 exporter). Pion, aiortc and OTP ssl only support DTLS 1.2: our offer falls back, and a stripped ClientHello is detected through the downgrade sentinel. The rows below are the DTLS 1.2 cases.
 
+Resumption and 0-RTT (`dtls => #{resumption => true, early_data => true}`) were tested with OpenSSL 4.1 in both roles:
+
+- `s_client -sess_out` then `-sess_in` resumes against our server, and its `-early_data` is accepted in 0-RTT.
+- Our client resumes against `s_server` with a ticket OpenSSL issued. `s_server` always sends its cookie HelloRetryRequest, which rejects 0-RTT, so our client reports `early_data_rejected` and resends after the handshake. With anti-replay on, OpenSSL uses single-use tickets that the first ClientHello consumes, so the retried one gets a full handshake; the case runs `s_server -no_anti_replay`.
+
 | Peer | Our role | Handshake | SRTP profile | Exported keys match | App data | Status |
 |---|---|---|---|---|---|---|
 | OTP ssl 11.7.8 (DTLS 1.2) | client | yes | AEAD_AES_128_GCM | yes | both ways | Pass (with `require_ems => false`, OTP has no RFC 7627) |

@@ -53,7 +53,7 @@ start_client(St) ->
             true ->
                 [G | _] = St1#dtls.groups,
                 {Pub, Priv} = webrtc_dtls_crypto:generate_ecdhe(G),
-                St1#dtls{kx = {G, Pub, Priv}};
+                webrtc_dtls13_hs:take_ticket(St1#dtls{kx = {G, Pub, Priv}});
             false ->
                 St1#dtls{versions = St1#dtls.versions -- [dtls13]}
         end,
@@ -61,7 +61,7 @@ start_client(St) ->
 
 send_client_hello(St) ->
     {_, St1} = queue_handshake(client_hello, client_hello_body(St), true, St),
-    St1.
+    webrtc_dtls13_hs:client_early_keys(St1).
 
 %% @doc The ClientHello for the versions we offer. A second ClientHello
 %% (after HelloVerifyRequest or HelloRetryRequest) only differs by the
@@ -82,14 +82,15 @@ client_hello_body(St) ->
             [{extended_master_secret, true} || Offer12] ++
             [{renegotiation_info, <<>>} || Offer12] ++
             srtp_ext(St#dtls.srtp_profiles) ++ Exts13,
-    webrtc_dtls_msg:encode_body(client_hello, #{
+    Body = webrtc_dtls_msg:encode_body(client_hello, #{
         version => ?DTLS12,
         random => St#dtls.client_random,
         session_id => <<>>,
         cookie => St#dtls.cookie,
         suites => Suites13 ++ [S || Offer12, S <- St#dtls.suites],
         extensions => Exts
-    }).
+    }),
+    webrtc_dtls13_hs:bind_psk(Body, St).
 
 srtp_ext([]) -> [];
 srtp_ext(Profiles) -> [{use_srtp, {Profiles, <<>>}}].

@@ -168,6 +168,13 @@ content(application_data, Data, E, _Seq, _Now, #dtls{peer_finished = true} = St)
         false when length(St#dtls.held) < ?MAX_HELD -> St#dtls{held = [Data | St#dtls.held]};
         false -> St
     end;
+content(application_data, Data, 1, _Seq, _Now, #dtls{role = server, zero_rtt = accepted} = St) ->
+    %% 0-RTT data (RFC 8446 §2.3), reported once the connection is.
+    case St#dtls.announced of
+        true -> emit({data, Data}, St);
+        false when length(St#dtls.held) < ?MAX_HELD -> St#dtls{held = [Data | St#dtls.held]};
+        false -> St
+    end;
 content(_Type, _Data, _E, _Seq, _Now, St) ->
     St.
 

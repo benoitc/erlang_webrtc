@@ -28,6 +28,10 @@
     openssl13_rsa_certificates/1,
     openssl13_rejected_fingerprint/1,
     openssl13_client_without_certificate/1,
+    openssl13_server_resumption/1,
+    openssl13_client_resumption/1,
+    openssl13_server_early_data/1,
+    openssl13_client_early_data/1,
     openssl_any_client_our_server/1,
     openssl_any_client_our_12_server/1,
     openssl_any_server_our_12_client/1,
@@ -68,8 +72,9 @@ groups() ->
             openssl_any_client_our_server,
             openssl_any_client_our_12_server,
             openssl_any_server_our_12_client,
-            openssl_downgrade_detected
-        ]},
+            openssl_downgrade_detected,
+                              openssl13_server_resumption, openssl13_client_resumption,
+                              openssl13_server_early_data, openssl13_client_early_data]},
         {chromium, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
         {firefox, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
         {pion, [], [pc_dtls_version, pc_dtls_version_peer_offer]},
@@ -644,4 +649,111 @@ forward_erlang(Pc, P, Ours) ->
             ct:fail(erlang_connection_failed)
     after 0 ->
         Ours
+    end.
+
+%%--------------------------------------------------------------------
+%% Resumption and 0-RTT (RFC 8446 §2.2, §2.3)
+%%--------------------------------------------------------------------
+
+%% Our client against one s_server: the second connection resumes with
+%% the ticket of the first, and with early data that s_server prints.
+openssl13_server_resumption(Config) ->
+    server_resumption(Config, #{resumption => true}, "").
+
+openssl13_server_early_data(Config) ->
+    server_resumption(Config, #{resumption => true, early_data => true}, "-early_data -no_anti_replay").
+
+server_resumption(Config, Ours, Extra) ->
+    ok = webrtc_dtls_tickets:ensure(),
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    P = free_udp_port(),
+    Cmd = ossl_cmd(?config(openssl, Config), "s_server", "-dtls1_3", C, K,
+                   io_lib:format("-accept 127.0.0.1:~b -Verify 1 -naccept 2 ~s", [P, Extra])),
+    Port = open_port({spawn, Cmd}, [binary, stderr_to_stdout, exit_status]),
+    timer:sleep(500),
+    New = fun() -> webrtc_dtls:new(maps:merge(#{role => client, cert => Mine, remote_fingerprints => [fp(Theirs)]}, Ours)) end,
+    {Sock1, _} = webrtc_dtls_udp:open(),
+    {ok, D1, Peer, _} = webrtc_dtls_udp:run(Sock1, {{127, 0, 0, 1}, P}, New(), #{start => true, stop => fun connected/1}),
+    %% Take in the tickets.
+    {timeout, D1b, _, _} = webrtc_dtls_udp:run(Sock1, Peer, D1, #{stop => fun(_) -> false end, timeout => 1000}),
+    {D1c, A} = webrtc_dtls:close(D1b),
+    _ = webrtc_dtls_udp:send(Sock1, Peer, A),
+    _ = D1c,
+    gen_udp:close(Sock1),
+    timer:sleep(300),
+    {Sock2, _} = webrtc_dtls_udp:open(),
+    {D2, A2} = webrtc_dtls:start(0, New()),
+    {D3, Early} =
+        case maps:get(early_data, Ours, false) of
+            true -> {ok, D, E} = webrtc_dtls:send(<<"early from erlang\n">>, D2), {D, E};
+            false -> {D2, []}
+        end,
+    _ = webrtc_dtls_udp:send(Sock2, {{127, 0, 0, 1}, P}, A2 ++ Early),
+    {ok, D4, Peer2, Ev} = webrtc_dtls_udp:run(Sock2, {{127, 0, 0, 1}, P}, D3, #{stop => fun connected/1}),
+    [Info] = [I || {connected, I} <- Ev],
+    ?assertMatch(#{version := 'dtlsv1.3', resumed := true}, Info),
+    case maps:get(early_data, Ours, false) of
+        true ->
+            %% s_server always sends its cookie HelloRetryRequest, which
+            %% rejects 0-RTT (RFC 8446 §4.1.2): the data is resent.
+            ?assert(lists:member(early_data_rejected, Ev)),
+            ?assertMatch(#{early_data := rejected}, webrtc_dtls:info(D4)),
+            {ok, _, Recs} = webrtc_dtls:send(<<"early from erlang\n">>, D4),
+            _ = webrtc_dtls_udp:send(Sock2, Peer2, Recs),
+            Out = collect_port(Port, <<>>, deadline(3000), "early from erlang"),
+            ?assertMatch({match, _}, re:run(Out, "early from erlang"));
+        false ->
+            ok
+    end,
+    close_port(Port),
+    gen_udp:close(Sock2).
+
+%% s_client against our server twice: -sess_out keeps the ticket, the
+%% second run resumes with -sess_in (and sends early data).
+openssl13_client_resumption(Config) ->
+    client_resumption(Config, #{resumption => true}, "").
+
+openssl13_client_early_data(Config) ->
+    client_resumption(Config, #{resumption => true, early_data => true}, early).
+
+client_resumption(Config, Ours, Early) ->
+    ok = webrtc_dtls_tickets:ensure(),
+    {Mine, Theirs} = certs(#{}),
+    {C, K} = pem(Config, Theirs),
+    Sess = filename:join(?config(priv_dir, Config), "sess" ++ integer_to_list(erlang:unique_integer([positive]))),
+    Exe = ?config(openssl, Config),
+    New = fun() -> webrtc_dtls:new(maps:merge(#{role => server, cert => Mine, remote_fingerprints => [fp(Theirs)]}, Ours)) end,
+    Run = fun(Extra) ->
+        {Sock, P} = webrtc_dtls_udp:open(),
+        Port = open_port({spawn, ossl_cmd(Exe, "s_client", "-dtls1_3", C, K,
+                                          io_lib:format("-connect 127.0.0.1:~b ~s", [P, Extra]))},
+                         [binary, stderr_to_stdout, exit_status]),
+        {ok, D1, Peer, Ev} = webrtc_dtls_udp:run(Sock, undefined, New(), #{stop => fun connected/1}),
+        {timeout, D2, _, Ev2} = webrtc_dtls_udp:run(Sock, Peer, D1, #{stop => fun(_) -> false end, timeout => 1500}),
+        close_port(Port),
+        gen_udp:close(Sock),
+        {webrtc_dtls:info(D2), Ev ++ Ev2}
+    end,
+    {I1, _} = Run("-sess_out " ++ Sess),
+    ?assertMatch(#{resumed := false}, I1),
+    ?assert(filelib:is_regular(Sess)),
+    EarlyArg =
+        case Early of
+            early ->
+                File = Sess ++ ".early",
+                ok = file:write_file(File, <<"early from openssl\n">>),
+                " -early_data " ++ File;
+            _ ->
+                ""
+        end,
+    {I2, Ev} = Run("-sess_in " ++ Sess ++ EarlyArg),
+    ct:pal("second connection: ~p", [I2]),
+    ?assertMatch(#{resumed := true}, I2),
+    case Early of
+        early ->
+            ?assertMatch(#{early_data := accepted}, I2),
+            ?assert(lists:any(fun({data, D}) -> binary:match(D, <<"early from openssl">>) =/= nomatch; (_) -> false end, Ev));
+        _ ->
+            ok
     end.

@@ -17,19 +17,34 @@ negotiated(Local, Remote, J) ->
         [] -> undefined
     end.
 
-negotiated(Tag, Ice, Local, Remote, J) ->
+negotiated(Tag0, Ice0, Local, Remote, J) ->
+    Groups = webrtc_jsep_transport:groups(Local),
+    Transports = [transport_params(K, Ms, Groups, Remote, J) || {K, Ms, _} <- Groups],
+    Key = fun(Mid) -> webrtc_jsep_transport:key_of(Mid, Groups) end,
     Media = [
-        media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), Remote)
+        M#{transport => Key(maps:get(mid, M))}
      || #tr{mline = L, stopped = false} = T <- J#jsep.transceivers,
         L =/= undefined,
-        section(L, Local) =/= undefined
+        section(L, Local) =/= undefined,
+        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), Remote)],
+        M =/= undefined
     ],
     Data =
         case J#jsep.data_mline of
             undefined -> undefined;
-            DL -> data_params(J, section(DL, Remote))
+            DL ->
+                case data_params(J, section(DL, Remote)) of
+                    undefined -> undefined;
+                    D -> D#{transport => Key(J#jsep.data_mid)}
+                end
         end,
-    #{
+    %% The first transport keeps the top level ice and dtls.
+    {Tag, Ice} =
+        case Transports of
+            [#{tag_section := TS, remote_ice := RI} | _] -> {TS, RI};
+            [] -> {Tag0, Ice0}
+        end,
+    Base = #{
         ice => #{
             remote_ufrag => maps:get(ufrag, Ice),
             remote_pwd => maps:get(pwd, Ice),
@@ -55,12 +70,57 @@ negotiated(Tag, Ice, Local, Remote, J) ->
              || #{hash := H, value := V} <- webrtc_sdp_media:fingerprints(Tag, Remote), is_atom(H)
             ]
         },
-        media => [M || M <- Media, M =/= undefined],
+        media => Media,
         data => Data,
         bundle => case webrtc_sdp_media:groups(<<"BUNDLE">>, Remote) of
             [G | _] -> G;
             [] -> []
         end
+    },
+    Base#{transports => [maps:without([tag_section, remote_ice], T) || T <- Transports]}.
+
+%% ICE and DTLS parameters of one transport, from its first active
+%% section in the remote description (the tag when it is active).
+transport_params(Key, Mids, Groups, Remote, J) ->
+    Sections = [M || M <- Remote#sdp.media, lists:member(webrtc_sdp_media:mid(M), Mids)],
+    Active = [M || M <- Sections, M#sdp_media.port =/= 0],
+    Tag =
+        case [M || M <- Active, webrtc_sdp_media:mid(M) =:= Key] ++ Active of
+            [T | _] -> T;
+            [] -> hd(Sections ++ Remote#sdp.media)
+        end,
+    Ice =
+        case webrtc_sdp_media:ice_credentials(Tag, Remote) of
+            {ok, I} -> I;
+            _ -> #{ufrag => <<>>, pwd => <<>>}
+        end,
+    {U, P} = webrtc_jsep_build:creds(Key, Groups, J),
+    #{
+        key => Key,
+        mids => Mids,
+        tag_section => Tag,
+        remote_ice => Ice,
+        ice => #{
+            remote_ufrag => maps:get(ufrag, Ice),
+            remote_pwd => maps:get(pwd, Ice),
+            remote_lite => webrtc_sdp_media:ice_lite(Remote),
+            remote_candidates => lists:flatmap(fun webrtc_sdp_media:candidates/1, Sections),
+            remote_end_of_candidates => lists:any(fun webrtc_sdp_media:end_of_candidates/1, Sections),
+            local_ufrag => U,
+            local_pwd => P
+        },
+        dtls => #{
+            role => J#jsep.dtls_role,
+            remote_tls_id =>
+                case webrtc_sdp_media:find_attr(tls_id, Tag, Remote) of
+                    {ok, Id} -> Id;
+                    error -> undefined
+                end,
+            remote_fingerprints => [
+                {H, V}
+             || #{hash := H, value := V} <- webrtc_sdp_media:fingerprints(Tag, Remote), is_atom(H)
+            ]
+        }
     }.
 
 media_params(_T, _L, undefined, _Remote) ->

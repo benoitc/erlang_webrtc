@@ -32,6 +32,8 @@
     add_data_channel/1,
     restart_ice/3,
     set_local_candidates/3,
+    set_local_candidates/4,
+    transports/1,
     create_offer/2,
     create_answer/2,
     set_local_description/3,
@@ -79,7 +81,8 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         session_id = Sid,
         caps = Caps,
         sctp_port = maps:get(sctp_port, Opts, 5000),
-        max_message_size = maps:get(max_message_size, Opts, 262144)
+        max_message_size = maps:get(max_message_size, Opts, 262144),
+        bundle = maps:get(bundle, Opts, true)
     }.
 
 %% @doc Add a transceiver (RTCPeerConnection.addTransceiver). Returns a
@@ -164,6 +167,32 @@ restart_ice(U, P, J) ->
     J#jsep{ice_ufrag = U, ice_pwd = P, ice_restart = true}.
 
 %% @doc Candidates to include in descriptions created from now on.
+%% @doc Candidates of the transport `Key' (see `transports/1') to
+%% include in descriptions created from now on.
+-spec set_local_candidates(binary(), [#sdp_candidate{}], boolean(), state()) -> state().
+set_local_candidates(Key, Cands, EndOfCandidates, J) ->
+    case transports(J) of
+        [#{key := Key} | _] -> set_local_candidates(Cands, EndOfCandidates, J);
+        _ -> J#jsep{local_cands = (J#jsep.local_cands)#{Key => {Cands, EndOfCandidates}}}
+    end.
+
+%% @doc The transports of the local description (current or pending,
+%% else the offer to be created), first one first: `#{key, mids, ufrag,
+%% pwd}'. A BUNDLE group is one transport (RFC 9143); an unbundled
+%% section has its own.
+-spec transports(state()) -> [map()].
+transports(J) ->
+    Groups =
+        case local_description(J) of
+            undefined -> [];
+            Local -> webrtc_jsep_transport:groups(Local)
+        end,
+    [begin
+         {U, P} = webrtc_jsep_build:creds(K, Groups, J),
+         #{key => K, mids => Ms, ufrag => U, pwd => P}
+     end
+     || {K, Ms, _} <- Groups].
+
 -spec set_local_candidates([#sdp_candidate{}], boolean(), state()) -> state().
 set_local_candidates(Cands, EndOfCandidates, J) ->
     J#jsep{local_candidates = Cands, local_eoc = EndOfCandidates}.
@@ -185,7 +214,8 @@ create_answer(Opts, #jsep{signaling = S} = J0) when
     S =:= have_remote_offer; S =:= have_local_pranswer
 ->
     J = J0#jsep{session_version = J0#jsep.session_version + 1},
-    {ok, webrtc_jsep_build:answer(Opts, J), J};
+    {Answer, J1} = webrtc_jsep_build:answer(Opts, J),
+    {ok, Answer, J1};
 create_answer(_Opts, _J) ->
     {error, invalid_state}.
 
@@ -453,13 +483,11 @@ validate_bundle(ActiveMids, Bundles, Active, Sdp) ->
         true ->
             {error, missing_mid};
         false ->
-            Bundled =
-                case Bundles of
-                    [G | _] -> lists:all(fun(M) -> lists:member(M, G) end, ActiveMids);
-                    [] -> length(ActiveMids) =:= 1
-                end,
-            case Bundled of
-                false -> {error, {unsupported, unbundled_media}};
+            %% RFC 9143 §7: a mid belongs to one BUNDLE group at most;
+            %% sections outside the groups have their own transport.
+            InGroups = lists:append(Bundles),
+            case length(InGroups) =:= length(lists:usort(InGroups)) of
+                false -> {error, mid_in_two_bundle_groups};
                 true -> validate_sections(Active, Sdp)
             end
     end.

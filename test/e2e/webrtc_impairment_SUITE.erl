@@ -16,7 +16,8 @@
     path_mtu_1200/1,
     unreliable_channel_under_loss/1,
     media_recovers_with_nack/1,
-    blackhole_and_recovery/1
+    blackhole_and_recovery/1,
+    path_mtu_1400/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -30,7 +31,8 @@ all() ->
         path_mtu_1200,
         unreliable_channel_under_loss,
         media_recovers_with_nack,
-        blackhole_and_recovery
+        blackhole_and_recovery,
+        path_mtu_1400
     ].
 
 init_per_suite(Config) ->
@@ -123,6 +125,23 @@ reordering_duplication_jitter(Config) ->
     {A, B, Id} = setup_channel(Config, #{reorder => 0.2, reorder_delay => 25, dup => 0.1, jitter => 15}),
     ordered_transfer(A, B, Id, 300, 800),
     close(A, B).
+
+%% RFC 8899, RFC 8261 §5: the path carries datagrams up to 1400 bytes;
+%% probes find a larger SCTP packet size than the 1200 byte base, and
+%% large messages arrive.
+path_mtu_1400(Config) ->
+    {A, B, Id} = setup_channel(Config, #{max_size => 1400}),
+    timer:sleep(5000),
+    Pmtu = sctp_pmtu(A),
+    ct:log("SCTP path MTU: ~p", [Pmtu]),
+    ?assert(Pmtu > 1200 - 37),
+    ?assert(Pmtu =< 1400 - 22),
+    ordered_transfer(A, B, Id, 20, 50000),
+    close(A, B).
+
+sctp_pmtu(Pc) ->
+    #{transport := #{sctp := #{pmtu := P}}} = webrtc:get_stats(Pc),
+    P.
 
 path_mtu_1200(Config) ->
     %% Datagrams above 1200 bytes are dropped: the DTLS handshake and

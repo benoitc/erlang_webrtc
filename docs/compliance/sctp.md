@@ -40,8 +40,8 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | SCTP-32 | 6.10 | Bundling of control and data chunks up to the MTU | webrtc_sctp_out | assoc:many_streams_test_ (no MTU violation) | Unit tested |
 | SCTP-33 | 7.2.1, 7.2.2 | Slow start (initial cwnd per §7.2.1, L = 1) and congestion avoidance with partial_bytes_acked | webrtc_sctp_ack | assoc:loss_10_test_ | Unit tested |
 | SCTP-34 | 7.2.3, 7.2.4 | Fast retransmit on three miss indications (HTNA), fast recovery, one packet ignoring cwnd | webrtc_sctp_ack, webrtc_sctp_send | assoc:fast_retransmit_test | Unit tested |
-| SCTP-35 | 7.2.1 | cwnd decay while the sender is idle | | | Not implemented |
-| SCTP-36 | 7.3 | Path MTU discovery | | | Non-compliant / known limitation: the SCTP packet size is fixed by the `mtu` option (default 1200 bytes for DTLS); no PLPMTUD (RFC 8899, RFC 8261 §5) |
+| SCTP-35 | 7.2.1 | cwnd decay while the sender is idle: halved per RTO without data, not below 4 MTUs, applied when data starts again | webrtc_sctp_send | webrtc_sctp_assoc_tests:idle_cwnd_decay_test | Unit tested |
+| SCTP-36 | 7.3, RFC 8899 §4, §5, §6.2 | Path MTU discovery (PLPMTUD): from the base size (`mtu`), once established, HEARTBEAT and PAD probes of three sizes up to `max_mtu`, three unanswered probes end the search below that size, probe loss does not count toward Association.Max.Retrans, a retransmission timeout above the base goes back to it, the search is repeated every 600 s | webrtc_sctp_pmtu | webrtc_sctp_assoc_tests:pmtu_search_test, pmtu_no_limit_test, pmtu_off_test, pmtu_black_hole_test, webrtc_impairment_SUITE:path_mtu_1400 | E2E tested; a DATA chunk keeps its size once sent, so after a fall back only re-bundled and new chunks use the base size |
 | SCTP-37 | 6.4, 8.2 | Multi-homing and path failover | | | Non-compliant / known limitation: one path only; SCTP over DTLS is single-homed (RFC 8261 §6.1) |
 | SCTP-38 | 8.1 | Association.Max.Retrans: association closed after too many consecutive errors (T3, heartbeats, T2, RE-CONFIG) | webrtc_sctp_assoc | assoc:retransmission_limit_test | Unit tested |
 | SCTP-39 | 8.3 | HEARTBEAT on an idle path, HEARTBEAT ACK echoes the info, RTT sample, configurable or disabled | webrtc_sctp_assoc | assoc:heartbeat_failure_test | Unit tested |
@@ -105,12 +105,12 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | ID | Section | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
 | DT-1 | 3 | Each SCTP packet is one DTLS application data record (`{send, Bin}` action, `handle_packet/3` input) | webrtc_sctp_assoc | all engine tests | Unit tested |
-| DT-2 | 5 | Safe SCTP packet size not above 1200 bytes when SCTP does no PMTU discovery (default 1200, configurable) | webrtc_sctp_assoc | assoc:large_message_test, assoc:large_message_small_mtu_test (MTU checked on every packet) | Unit tested |
+| DT-2 | 5 | Safe SCTP packet size: the base is 1200 bytes minus the DTLS record overhead of the negotiated version, suite and CID; larger only once PLPMTUD confirmed it | webrtc_sctp_assoc | assoc:large_message_test, assoc:large_message_small_mtu_test (MTU checked on every packet) | Unit tested |
 | DT-3 | 6.1 | Single-homed association, no reliance on ICMP | webrtc_sctp_assoc | | Implemented, untested |
 | DT-4 | 6.1 | INIT and INIT ACK carry no IPv4 / IPv6 Address and no Supported Address Types parameters | webrtc_sctp_handshake | assoc:init_validation_test | Unit tested |
 | DT-5 | 6.1 | Associations multiplexed over one DTLS connection by SCTP port; packets for other ports discarded | webrtc_sctp_assoc | | Implemented, untested (one engine per association, the owner demultiplexes) |
-| DT-6 | 6.1 | On a lower layer path change, retest the path MTU and reset congestion state | | | Not implemented (no API for the owner to report an ICE path change) |
-| DT-7 | 6.2 | PAD chunk for PMTU probes | webrtc_sctp_chunk | webrtc_sctp_chunk_tests | Non-compliant / known limitation: PAD chunks are encoded, decoded and ignored on receive, but no probes are sent because there is no PLPMTUD |
+| DT-6 | 6.1 | On a lower layer path change (ICE selects another pair, or restarts), back to the base path MTU and a new search, initial cwnd and ssthresh, initial RTO and a new RTT estimate | webrtc_sctp_assoc, webrtc_dcep, webrtc_transport_secure | webrtc_sctp_assoc_tests:path_changed_test | Unit tested |
+| DT-7 | 6.2 | PAD chunk for PMTU probes: a HEARTBEAT and a PAD chunk make each probe exactly the probed size | webrtc_sctp_pmtu, webrtc_sctp_chunk | webrtc_sctp_chunk_tests, webrtc_sctp_assoc_tests:pmtu_search_test | Unit tested |
 | DT-8 | 6.5, 6.6, 6.7 | Partial reliability, stream reset and interleaving extensions over DTLS | webrtc_sctp_assoc | see the RFC 3758, RFC 6525 and RFC 8260 tables | Unit tested |
 
 ## RFC 9653 (zero checksum)

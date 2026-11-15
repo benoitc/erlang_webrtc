@@ -42,6 +42,7 @@
     handle_packet/3,
     handle_timeout/2,
     next_timeout/1,
+    path_changed/2,
     buffered_amount/2,
     set_buffered_amount_low_threshold/3,
     channels/1,
@@ -452,6 +453,13 @@ handle_packet(Bin, Now, #dc{sctp = S} = D) ->
 -spec handle_timeout(integer(), dcep()) -> {dcep(), [action()]}.
 handle_timeout(Now, #dc{sctp = S} = D) ->
     {S1, Acts} = webrtc_sctp_assoc:handle_timeout(Now, S),
+    finish(Now, assoc_actions(Acts, Now, D#dc{sctp = S1})).
+
+%% @doc The lower layer moved to another path (see
+%% `webrtc_sctp_assoc:path_changed/2').
+-spec path_changed(integer(), dcep()) -> {dcep(), [action()]}.
+path_changed(Now, #dc{sctp = S} = D) ->
+    {S1, Acts} = webrtc_sctp_assoc:path_changed(Now, S),
     finish(Now, assoc_actions(Acts, Now, D#dc{sctp = S1})).
 
 -spec next_timeout(dcep()) -> integer() | infinity.

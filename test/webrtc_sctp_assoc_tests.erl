@@ -1061,3 +1061,81 @@ reconf_reset_all_streams_with_state_test_() ->
         {_, Out, _} = inject(V, [{reconfig, [{out_reset, Seq, 0, Seq, []}]}], N1),
         ?assertEqual([{reconf_response, Seq, success_performed, undefined}], reconf_out(Out))
     end}.
+
+%%====================================================================
+%% Path MTU discovery (RFC 8899), path change, idle cwnd (RFC 9260)
+%%====================================================================
+
+pmtu_opts() -> #{mtu => 1163, max_mtu => 1415}.
+
+%% Packets larger than Limit are dropped by the path.
+path_limit(Limit) -> fun(_Side, Bin, _Now) -> case byte_size(Bin) > Limit of true -> drop; false -> keep end end.
+
+info(Side, N) -> ?A:info(?NET:engine(Side, N)).
+
+%% The search raises the packet size to the largest probe that gets
+%% through, and stops below the one that does not; probe loss is not an
+%% association error.
+pmtu_search_test() ->
+    N0 = established(pmtu_opts(), pmtu_opts(), #{mtu => infinity, filter => path_limit(1300)}),
+    N1 = ?NET:run(60000, N0),
+    ?assertMatch(#{pmtu := 1244, search := done}, info(a, N1)),
+    ?assertMatch(#{error_count := 0}, ?A:stats(?NET:engine(a, N1))),
+    %% Large messages now go in 1244 byte packets.
+    Msg = payload(3, 20000),
+    N2 = wait_messages(b, 1, send(a, 0, Msg, #{}, ?NET:set(mtu, 1244, N1))),
+    ?assertEqual([{0, 53, Msg}], received(b, N2)),
+    ?assertEqual(0, ?NET:stat(mtu_violations, N2)).
+
+%% Without a limit the search reaches the maximum.
+pmtu_no_limit_test() ->
+    N = ?NET:run(60000, established(pmtu_opts(), pmtu_opts(), #{mtu => infinity})),
+    ?assertMatch(#{pmtu := 1412, search := done}, info(a, N)).
+
+%% Without max_mtu nothing is probed.
+pmtu_off_test() ->
+    N = ?NET:run(60000, established(#{}, #{}, #{})),
+    ?assertMatch(#{pmtu := 1200, search := off}, info(a, N)),
+    ?assertEqual(0, stat(a, pmtu_probes, N)).
+
+%% The path shrinks after the search: packets bundling several small
+%% messages at the large size are lost, the retransmission timeout falls
+%% back to the base and the retransmissions, bundled again at the base
+%% size, get through. (A DATA chunk keeps its size once sent: a chunk
+%% fragmented at the large size cannot shrink.)
+pmtu_black_hole_test() ->
+    N0 = ?NET:run(60000, established(pmtu_opts(), pmtu_opts(), #{mtu => infinity})),
+    ?assertMatch(#{pmtu := 1412}, info(a, N0)),
+    N1 = ?NET:set(filter, path_limit(1200), N0),
+    Msgs = [payload(I, 300) || I <- lists:seq(1, 20)],
+    N2 = lists:foldl(fun(M, Acc) -> send(a, 0, M, #{}, Acc) end, N1, Msgs),
+    N3 = wait_messages(b, 20, N2),
+    ?assertEqual([{0, 53, M} || M <- Msgs], received(b, N3)),
+    ?assert(stat(a, pmtu_black_holes, N3) >= 1),
+    ?assertMatch(#{pmtu := 1163}, info(a, N3)).
+
+%% A path change: base size, initial cwnd and RTO, then a new search.
+path_changed_test() ->
+    N0 = ?NET:run(60000, established(pmtu_opts(), pmtu_opts(), #{mtu => infinity})),
+    N1 = wait_messages(b, 1, send(a, 0, payload(5, 200000), #{}, N0)),
+    #{cwnd := Grown} = ?A:stats(?NET:engine(a, N1)),
+    N2 = ?NET:call(a, fun(E, Now) -> ?A:path_changed(Now, E) end, N1),
+    #{cwnd := Cwnd, rto := Rto} = ?A:stats(?NET:engine(a, N2)),
+    ?assertMatch(#{pmtu := 1163, search := search}, info(a, N2)),
+    ?assert(Cwnd < Grown),
+    ?assertEqual(min(4 * 1163, max(2 * 1163, 4404)), Cwnd),
+    ?assertEqual(1000, Rto),
+    N3 = ?NET:run(60000, N2),
+    ?assertMatch(#{pmtu := 1412}, info(a, N3)).
+
+%% RFC 9260 §7.2.1: after idle RTOs the cwnd is halved per RTO, not
+%% below 4 MTUs.
+idle_cwnd_decay_test() ->
+    N0 = established(#{}, #{}, #{}),
+    N1 = wait_messages(b, 1, send(a, 0, payload(6, 200000), #{}, N0)),
+    #{cwnd := Grown} = ?A:stats(?NET:engine(a, N1)),
+    ?assert(Grown > 4 * 1200),
+    N2 = ?NET:run(10000, N1),
+    N3 = wait_messages(b, 2, send(a, 0, payload(7, 100), #{}, N2)),
+    #{cwnd := After} = ?A:stats(?NET:engine(a, N3)),
+    ?assert(After =< max(Grown div 2, 4 * 1200)).

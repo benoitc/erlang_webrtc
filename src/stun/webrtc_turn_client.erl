@@ -495,6 +495,12 @@ error_response({channel, _, _}, _Attrs, 400, _M, Now, C) ->
     %% allocation cannot be trusted any more, delete it.
     {C1, Acts} = close(Now, C),
     {C1, [{event, {allocation_lost, channel_out_of_sync}} | Acts]};
+error_response(allocate, _Attrs, 300, M, Now, C) ->
+    %% RFC 8656 §7.4: try the alternate server, with the same credentials.
+    case webrtc_stun:get(alternate_server, M) of
+        {ok, Alt} -> fail(allocate, {try_alternate, Alt}, Now, C);
+        error -> fail(allocate, {error, 300}, Now, C)
+    end;
 error_response(Kind, _Attrs, Code, _M, Now, C) ->
     fail(Kind, {error, Code}, Now, C).
 

@@ -16,6 +16,10 @@
     key_share_ext/1,
     cookie_ext/1,
     connection_id_ext/1,
+    psk_modes_ext/0,
+    early_data_ext/0,
+    client_psk_ext/3,
+    server_psk_ext/1,
     selected_version_ext/0,
     server_share_ext/2,
     hrr_group_ext/1,
@@ -27,6 +31,9 @@
 -define(EXT_COOKIE, 44).
 -define(EXT_KEY_SHARE, 51).
 -define(EXT_CONNECTION_ID, 54).
+-define(EXT_PRE_SHARED_KEY, 41).
+-define(EXT_EARLY_DATA, 42).
+-define(EXT_PSK_MODES, 45).
 -define(MESSAGE_HASH, 254).
 
 %%====================================================================
@@ -60,6 +67,32 @@ hrr_group_ext(Group) ->
 connection_id_ext(Cid) ->
     {?EXT_CONNECTION_ID, <<(byte_size(Cid)), Cid/binary>>}.
 
+%% @doc psk_key_exchange_modes with psk_dhe_ke only: resumption keeps
+%% (EC)DHE and forward secrecy (RFC 8446 §4.2.9).
+-spec psk_modes_ext() -> {45, binary()}.
+psk_modes_ext() ->
+    {?EXT_PSK_MODES, <<1, 1>>}.
+
+%% @doc early_data, empty in ClientHello and EncryptedExtensions
+%% (RFC 8446 §4.2.10).
+-spec early_data_ext() -> {42, binary()}.
+early_data_ext() ->
+    {?EXT_EARLY_DATA, <<>>}.
+
+%% @doc The ClientHello pre_shared_key extension with one identity and
+%% a binder of `BinderLen' zero octets, filled by the caller (it must
+%% be the last extension, RFC 8446 §4.2.11).
+-spec client_psk_ext(binary(), 0..16#FFFFFFFF, pos_integer()) -> {41, binary()}.
+client_psk_ext(Ticket, ObfuscatedAge, BinderLen) ->
+    Ids = <<(byte_size(Ticket)):16, Ticket/binary, ObfuscatedAge:32>>,
+    Binders = <<BinderLen, 0:(BinderLen * 8)>>,
+    {?EXT_PRE_SHARED_KEY, <<(byte_size(Ids)):16, Ids/binary, (byte_size(Binders)):16, Binders/binary>>}.
+
+%% @doc The ServerHello pre_shared_key extension.
+-spec server_psk_ext(0..16#FFFF) -> {41, binary()}.
+server_psk_ext(Index) ->
+    {?EXT_PRE_SHARED_KEY, <<Index:16>>}.
+
 -spec cookie_ext(binary()) -> {44, binary()}.
 cookie_ext(Cookie) ->
     {?EXT_COOKIE, <<(byte_size(Cookie)):16, Cookie/binary>>}.
@@ -74,7 +107,10 @@ ext(Ctx, Name, Exts) ->
             supported_versions -> ?EXT_SUPPORTED_VERSIONS;
             key_share -> ?EXT_KEY_SHARE;
             cookie -> ?EXT_COOKIE;
-            connection_id -> ?EXT_CONNECTION_ID
+            connection_id -> ?EXT_CONNECTION_ID;
+            pre_shared_key -> ?EXT_PRE_SHARED_KEY;
+            early_data -> ?EXT_EARLY_DATA;
+            psk_key_exchange_modes -> ?EXT_PSK_MODES
         end,
     case lists:keyfind(Type, 1, Exts) of
         false ->
@@ -100,10 +136,25 @@ ext_body(hello_retry_request, key_share, <<G:16>>) ->
 ext_body(_, cookie, <<L:16, C:L/binary>>) when L > 0 ->
     C;
 ext_body(_, connection_id, <<L, C:L/binary>>) ->
-    C.
+    C;
+%% {[{Identity, ObfuscatedAge}], [Binder], BindersLength}.
+ext_body(client_hello, pre_shared_key, <<IL:16, Ids:IL/binary, BL:16, Bs:BL/binary>>) when IL > 0, BL > 0 ->
+    {identities(Ids), binders(Bs), BL};
+ext_body(server_hello, pre_shared_key, <<Index:16>>) ->
+    Index;
+ext_body(_, early_data, <<>>) ->
+    true;
+ext_body(client_hello, psk_key_exchange_modes, <<L, Modes:L/binary>>) when L > 0 ->
+    binary_to_list(Modes).
 
 cids(<<>>) -> [];
 cids(<<L, C:L/binary, Rest/binary>>) -> [C | cids(Rest)].
+
+identities(<<>>) -> [];
+identities(<<L:16, I:L/binary, Age:32, Rest/binary>>) when L > 0 -> [{I, Age} | identities(Rest)].
+
+binders(<<>>) -> [];
+binders(<<L, B:L/binary, Rest/binary>>) when L >= 32 -> [B | binders(Rest)].
 
 shares(<<>>, Acc) ->
     Groups = [G || {G, _} <- Acc],
@@ -129,6 +180,9 @@ encode(certificate_verify, #{scheme := S, signature := Sig}) ->
     <<S:16, (byte_size(Sig)):16, Sig/binary>>;
 encode(finished, VD) ->
     VD;
+encode(new_session_ticket, #{lifetime := L, age_add := A, nonce := N, ticket := T, max_early_data := M}) ->
+    Exts = [{?EXT_EARLY_DATA, <<M:32>>} || M > 0],
+    <<L:32, A:32, (byte_size(N)), N/binary, (byte_size(T)):16, T/binary, (exts_block(Exts))/binary>>;
 encode(key_update, update_requested) ->
     <<1>>;
 encode(key_update, update_not_requested) ->
@@ -175,13 +229,18 @@ body(key_update, <<0>>) ->
     update_not_requested;
 body(key_update, <<1>>) ->
     update_requested;
-body(new_session_ticket, <<_Lifetime:32, _AgeAdd:32, Rest0/binary>>) ->
-    {_Nonce, Rest1} = take8(Rest0),
+body(new_session_ticket, <<Lifetime:32, AgeAdd:32, Rest0/binary>>) ->
+    {Nonce, Rest1} = take8(Rest0),
     {Ticket, Rest2} = take16(Rest1),
     true = byte_size(Ticket) > 0,
     {Block, <<>>} = take16(Rest2),
-    _ = exts(Block),
-    #{}.
+    Exts = exts(Block),
+    MaxEarly =
+        case lists:keyfind(?EXT_EARLY_DATA, 1, Exts) of
+            {_, <<M:32>>} -> M;
+            false -> 0
+        end,
+    #{lifetime => Lifetime, age_add => AgeAdd, nonce => Nonce, ticket => Ticket, max_early_data => MaxEarly}.
 
 entries(<<>>, Acc) ->
     lists:reverse(Acc);

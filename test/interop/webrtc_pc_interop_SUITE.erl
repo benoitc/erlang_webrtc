@@ -28,7 +28,8 @@
     erlang_offers_mdns_candidates/1,
     erlang_offers_ice_tcp/1,
     peer_offers_ice_tcp/1,
-    erlang_offers_unbundled/1
+    erlang_offers_unbundled/1,
+    erlang_receives_simulcast/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -48,7 +49,8 @@ cases() ->
         erlang_ice_lite,
         peer_sends_simulcast,
         erlang_sends_simulcast,
-        erlang_offers_unbundled
+        erlang_offers_unbundled,
+        erlang_receives_simulcast
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -562,6 +564,26 @@ erlang_sends_simulcast_(Config) ->
     Tracks = [R || #{<<"event">> := <<"track">>, <<"rid">> := R} <- ?P:events(P2)],
     ?assertEqual(lists:sort(?RIDS), lists:sort(Tracks)),
     put(peer, P2).
+
+%% Erlang offers to receive three layers (RFC 8853 §5.3.1); the peer
+%% answers by sending them from its camera track (RFC 9429 §5.10).
+erlang_receives_simulcast(Config) ->
+    case ?config(peer, Config) of
+        firefox -> erlang_receives_simulcast_(Config);
+        chromium -> {skip, "Chromium 147 answers an offer to receive simulcast with a=inactive"};
+        _ -> {skip, "peer answers an offer to receive simulcast with a single stream"}
+    end.
+
+erlang_receives_simulcast_(Config) ->
+    {Pc, P0} = start(Config),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{direction => recvonly, recv_rids => ?RIDS}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"video">>], simulcast_answer => true}),
+    Answer = webrtc:remote_description(Pc),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=simulcast:send q;h;f">>)),
+    Counts = count_layers(Pc, #{}, erlang:monotonic_time(millisecond) + 20000),
+    ct:log("packets per rid: ~p", [Counts]),
+    ?assertEqual(lists:sort(?RIDS), lists:sort(maps:keys(Counts))),
+    put(peer, P1).
 
 %% Until every layer has delivered 50 packets.
 count_layers(Pc, Counts, Deadline) ->

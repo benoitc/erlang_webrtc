@@ -26,7 +26,7 @@ negotiated(Tag0, Ice0, Local, Remote, J) ->
      || #tr{mline = L, stopped = false} = T <- J#jsep.transceivers,
         L =/= undefined,
         section(L, Local) =/= undefined,
-        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), Remote)],
+        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), J)],
         M =/= undefined
     ],
     Data =
@@ -123,15 +123,15 @@ transport_params(Key, Mids, Groups, Remote, J) ->
         }
     }.
 
-media_params(_T, _L, undefined, _Remote) ->
+media_params(_T, _L, undefined, _J) ->
     undefined;
-media_params(_T, _L, #sdp_media{port = 0}, _Remote) ->
+media_params(_T, _L, #sdp_media{port = 0}, _J) ->
     undefined;
-media_params(T, L, R, _Remote) ->
+media_params(T, L, R, J) ->
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
     LocalExts = webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
-    Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R),
+    Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R, J#jsep.answerer),
     Layers#{
         id => T#tr.id,
         mid => T#tr.mid,
@@ -149,8 +149,18 @@ media_params(T, L, R, _Remote) ->
         rtx_ssrc => T#tr.rtx_ssrc,
         cname => undefined,
         remote_ssrcs => remote_ssrcs(R),
-        rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true}
+        rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true},
+        pause => pause(LocalCodecs, RemoteCodecs)
     }.
+
+%% RTP stream pause and resume (RFC 7728 §9): both descriptions have a
+%% `ccm pause' line; no hold-off when both say `nowait'.
+pause(Local, Remote) ->
+    Params = fun(Cs) -> [P || #{rtcp_fb := Fb} <- Cs, F <- Fb, P <- [webrtc_jsep_caps:pause_params(F)], P =/= undefined] end,
+    case {Params(Local), Params(Remote)} of
+        {[L | _], [R | _]} -> #{nowait => lists:member(<<"nowait">>, L) andalso lists:member(<<"nowait">>, R)};
+        _ -> undefined
+    end.
 
 remote_ssrcs(R) ->
     Ssrcs = webrtc_sdp_media:attrs(ssrc, R),

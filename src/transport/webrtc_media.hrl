@@ -37,7 +37,12 @@
     %% RepairedRtpStreamId extension ids (RFC 8852).
     rid :: undefined | binary(),
     rid_ext :: undefined | pos_integer(),
-    rrid_ext :: undefined | pos_integer()
+    rrid_ext :: undefined | pos_integer(),
+    %% RFC 7728 pause state when negotiated, the hold-off before pausing
+    %% (0 with nowait) and the sequence number cycles, for PAUSED.
+    pause :: undefined | webrtc_rtp_pause:sender(),
+    hold_off = 0 :: non_neg_integer(),
+    cycles = 0 :: non_neg_integer()
 }).
 
 -record(rcv, {
@@ -81,6 +86,8 @@
     rtp_sent_mark = 0 :: non_neg_integer(),
     %% First source to report next when they do not all fit.
     rtcp_rot = 0 :: non_neg_integer(),
+    %% Our PAUSE and RESUME requests by remote SSRC (RFC 7728).
+    pause_req = #{} :: #{non_neg_integer() => webrtc_rtp_pause:requester()},
     counters = #{} :: map()
 }).
 

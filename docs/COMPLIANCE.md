@@ -35,7 +35,6 @@ Known gaps that matter for a full WebRTC deployment:
 | Gap | Effect | Page |
 |---|---|---|
 | DTLS 1.3 extras: connection ID, PSK and resumption, 3x amplification limit without cookies, RTT based timers | Not needed by WebRTC peers seen so far; see DTLS-57 to DTLS-59 | [dtls](compliance/dtls.md) |
-| Simulcast pause/resume (RFC 7728), sending simulcast as answerer | Layers are never paused by signaling; a peer that offers to receive simulcast gets a single stream | [sdp](compliance/sdp.md) |
 | Bandwidth probing, RFC 8888 feedback as estimator input, ECN circuit breaker | Startup ramps without probes (about 4 s to 70% of a 2 Mbps link) | [rtp](compliance/rtp.md) |
 | mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
 | SCTP priorities, PMTUD | Round robin scheduling between streams, fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
@@ -70,6 +69,7 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | RTP usage in WebRTC | RFC 8834 | | [rtp](compliance/rtp.md) |
 | AVPF | RFC 4585 | | [rtp](compliance/rtp.md) |
 | CCM | RFC 5104 | | [rtp](compliance/rtp.md) |
+| RTP stream pause and resume | RFC 7728 | | [rtp](compliance/rtp.md) |
 | Header extensions | RFC 8285 | | [rtp](compliance/rtp.md) |
 | RTX | RFC 4588 | | [rtp](compliance/rtp.md) |
 | rtcp-mux | RFC 5761, RFC 8858 | | [rtp](compliance/rtp.md) |

@@ -139,7 +139,21 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RID-6 | 8852 4 | SSRC to rid mapping learned from RTCP SDES | webrtc_media_rid | webrtc_media_simulcast_tests:sdes_test, sdes_teaches_layers_test | Unit tested |
 | RID-7 | 8853 5.2 | Streams with a rid that was not negotiated, or without any rid in a simulcast section, are not delivered | webrtc_media_rid | webrtc_media_simulcast_tests:unknown_rid_dropped_test, classify_test | Unit tested (counter `unknown_rid`) |
 | RID-8 | 8853 6.1, 4585 | NACK, RTX and PLI per layer SSRC; keyframe request for one layer both ways | webrtc_media | webrtc_media_simulcast_tests:layer_nack_rtx_test, layer_keyframe_test | Unit tested, E2E, interop (Chromium reports the PLI on the requested layer only) |
-| RID-9 | 8853 5.2, RFC 7728 | Pause and resume of layers | | | Not implemented |
+| RID-9 | 8853 5.2, 5.3, RFC 7728 | Pause and resume of one layer; a layer the answer marks paused (`~`) starts paused and is resumed by RESUME once its SSRC is known from SDES | webrtc_media_pause | webrtc_media_simulcast_tests:layer_pause_test, answer_paused_layer_test, webrtc_pc_SUITE:simulcast_answerer | E2E tested |
+
+## RFC 7728: RTP stream pause and resume
+
+No independent implementation answers these messages (browsers, Pion and aiortc ignore them), so the rows stop at E2E tested.
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| PAUSE-1 | 8.1 | PAUSE-RESUME messages: RTPFB FMT 9, media SSRC 0, Target SSRC, Type, PauseID, PAUSED with the extended sequence number; reserved types ignored, unknown type specific data skipped | webrtc_rtcp_fb | webrtc_rtcp_fb_tests:pause_test, prop_webrtc_rtp:prop_rtcp_roundtrip | Unit tested |
+| PAUSE-2 | 9 | `a=rtcp-fb:* ccm pause` offered with `nowait` for video; an offer is answered with the full implementation (config 1), `nowait` only when offered | webrtc_jsep_caps, webrtc_jsep_params | webrtc_jsep_caps_tests | Unit tested |
+| PAUSE-3 | 6.2, 8.1 | Sender: PAUSE with the current PauseID pauses (at once with `nowait`, after the hold-off otherwise; a RESUME during the hold-off cancels it), RESUME resumes and moves to the next PauseID, other PauseIDs are refused with REFUSED, a past RESUME while playing is ignored | webrtc_rtp_pause | webrtc_rtp_pause_tests | Unit tested |
+| PAUSE-4 | 6.2 | PAUSED sent on pausing and repeated in the next two regular reports | webrtc_rtp_pause, webrtc_media_pause | webrtc_rtp_pause_tests:pause_resume_test | Unit tested |
+| PAUSE-5 | 6.1, 6.4 | Requester: PAUSE and RESUME retransmitted after 2 * RTT + T_dither_max (500 ms without an RTT) until PAUSED, REFUSED or, for RESUME, the stream's packets; the PauseID follows PAUSED and REFUSED | webrtc_rtp_pause | webrtc_rtp_pause_tests:requester_test | Unit tested |
+| PAUSE-6 | 6.2 | A paused stream is not sent: `send_rtp` returns `{error, paused}` and the application is told (`stream_paused`, `stream_resumed`) | webrtc_media_pause | webrtc_pc_SUITE:pause_resume | E2E tested |
+| PAUSE-7 | 6.2 | Local pause by the sender, resume on BYE or time-out of the requester, TMMBR 0 as pause | | | Not implemented |
 
 ## RFC 5761 and RFC 8858: rtcp-mux
 

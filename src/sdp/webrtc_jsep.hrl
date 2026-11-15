@@ -18,6 +18,8 @@
     %% Simulcast encodings (RFC 8853); the first one uses ssrc/rtx_ssrc.
     %% Empty when the transceiver sends a single stream without a rid.
     encodings = [] :: [webrtc_jsep_simulcast:encoding()],
+    %% Simulcast layers we ask to receive, paused or not (RFC 8853).
+    recv_rids = [] :: [{binary(), boolean()}],
     stream_id :: binary(),
     track_id :: binary(),
     %% Created by applying a remote offer (RFC 9429 §5.10).
@@ -78,5 +80,7 @@
     local_cands = #{} :: #{binary() => {list(), boolean()}},
     %% Transports of the last answer: later offers keep them (RFC 9429
     %% §5.2.2, RFC 9143 §7.5).
-    groups = [] :: [webrtc_jsep_transport:group()]
+    groups = [] :: [webrtc_jsep_transport:group()],
+    %% The local description of the negotiation is the answer.
+    answerer = false :: boolean()
 }).

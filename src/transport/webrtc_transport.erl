@@ -38,6 +38,7 @@
     send_rtp/4,
     send_rtp_packet/3,
     request_keyframe/2,
+    request_pause/3,
     set_congestion_control/2,
     resume_stream/2,
     open_channel/3,
@@ -74,6 +75,7 @@ restart_ice(T, U, P) -> gen_server:call(T, {restart_ice, U, P}).
 send_rtp(T, Mid, Payload, Opts) -> gen_server:call(T, {send_rtp, Mid, Payload, Opts}).
 send_rtp_packet(T, Mid, Pkt) -> gen_server:call(T, {send_rtp_packet, Mid, Pkt}).
 request_keyframe(T, Mid) -> gen_server:call(T, {request_keyframe, Mid}).
+request_pause(T, Key, Type) -> gen_server:call(T, {request_pause, Key, Type}).
 set_congestion_control(T, Opts) -> gen_server:call(T, {set_congestion_control, Opts}).
 resume_stream(T, Mid) -> gen_server:call(T, {resume_stream, Mid}).
 
@@ -161,6 +163,7 @@ handle_call(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= send_rtp;
     element(1, Msg) =:= send_rtp_packet;
     element(1, Msg) =:= request_keyframe;
+    element(1, Msg) =:= request_pause;
     element(1, Msg) =:= open_channel;
     element(1, Msg) =:= send_data;
     element(1, Msg) =:= close_channel;
@@ -175,6 +178,11 @@ handle_call({request_keyframe, Mid}, _From, St) ->
     {Acts, M} = webrtc_media:request_keyframe(Mid, now_ms(), St#st.media),
     St1 = webrtc_transport_net:transmit(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
+handle_call({request_pause, Key, Type}, _From, St) ->
+    case webrtc_media:request_pause(Key, Type, now_ms(), St#st.media) of
+        {ok, Acts, M} -> {reply, ok, arm(webrtc_transport_net:transmit(Acts, St#st{media = M}))};
+        {error, _} = E -> {reply, E, St}
+    end;
 handle_call({resume_stream, Mid}, _From, St) ->
     case webrtc_media:resume(Mid, now_ms(), St#st.media) of
         {ok, M} -> {reply, ok, St#st{media = M}};

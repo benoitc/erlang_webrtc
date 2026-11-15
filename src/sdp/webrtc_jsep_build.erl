@@ -141,11 +141,9 @@ offer_section({_, Mid, data}, Setup, Ctx, J) ->
     data_section(Mid, Setup, Ctx, J);
 offer_section({_, Mid, #tr{direction = Dir} = T}, Setup, Ctx, J) ->
     %% RFC 9429 §5.2.1: a=rid and a=simulcast only when sending.
-    Rids =
-        case Dir =:= sendrecv orelse Dir =:= sendonly of
-            true -> webrtc_jsep_simulcast:offer_attrs(T#tr.encodings);
-            false -> []
-        end,
+    Send = [E || Dir =:= sendrecv orelse Dir =:= sendonly, E <- T#tr.encodings],
+    Recv = [R || Dir =:= sendrecv orelse Dir =:= recvonly, R <- T#tr.recv_rids],
+    Rids = webrtc_jsep_simulcast:offer_attrs(Send, Recv),
     rtp_section(T, Mid, Dir, T#tr.codecs, T#tr.extensions, Setup, Ctx, J, Rids).
 
 %%====================================================================
@@ -209,7 +207,9 @@ answer_section(I, #sdp_media{media = Kind} = M, Offer, Setup, Ctx, J) ->
                     Exts = webrtc_jsep_caps:answer_extensions(
                         webrtc_sdp_media:attrs(extmap, M), T#tr.extensions
                     ),
-                    Rids = webrtc_jsep_simulcast:answer_attrs(M, Codecs, Exts),
+                    Rids = webrtc_jsep_simulcast:answer_attrs(
+                        M, Codecs, Exts, {T#tr.encodings, Dir =:= sendrecv orelse Dir =:= sendonly}
+                    ),
                     case Codecs of
                         [] -> Reject;
                         _ -> {Mid, rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids)}

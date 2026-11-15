@@ -18,6 +18,7 @@
 -define(RTPFB_NACK, 1).
 -define(RTPFB_TMMBR, 3).
 -define(RTPFB_TMMBN, 4).
+-define(RTPFB_PAUSE, 9).
 -define(RTPFB_CCFB, 11).
 -define(RTPFB_TWCC, 15).
 
@@ -99,6 +100,14 @@
     sender_ssrc = 0 :: rtcp_u32(),
     media_ssrc = 0 :: rtcp_u32(),
     entries = [] :: [{rtcp_u32(), non_neg_integer(), 0..511}]
+}).
+
+%% PAUSE-RESUME (RFC 7728 §8): {TargetSsrc, Type, PauseId, Seq}, Seq the
+%% extended sequence number of the last packet sent before a PAUSED,
+%% undefined for the other types. The media SSRC is not used (0).
+-record(rtcp_pause, {
+    sender_ssrc = 0 :: rtcp_u32(),
+    entries = [] :: [{rtcp_u32(), pause | resume | paused | refused, 0..65535, undefined | rtcp_u32()}]
 }).
 
 %% Transport-wide congestion control feedback

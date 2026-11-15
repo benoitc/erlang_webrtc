@@ -29,7 +29,9 @@
     ice_tcp_only/1,
     simulcast_layers/1,
     simulcast_sfu_forward/1,
-    unbundled/1
+    unbundled/1,
+    pause_resume/1,
+    simulcast_answerer/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -58,7 +60,9 @@ all() ->
         ice_tcp_only,
         simulcast_layers,
         simulcast_sfu_forward,
-        unbundled
+        unbundled,
+        pause_resume,
+        simulcast_answerer
     ].
 
 init_per_suite(Config) ->
@@ -274,6 +278,36 @@ unbundled(_Config) ->
     webrtc:close(B),
     ?assertEqual([], ets:match_object(webrtc_transports, {{A, '_'}, '_'})).
 
+%% RFC 7728: the receiver pauses the remote video stream and resumes it.
+pause_resume(_Config) ->
+    A = pc(),
+    B = pc(),
+    av(A),
+    av(B),
+    {Offer, _} = ?S:connect(A, B),
+    ?assertNotEqual(nomatch, binary:match(Offer, <<"ccm pause nowait">>)),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"v1">>, #{timestamp => 1, marker => true}),
+    _ = rtp(B, <<"1">>, <<"v1">>),
+    %% Audio has no pause line.
+    ?assertEqual({error, pause_not_negotiated}, webrtc:request_pause(B, <<"0">>)),
+    ok = webrtc:request_pause(B, <<"1">>),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_paused, <<"1">>} end, 5000),
+    {ok, _} = ?S:wait(B, fun(E) -> E =:= {remote_paused, <<"1">>} end, 5000),
+    ?assertEqual({error, paused}, webrtc:send_rtp(A, <<"1">>, <<"v2">>, #{timestamp => 2})),
+    %% Audio keeps flowing.
+    ok = webrtc:send_rtp(A, <<"0">>, <<"a1">>, #{timestamp => 1}),
+    _ = rtp(B, <<"0">>, <<"a1">>),
+    ok = webrtc:request_resume(B, <<"1">>),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_resumed, <<"1">>} end, 5000),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"v3">>, #{timestamp => 3, marker => true}),
+    _ = rtp(B, <<"1">>, <<"v3">>),
+    {ok, _} = ?S:wait(B, fun(E) -> E =:= {remote_resumed, <<"1">>} end, 5000),
+    %% A second pause uses the next PauseID.
+    ok = webrtc:request_pause(B, <<"1">>),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_paused, <<"1">>} end, 5000),
+    webrtc:close(A),
+    webrtc:close(B).
+
 keyframe_request(_Config) ->
     A = pc(),
     B = pc(),
@@ -451,6 +485,39 @@ simulcast_layers(_Config) ->
     ?assertEqual(lists:sort(?RIDS), lists:sort([R || #{rid := R} <- maps:values(Rcv)])),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 9429 §5.10: B offers to receive three layers, h paused; A
+%% answers with them and sends q and f; B resumes h (RFC 7728) once it
+%% learned its SSRC from A's RTCP.
+simulcast_answerer(_Config) ->
+    A = pc(),
+    B = pc(),
+    {ok, _} = webrtc:add_transceiver(B, video, #{direction => recvonly,
+                                                recv_rids => [<<"q">>, #{rid => <<"h">>, paused => true}, <<"f">>]}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{}),
+    {Offer, Answer} = ?S:connect(B, A),
+    ?assertNotEqual(nomatch, binary:match(Offer, <<"a=simulcast:recv q;~h;f">>)),
+    ?assertNotEqual(nomatch, binary:match(Answer, <<"a=simulcast:send q;h;f">>)),
+    ?assertEqual({error, paused}, webrtc:send_rtp(A, <<"0">>, <<"h">>, #{rid => <<"h">>})),
+    [ok = webrtc:send_rtp(A, <<"0">>, <<R/binary, N>>, #{rid => R, timestamp => N * 3000, marker => true})
+     || N <- lists:seq(1, 10), R <- [<<"q">>, <<"f">>]],
+    _ = [layer_rtp(B, <<"0">>, R, <<R/binary, 10>>) || R <- [<<"q">>, <<"f">>]],
+    ok = resume_when_known(B, <<"0">>, <<"h">>, 50),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_resumed, <<"0">>, <<"h">>} end, 5000),
+    ok = webrtc:send_rtp(A, <<"0">>, <<"h1">>, #{rid => <<"h">>, timestamp => 1, marker => true}),
+    _ = layer_rtp(B, <<"0">>, <<"h">>, <<"h1">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% The SSRC of a layer that sends nothing comes with the RTCP SDES.
+resume_when_known(Pc, Mid, Rid, Tries) ->
+    case webrtc:request_resume(Pc, Mid, #{rid => Rid}) of
+        {error, unknown_stream} when Tries > 0 ->
+            timer:sleep(100),
+            resume_when_known(Pc, Mid, Rid, Tries - 1);
+        Other ->
+            Other
+    end.
 
 %% SFU: the peer connection B of the SFU receives the layers of A, and
 %% the SFU forwards one layer to C through its peer connection D as a

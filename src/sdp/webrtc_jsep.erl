@@ -94,20 +94,25 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
 %% Value}]}' maps, one per simulcast layer (RFC 8853), most preferred
 %% first. Rids are offered as given, or generated when missing (RFC 9429
 %% §5.2.1); `restrictions' are RFC 8851 §5 restrictions such as
-%% `{<<"max-width">>, <<"640">>}'.
+%% `{<<"max-width">>, <<"640">>}'. `recv_rids' lists the simulcast
+%% layers to ask for, as rids or `#{rid => Rid, paused => true}' for a
+%% layer to start paused.
+%%
+%% A transceiver without `send_encodings' that answers an offer asking
+%% to receive simulcast sends the offered layers (RFC 9429 §5.10).
 -spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()} | {error, term()}.
 add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
     T = new_tr(Kind, maps:get(direction, Opts, sendrecv), J),
-    case webrtc_jsep_simulcast:encodings(maps:get(send_encodings, Opts, []), {T#tr.ssrc, T#tr.rtx_ssrc}) of
-        {ok, Encs} ->
-            T1 = T#tr{
-                stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
-                track_id = maps:get(track_id, Opts, T#tr.track_id),
-                encodings = Encs
-            },
-            {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}};
-        {error, _} = E ->
-            E
+    maybe
+        {ok, Encs} ?= webrtc_jsep_simulcast:encodings(maps:get(send_encodings, Opts, []), {T#tr.ssrc, T#tr.rtx_ssrc}),
+        {ok, Recv} ?= webrtc_jsep_simulcast:recv_rids(maps:get(recv_rids, Opts, [])),
+        T1 = T#tr{
+            stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
+            track_id = maps:get(track_id, Opts, T#tr.track_id),
+            encodings = Encs,
+            recv_rids = Recv
+        },
+        {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}}
     end.
 
 new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps}) ->
@@ -249,9 +254,10 @@ set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
     J1 = negotiate(answerer, Sdp, J#jsep.pending_remote, J),
     case Type of
         pranswer ->
-            {ok, J1#jsep{pending_local = Sdp, signaling = have_local_pranswer}};
+            {ok, J1#jsep{pending_local = Sdp, signaling = have_local_pranswer, answerer = true}};
         answer ->
             {ok, J1#jsep{
+                answerer = true,
                 groups = webrtc_jsep_transport:groups(Sdp),
                 current_local = Sdp,
                 current_remote = J#jsep.pending_remote,
@@ -299,7 +305,7 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
         {ok, Jd} ?= dtls_identity(Sdp, J),
         ok ?= validate_answer(Sdp, J#jsep.pending_local, Jd),
         J1 = negotiate(offerer, J#jsep.pending_local, Sdp, Jd),
-        J2 = J1#jsep{remote_ice = remote_ice(Sdp)},
+        J2 = J1#jsep{remote_ice = remote_ice(Sdp), answerer = false},
         case Type of
             pranswer ->
                 {ok, J2#jsep{pending_remote = Sdp, pending_remote_orig = Sdp0, signaling = have_remote_pranswer}};
@@ -656,21 +662,29 @@ associate_one(I, #sdp_media{media = K} = M, J) ->
             Trs = J#jsep.transceivers,
             case lists:keyfind(Mid, #tr.mid, Trs) of
                 #tr{} = T ->
-                    replace(T#tr{mline = I}, J);
+                    replace(propose_layers(M, T#tr{mline = I}), J);
                 false when M#sdp_media.port =:= 0 ->
                     J;
                 false ->
                     case [T || T = #tr{mid = undefined, mline = undefined, kind = TK, stopped = false} <- Trs, TK =:= Kind] of
                         [T | _] ->
-                            replace(T#tr{mid = Mid, mline = I}, J);
+                            replace(propose_layers(M, T#tr{mid = Mid, mline = I}), J);
                         [] ->
-                            New = (new_tr(Kind, recvonly, J))#tr{mid = Mid, mline = I, from_remote = true},
+                            New0 = (new_tr(Kind, recvonly, J))#tr{mid = Mid, mline = I, from_remote = true},
+                            New = propose_layers(M, New0),
                             J#jsep{transceivers = Trs ++ [New], next_id = New#tr.id + 1}
                     end
             end;
         other ->
             J
     end.
+
+%% An offer asking to receive simulcast gives a transceiver without
+%% encodings the offered layers (RFC 9429 §5.10).
+propose_layers(M, #tr{encodings = []} = T) ->
+    T#tr{encodings = webrtc_jsep_simulcast:proposed(M, {T#tr.ssrc, T#tr.rtx_ssrc})};
+propose_layers(_M, T) ->
+    T.
 
 replace(#tr{id = Id} = T, #jsep{transceivers = Trs} = J) ->
     J#jsep{transceivers = lists:keyreplace(Id, #tr.id, Trs, T)}.

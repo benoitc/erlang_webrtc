@@ -268,3 +268,38 @@ encodings_test() ->
     {ok, _, J2} = Add([#{}, #{rid => <<"0">>}, #{}]),
     [#{send_encodings := Encs}] = webrtc_jsep:transceivers(J2),
     ?assertEqual([<<"1">>, <<"0">>, <<"2">>], [R || #{rid := R} <- Encs]).
+
+%% RFC 9429 §5.10, RFC 8853 §5.3.2: an offer asking to receive three
+%% layers (one paused) is answered by a transceiver without encodings
+%% with send rids and a=simulcast:send; each side sees the layers.
+answerer_sends_layers_test() ->
+    Recv = [<<"q">>, #{rid => <<"h">>, paused => true}, <<"f">>],
+    {ok, _, A0} = webrtc_jsep:add_transceiver(video, #{direction => recvonly, recv_rids => Recv}, new()),
+    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, A0),
+    {ok, A2} = webrtc_jsep:set_local_description(offer, Offer, A1),
+    OS = section(<<"0">>, wire(Offer)),
+    ?assertEqual([{<<"q">>, recv}, {<<"h">>, recv}, {<<"f">>, recv}], [{I, D} || #{id := I, direction := D} <- ?M:attrs(rid, OS)]),
+    ?assertEqual([[{recv, [[{<<"q">>, false}], [{<<"h">>, true}], [{<<"f">>, false}]]}]], ?M:attrs(simulcast, OS)),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(video, #{}, new()),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), B0),
+    {ok, Answer, B2} = webrtc_jsep:create_answer(#{}, B1),
+    {ok, B3} = webrtc_jsep:set_local_description(answer, Answer, B2),
+    AS = section(<<"0">>, wire(Answer)),
+    ?assertEqual([{<<"q">>, send}, {<<"h">>, send}, {<<"f">>, send}], [{I, D} || #{id := I, direction := D} <- ?M:attrs(rid, AS)]),
+    ?assertEqual([[{send, [[{<<"q">>, false}], [{<<"h">>, false}], [{<<"f">>, false}]]}]], ?M:attrs(simulcast, AS)),
+    #{send_rids := Send} = media(<<"0">>, B3),
+    ?assertEqual([{<<"q">>, false}, {<<"h">>, true}, {<<"f">>, false}], [{R, P} || #{rid := R, paused := P} <- Send]),
+    ?assertEqual(3, length(lists:usort([S || #{ssrc := S} <- Send]))),
+    {ok, A3} = webrtc_jsep:set_remote_description(answer, wire(Answer), A2),
+    #{recv_rids := Got} = media(<<"0">>, A3),
+    ?assertEqual([<<"q">>, <<"h">>, <<"f">>], [R || #{rid := R} <- Got]).
+
+%% A transceiver that already has encodings keeps them; one that does
+%% not send answers without send rids.
+answerer_layers_kept_test() ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(video, #{direction => recvonly, recv_rids => [<<"a">>, <<"b">>]}, new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A0),
+    {ok, _, B0} = webrtc_jsep:add_transceiver(video, #{direction => recvonly}, new()),
+    {Answer, _} = answer(webrtc_sdp:encode(Offer), B0),
+    ?assertEqual([], ?M:attrs(rid, section(<<"0">>, Answer))),
+    ?assertEqual({error, invalid_recv_rids}, webrtc_jsep:add_transceiver(video, #{recv_rids => [<<"a">>, <<"a">>]}, new())).

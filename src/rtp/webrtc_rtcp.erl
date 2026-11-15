@@ -34,6 +34,7 @@
     | #rtcp_nack{}
     | #rtcp_tmmbr{}
     | #rtcp_tmmbn{}
+    | #rtcp_pause{}
     | #rtcp_twcc{}
     | #rtcp_ccfb{}
     | #rtcp_pli{}

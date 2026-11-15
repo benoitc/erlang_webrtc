@@ -22,6 +22,13 @@
 %% <li>`{keyframe_request, Mid}': the remote side asked for a keyframe.</li>
 %% <li>`{keyframe_request, Mid, Rid}': the same, for one simulcast layer
 %%     we send.</li>
+%% <li>`{stream_paused, Mid}', `{stream_resumed, Mid}': the remote side
+%%     asked us to pause or resume what we send on the transceiver
+%%     (RFC 7728); `send_rtp' returns `{error, paused}' meanwhile. With a
+%%     rid for one simulcast layer.</li>
+%% <li>`{remote_paused, Mid}', `{remote_resumed, Mid}',
+%%     `{pause_refused, Mid}': answers to `request_pause/2,3' and
+%%     `request_resume/2,3', with a rid for one simulcast layer.</li>
 %% <li>`{rtcp, Mid, Packet}': congestion feedback (REMB, TWCC).</li>
 %% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
 %%     the target bitrate for all media sent on the connection; adapt
@@ -80,6 +87,10 @@
     send_rtp_packet/4,
     request_keyframe/2,
     request_keyframe/3,
+    request_pause/2,
+    request_pause/3,
+    request_resume/2,
+    request_resume/3,
     set_congestion_control/2,
     resume_stream/2,
     send_data/4,
@@ -170,6 +181,11 @@ new_peer_connection(Opts) ->
 %% restrictions => [{Name, Value}]}' where `restrictions' are RFC 8851
 %% §5 restrictions such as `{<<"max-width">>, <<"640">>}'. Returns
 %% `{error, invalid_encodings}' for duplicate or malformed rids.
+%% `recv_rids' lists the simulcast layers to ask the peer for, as rids
+%% or `#{rid => Rid, paused => true}' for a layer that starts paused
+%% (resume it with `request_resume/3'). A transceiver without
+%% `send_encodings' answering an offer that asks to receive simulcast
+%% sends the offered layers.
 -spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).
@@ -263,6 +279,29 @@ request_keyframe(Pc, Mid) ->
 request_keyframe(Pc, Mid, Opts) ->
     Key = layer(Mid, Opts),
     transport(Pc, Mid, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
+
+%% @doc Ask the remote sender of a transceiver to pause its stream
+%% (RFC 7728 PAUSE), when both sides negotiated `ccm pause'. The answer
+%% comes as `{remote_paused, Mid}' or `{pause_refused, Mid}' (with the
+%% rid for a simulcast layer); the request is repeated until then.
+-spec request_pause(pc(), binary()) -> ok | {error, term()}.
+request_pause(Pc, Mid) ->
+    request_pause(Pc, Mid, #{}).
+
+%% @doc `Opts': `rid' to pause one simulcast layer only.
+-spec request_pause(pc(), binary(), map()) -> ok | {error, term()}.
+request_pause(Pc, Mid, Opts) ->
+    transport(Pc, Mid, fun(T) -> webrtc_transport:request_pause(T, layer(Mid, Opts), pause) end).
+
+%% @doc Ask the remote sender to resume a paused stream (RFC 7728
+%% RESUME). `{remote_resumed, Mid}' follows with its first packet.
+-spec request_resume(pc(), binary()) -> ok | {error, term()}.
+request_resume(Pc, Mid) ->
+    request_resume(Pc, Mid, #{}).
+
+-spec request_resume(pc(), binary(), map()) -> ok | {error, term()}.
+request_resume(Pc, Mid, Opts) ->
+    transport(Pc, Mid, fun(T) -> webrtc_transport:request_pause(T, layer(Mid, Opts), resume) end).
 
 layer(Mid, #{rid := Rid}) when is_binary(Rid) -> {Mid, Rid};
 layer(Mid, _) -> Mid.

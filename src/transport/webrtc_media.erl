@@ -47,6 +47,7 @@
     send_packet/4,
     resume/3,
     request_keyframe/3,
+    request_pause/4,
     set_congestion_control/3,
     handle_packet/3,
     handle_timeout/2,
@@ -196,16 +197,19 @@ send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
         error ->
             {error, not_sending};
         {ok, #snd{mid = TMid} = S} ->
-            case webrtc_cc:halted(TMid, M#media.cc) of
-                {true, Reason} -> {error, {circuit_breaker, Reason}};
-                false -> send_packet(Mid, S, Pkt0, Now, M)
+            case {webrtc_cc:halted(TMid, M#media.cc), webrtc_media_pause:is_paused(S)} of
+                {{true, Reason}, _} -> {error, {circuit_breaker, Reason}};
+                {false, true} -> {error, paused};
+                {false, false} -> send_packet(Mid, S, Pkt0, Now, M)
             end
     end.
 
 send_packet(Mid, S, Pkt0, Now, M) ->
     Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs, ext = webrtc_media_out:mid_ext(S)},
+    Next = (S#snd.seq + 1) band 16#FFFF,
     S1 = S#snd{
-        seq = (S#snd.seq + 1) band 16#FFFF,
+        seq = Next,
+        cycles = S#snd.cycles + case Next of 0 -> 1; _ -> 0 end,
         last_ts = Pkt#rtp.ts,
         last_ts_at = Now,
         buffer = webrtc_nack_buffer:store(Pkt#rtp.seq, Pkt, Now, S#snd.buffer)
@@ -235,6 +239,13 @@ request_keyframe(Mid, Now, M) ->
     Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
     webrtc_media_out:send_feedback(Pkts, Now, M).
 
+%% @doc Ask the remote sender of a transceiver, or of one simulcast
+%% layer with `{Mid, Rid}', to pause or resume its stream (RFC 7728).
+-spec request_pause(sender_key(), pause | resume, integer(), state()) ->
+    {ok, [{send, binary()}], state()} | {error, term()}.
+request_pause(Key, Type, Now, M) ->
+    webrtc_media_pause:request(Key, Type, Now, M).
+
 %% @doc Change the congestion control options at run time (see
 %% `webrtc_cc:set_options/3'): `pacing', `pacing_factor',
 %% `min_bitrate', `max_bitrate'.
@@ -259,7 +270,7 @@ handle_packet(Bin, Now, M) ->
     end.
 
 -spec next_timeout(state()) -> integer() | infinity.
-next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc}) ->
+next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc} = M) ->
     R =
         case Rtcp of
             undefined -> infinity;
@@ -270,7 +281,7 @@ next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc}) ->
             (#rcv{nack = undefined}, Acc) -> Acc;
             (#rcv{nack = N}, Acc) -> webrtc_media_out:tmin(webrtc_nack:next_timeout(N), Acc)
         end,
-        webrtc_media_out:tmin(R, webrtc_cc:next_timeout(Cc)),
+        webrtc_media_out:tmin(webrtc_media_out:tmin(R, webrtc_cc:next_timeout(Cc)), webrtc_media_pause:next_timeout(M)),
         maps:values(Rs)
     ).
 
@@ -281,17 +292,20 @@ handle_timeout(Now, #media{out = undefined} = M) ->
 handle_timeout(Now, M0) ->
     {Fb, A0, M1} = webrtc_media_out:cc_timeouts(Now, M0),
     {M2, A1} = webrtc_media_out:nack_timeouts(Now, M1),
-    M3 = rtcp_session(Now, M2),
-    Pending = M3#media.pending_fb ++ Fb,
+    {PauseFb, PauseEvents, M2a} = webrtc_media_pause:timeouts(Now, M2),
+    M3 = rtcp_session(Now, M2a),
+    Pending = M3#media.pending_fb ++ Fb ++ PauseFb,
     case webrtc_rtcp_sched:expire(Now, M3#media.rtcp) of
         {send, R} ->
-            %% Waiting and due feedback joins the regular compound.
+            %% Waiting and due feedback joins the regular compound, with
+            %% the PAUSED repeats (RFC 7728 §6.2).
             M4 = webrtc_media_in:expire_idle(Now, M3#media{rtcp = R, pending_fb = []}),
-            {A2, M5} = webrtc_media_out:reports(Now, Pending, M4),
-            {M5, A0 ++ A1 ++ A2};
+            {Repeats, M4a} = webrtc_media_pause:report(M4),
+            {A2, M5} = webrtc_media_out:reports(Now, Pending ++ Repeats, M4a),
+            {M5, A0 ++ A1 ++ PauseEvents ++ A2};
         {wait, R} ->
             {A2, M4} = webrtc_media_out:send_feedback(Pending, Now, M3#media{rtcp = R, pending_fb = []}),
-            {M4, A0 ++ A1 ++ A2}
+            {M4, A0 ++ A1 ++ PauseEvents ++ A2}
     end.
 
 %% The RTCP bandwidth follows the send estimate (both directions are

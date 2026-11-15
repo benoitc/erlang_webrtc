@@ -26,7 +26,7 @@ negotiated(Tag0, Ice0, Local, Remote, J) ->
      || #tr{mline = L, stopped = false} = T <- J#jsep.transceivers,
         L =/= undefined,
         section(L, Local) =/= undefined,
-        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), Remote)],
+        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), J)],
         M =/= undefined
     ],
     Data =
@@ -123,15 +123,15 @@ transport_params(Key, Mids, Groups, Remote, J) ->
         }
     }.
 
-media_params(_T, _L, undefined, _Remote) ->
+media_params(_T, _L, undefined, _J) ->
     undefined;
-media_params(_T, _L, #sdp_media{port = 0}, _Remote) ->
+media_params(_T, _L, #sdp_media{port = 0}, _J) ->
     undefined;
-media_params(T, L, R, _Remote) ->
+media_params(T, L, R, J) ->
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
     LocalExts = webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
-    Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R),
+    Layers = webrtc_jsep_simulcast:negotiated(T#tr.encodings, L, R, J#jsep.answerer),
     Layers#{
         id => T#tr.id,
         mid => T#tr.mid,

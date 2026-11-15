@@ -21,6 +21,12 @@
 -define(LABEL_RTCP_ENC, 16#03).
 -define(LABEL_RTCP_AUTH, 16#04).
 -define(LABEL_RTCP_SALT, 16#05).
+%% RFC 6904 §3.3: header extension encryption key and salt.
+-define(LABEL_RTP_HDR_ENC, 16#06).
+-define(LABEL_RTP_HDR_SALT, 16#07).
+%% The header keystream is AES-CM for every profile (RFC 6904 §4,
+%% RFC 7714 §8.3), so its salt has the AES-CM length, as libsrtp uses.
+-define(HDR_SALT_LEN, 14).
 
 -type session_keys() :: #{
     rtp_key := binary(),
@@ -28,7 +34,9 @@
     rtp_auth_key := binary(),
     rtcp_key := binary(),
     rtcp_salt := binary(),
-    rtcp_auth_key := binary()
+    rtcp_auth_key := binary(),
+    rtp_hdr_key := binary(),
+    rtp_hdr_salt := binary()
 }.
 
 %% @doc Derive all session keys of a profile from a master key and salt.
@@ -48,7 +56,9 @@ session_keys(Profile, MasterKey, MasterSalt) ->
         rtp_auth_key => D(?LABEL_RTP_AUTH, AL),
         rtcp_key => D(?LABEL_RTCP_ENC, KL),
         rtcp_salt => D(?LABEL_RTCP_SALT, SL),
-        rtcp_auth_key => D(?LABEL_RTCP_AUTH, AL)
+        rtcp_auth_key => D(?LABEL_RTCP_AUTH, AL),
+        rtp_hdr_key => D(?LABEL_RTP_HDR_ENC, KL),
+        rtp_hdr_salt => D(?LABEL_RTP_HDR_SALT, ?HDR_SALT_LEN)
     }.
 
 %% @doc Derive `Len' octets for `Label' with kdr = 0 (RFC 3711 §4.3.1):

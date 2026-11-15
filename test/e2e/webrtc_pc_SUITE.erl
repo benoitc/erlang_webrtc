@@ -34,7 +34,8 @@
     simulcast_answerer/1,
     cryptex/1,
     channel_priorities/1,
-    dtls_connection_id/1
+    dtls_connection_id/1,
+    header_extension_encryption/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -68,7 +69,8 @@ all() ->
         simulcast_answerer,
         cryptex,
         channel_priorities,
-        dtls_connection_id
+        dtls_connection_id,
+        header_extension_encryption
     ].
 
 init_per_suite(Config) ->
@@ -409,6 +411,79 @@ dtls_connection_id(_Config) ->
     #{transport := #{dtls := #{version := 'dtlsv1.3', connection_id := true}}} = webrtc:get_stats(A),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 6904, RFC 8834 §5.2.2: the audio level travels encrypted when
+%% one side offers it and the other accepts (the default), in clear
+%% when the answerer turned it off; MID stays in
+%% clear and media still demultiplexes; with cryptex on as well the
+%% packet is cryptex; both SRTP profiles.
+header_extension_encryption(_Config) ->
+    Level = webrtc_rtp_ext:audio_level(true, 42),
+    %% Encrypted, AES-GCM (the default profile).
+    {Wire1, Got1} = audio_level_case(#{cryptex => false, encrypt_header_extensions => offer}, #{cryptex => false}),
+    ?assert(lists:any(fun(W) -> element_data(5, W) =/= Level end, Wire1)),
+    ?assertEqual([<<"0">>], lists:usort([element_data(4, W) || W <- Wire1])),
+    ?assertEqual({ok, {true, 42}}, Got1),
+    %% Encrypted, AES-CM.
+    {Wire2, Got2} = audio_level_case(#{cryptex => false, encrypt_header_extensions => offer, srtp_profiles => [16#0001]},
+                                     #{cryptex => false}),
+    ?assert(lists:any(fun(W) -> element_data(5, W) =/= Level end, Wire2)),
+    ?assertEqual({ok, {true, 42}}, Got2),
+    %% The peer turned encryption off: clear, under the clear id.
+    {Wire3, Got3} = audio_level_case(#{cryptex => false, encrypt_header_extensions => offer},
+                                     #{encrypt_header_extensions => false}),
+    ?assertEqual([Level], lists:usort([element_data(1, W) || W <- Wire3])),
+    ?assertEqual({ok, {true, 42}}, Got3),
+    %% Cryptex and RFC 6904 both negotiated: cryptex packets.
+    {Wire4, Got4} = audio_level_case(#{encrypt_header_extensions => offer}, #{}),
+    ?assert(lists:all(fun(<<_:12/binary, P:16, _/binary>>) -> P =:= 16#C0DE end, Wire4)),
+    ?assertEqual({ok, {true, 42}}, Got4).
+
+%% A sends audio with a level; returns the SRTP packets A sent and the
+%% level B decoded.
+audio_level_case(OptsA, OptsB) ->
+    Self = self(),
+    Tap = {fun(_Dest, Bin, P) -> P ! {wire, Bin}, {[{0, Bin}], P} end, Self},
+    {ok, A} = webrtc:new_peer_connection(OptsA#{loopback => true, outbound_filter => Tap}),
+    {ok, B} = webrtc:new_peer_connection(OptsB#{loopback => true}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ?S:connect(A, B),
+    flush_wire(),
+    [ok = webrtc:send_rtp(A, <<"0">>, <<"opus", N>>, #{timestamp => N * 960, audio_level => {true, 42}})
+     || N <- lists:seq(1, 5)],
+    #rtp{ext = Ext} = rtp(B, <<"0">>, <<"opus", 5>>),
+    [#{recv_extensions := #{<<"urn:ietf:params:rtp-hdrext:ssrc-audio-level">> := Id}}] = webrtc:transceivers(B),
+    {ok, Data} = webrtc_rtp_ext:find(Id, Ext),
+    Wire = wire_rtp(5, []),
+    webrtc:close(A),
+    webrtc:close(B),
+    {Wire, webrtc_rtp_ext:decode_audio_level(Data)}.
+
+wire_rtp(0, Acc) ->
+    lists:reverse(Acc);
+wire_rtp(N, Acc) ->
+    receive
+        {wire, <<2:2, _:1, 1:1, _:4, _:1, PT:7, _/binary>> = Bin} when PT < 64; PT > 95 -> wire_rtp(N - 1, [Bin | Acc]);
+        {wire, _} -> wire_rtp(N, Acc)
+    after 2000 -> lists:reverse(Acc)
+    end.
+
+%% The data of one-byte element `Id' in a protected packet, as sent.
+element_data(Id, <<_:4, CC:4, _/binary>> = Bin) ->
+    Off = 12 + CC * 4,
+    <<_:Off/binary, 16#BEDE:16, W:16, Ext:W/binary-unit:32, _/binary>> = Bin,
+    find_element(Id, Ext).
+
+find_element(_Id, <<>>) -> none;
+find_element(Id, <<0, Rest/binary>>) -> find_element(Id, Rest);
+find_element(Id, <<I:4, L:4, Rest/binary>>) ->
+    Len = L + 1,
+    <<Data:Len/binary, Tail/binary>> = Rest,
+    case I of
+        Id -> Data;
+        _ -> find_element(Id, Tail)
+    end.
 
 keyframe_request(_Config) ->
     A = pc(),

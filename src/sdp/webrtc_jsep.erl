@@ -60,15 +60,26 @@
 
 %% @doc Options: `ice_ufrag', `ice_pwd' and `fingerprints' (required);
 %% `ice_lite', `sctp_port', `max_message_size', `codecs' and
-%% `extensions' (maps keyed by `audio' and `video').
+%% `extensions' (maps keyed by `audio' and `video'; an extension with
+%% `encrypt => true' is offered encrypted, RFC 6904), and
+%% `encrypt_header_extensions': `accept' (default) answers an offered
+%% encrypted extension encrypted but offers none, `offer' also offers
+%% the encrypted forms, `false' neither offers nor accepts them.
 -spec new(map()) -> state().
 new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
     Codecs = maps:get(codecs, Opts, #{}),
     Exts = maps:get(extensions, Opts, #{}),
+    %% RFC 8834 §5.2.2: header extension encryption can be turned off.
+    %% By default an offered encrypted form is accepted but none is
+    %% offered: aiortc 1.16 cannot parse it and Chromium 149 then drops
+    %% the extension altogether.
+    EncryptMode = maps:get(encrypt_header_extensions, Opts, accept),
+    Encrypt = EncryptMode =/= false,
     Caps = maps:from_list([
         {K, {
             maps:get(K, Codecs, webrtc_jsep_caps:default_codecs(K)),
-            maps:get(K, Exts, webrtc_jsep_caps:default_extensions(K))
+            [E || E <- maps:get(K, Exts, webrtc_jsep_caps:default_extensions(K)),
+                  Encrypt orelse maps:get(encrypt, E, false) =/= true]
         }}
      || K <- [audio, video]
     ]),
@@ -85,6 +96,7 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         sctp_port = maps:get(sctp_port, Opts, 5000),
         max_message_size = maps:get(max_message_size, Opts, 262144),
         bundle = maps:get(bundle, Opts, true),
+        encrypt_offer = EncryptMode =:= offer,
         cryptex = maps:get(cryptex, Opts, true)
     }.
 
@@ -147,9 +159,15 @@ update_tr(Id, F, #jsep{transceivers = Trs} = J) ->
     end.
 
 -spec transceivers(state()) -> [map()].
-transceivers(#jsep{transceivers = Trs}) ->
+transceivers(#jsep{transceivers = Trs} = J) ->
+    Neg = case negotiated(J) of
+              #{media := Ms} -> maps:from_list([{Id, M} || #{id := Id} = M <- Ms]);
+              _ -> #{}
+          end,
     [
-        #{
+        maps:merge(
+            maps:with([send_extensions, recv_extensions, send_encrypted, recv_encrypted], maps:get(T#tr.id, Neg, #{})),
+            #{
             id => T#tr.id,
             kind => T#tr.kind,
             mid => T#tr.mid,
@@ -159,7 +177,7 @@ transceivers(#jsep{transceivers = Trs}) ->
             ssrc => T#tr.ssrc,
             rtx_ssrc => T#tr.rtx_ssrc,
             send_encodings => [maps:with([rid, ssrc, rtx_ssrc], E) || E <- T#tr.encodings]
-        }
+        })
      || T <- Trs
     ].
 
@@ -575,7 +593,9 @@ answer_section(OM, O, AM, A, J) ->
         {not Active orelse not Rtp orelse
             direction_allowed(webrtc_sdp_media:direction(OM, O), webrtc_sdp_media:direction(AM, A)),
             direction_mismatch},
-        {not Active orelse not Rtp orelse offered_formats(OM, AM), payload_type_mismatch}
+        {not Active orelse not Rtp orelse offered_formats(OM, AM), payload_type_mismatch},
+        %% RFC 6904 §4.1: never both the clear and the encrypted form.
+        {not Active orelse webrtc_jsep_caps:single_forms(webrtc_sdp_media:attrs(extmap, AM)), both_extension_forms}
     ],
     case [R || {false, R} <- Checks] of
         [] -> ok;

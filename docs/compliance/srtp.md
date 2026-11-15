@@ -53,7 +53,7 @@ This page tracks the SRTP and SRTCP requirements implemented by `src/srtp`: pack
 | GCM-1 | 8.1 | SRTP IV = (00 00, SSRC, ROC, SEQ) XOR salt | webrtc_srtp_cipher | rfc7714_16_1_encrypt_test, rfc7714_16_2_encrypt_test | Unit tested |
 | GCM-2 | 8.2 | AAD is the RTP header with CSRCs and extension; plaintext is payload, padding and pad count | webrtc_srtp_cipher | rfc7714_16_1_decrypt_test, roundtrip_rtp_test_ | Unit tested |
 | GCM-3 | 8.2 | Every SRTP packet is encrypted and authenticated, empty payloads included | webrtc_srtp_cipher | roundtrip_rtp_test_ (empty payload) | Unit tested |
-| GCM-4 | 8.3 | RFC 6904 header extension encryption | | | Not implemented: cryptex (RFC 9335, below) encrypts every extension and the CSRCs instead, and no peer we test against offers RFC 6904 |
+| GCM-4 | 8.3 | RFC 6904 header extension encryption with AES-GCM: AES-CM keystream, the encrypted extension stays in the associated data, encrypted before the AEAD runs | webrtc_srtp, webrtc_srtp_cipher | webrtc_srtp_hdrext_tests:rfc6904_a2_test_, tampered_test_ | Unit tested, E2E tested |
 | GCM-5 | 8.4 | (ROC, SEQ, SSRC) checked by the SRTP implementation so an IV is never reused | webrtc_srtp | sender_refuses_index_reuse_test_ | Unit tested |
 | GCM-6 | 8.4 | SSRC pools when several senders share a master key | | | Not implemented: DTLS-SRTP gives each direction its own master key; SSRC allocation belongs to the RTP layer |
 | GCM-7 | 9.1 | SRTCP IV = (00 00, SSRC, 00 00, 0, index) XOR salt | webrtc_srtp_cipher | rfc7714_17_1_test, rfc7714_17_2_test | Unit tested |
@@ -62,6 +62,18 @@ This page tracks the SRTP and SRTCP requirements implemented by `src/srtp`: pack
 | GCM-10 | 9.4, 10 | At most 2^48 SRTP and 2^31 SRTCP invocations per key | webrtc_srtp | srtp_key_exhausted_test_, srtcp_key_exhausted_test_ | Unit tested |
 | GCM-11 | 10 | AEAD tag is 16 octets, IV 12 octets | webrtc_srtp_profile, webrtc_srtp_cipher | rfc7714_16_* | Unit tested |
 | GCM-12 | 12 | Both AEAD_AES_128_GCM and AEAD_AES_256_GCM supported | webrtc_srtp_profile | rfc7714_16_*, rfc7714_17_* | Unit tested |
+
+## RFC 6904: encrypted header extension elements
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| HDREXT-1 | 3.3, 4 | Header key (label 6) and salt (label 7) derived with the session keys; the salt has the AES-CM length for every profile, as RFC 7714 §8.3 and libsrtp use | webrtc_srtp_kdf | webrtc_srtp_kdf_tests:rfc6904_header_keys_test (A.1) | Unit tested |
+| HDREXT-2 | 4 | Keystream: the AES-CM transform and IV of the payload with the header key and salt | webrtc_srtp_cipher | webrtc_srtp_hdrext_tests:keystream_test (A.2) | Unit tested |
+| HDREXT-3 | 4 | Only the data of the encrypted elements is encrypted: element headers, padding and clear elements unchanged; one-byte and two-byte forms; a block that does not parse is left alone | webrtc_srtp | rfc6904_a2_test_, mixed_test, two_byte_test, malformed_block_test | Unit tested |
+| HDREXT-4 | 4 | Encrypted before the tag; the receiver authenticates, then decrypts | webrtc_srtp | tampered_test_, prop_webrtc_srtp:prop_rtp_roundtrip | Unit tested |
+| HDREXT-5 | 4.1 | `a=extmap:N urn:ietf:params:rtp-hdrext:encrypt <uri>`; an offer may carry both forms, the answer keeps the encrypted one when we accept it, never both; an answer with both is refused | webrtc_jsep_caps, webrtc_jsep | webrtc_jsep_tests:encrypted_audio_level_test, clear_fallback_test, plain_offer_test, both_forms_refused_test | Unit tested, E2E tested |
+| HDREXT-6 | 4.1 | Offers with the encrypted form only with `encrypt_header_extensions => offer`; the default accepts it when offered, `false` neither | webrtc_jsep, webrtc_jsep_build | clear_fallback_test, webrtc_pc_interop_SUITE:erlang_offers_encrypted_audio_level | Interoperability tested (fallback): no peer we test negotiates the encrypted form; Firefox falls back to the clear level, Chromium 149 to none, aiortc 1.16 cannot parse the offer |
+| HDREXT-7 | RFC 9335 | Independent from cryptex: a cryptex packet is not masked as well, a received one is not unmasked | webrtc_srtp | webrtc_srtp_hdrext_tests:with_cryptex_test, webrtc_pc_SUITE:header_extension_encryption | E2E tested |
 
 ## RFC 9335: cryptex
 

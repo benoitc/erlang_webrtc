@@ -561,3 +561,61 @@ identity_unchanged_renegotiation_ok_test() ->
     {ok, _, A2} = webrtc_jsep:add_transceiver(video, #{}, A1),
     {_, B2, _, _} = exchange(A2, B1),
     ?assertEqual(stable, webrtc_jsep:signaling_state(B2)).
+
+%%--------------------------------------------------------------------
+%% RFC 6904 encrypted header extensions
+%%--------------------------------------------------------------------
+
+-define(AL, <<"urn:ietf:params:rtp-hdrext:ssrc-audio-level">>).
+-define(ENC, <<"urn:ietf:params:rtp-hdrext:encrypt">>).
+
+audio(J0) ->
+    {ok, _, J1} = webrtc_jsep:add_transceiver(audio, #{}, J0),
+    J1.
+
+audio_media(J) ->
+    [M] = maps:get(media, webrtc_jsep:negotiated(J)),
+    M.
+
+extmaps(Sdp) -> ?M:attrs(extmap, hd(Sdp#sdp.media)).
+
+%% RFC 6904 §4.1, RFC 8834 §5.2.2: with `offer' the audio level is
+%% offered in both forms and answered encrypted.
+encrypted_audio_level_test() ->
+    {A, B, Offer, Answer} = exchange(audio(new(#{encrypt_header_extensions => offer})), audio(new())),
+    ?assert(lists:member(#{id => 1, direction => undefined, uri => ?AL, attributes => undefined}, extmaps(Offer))),
+    ?assert(lists:member(#{id => 5, direction => undefined, uri => ?ENC, attributes => ?AL}, extmaps(Answer))),
+    ?assertEqual([], [E || #{uri := ?AL} = E <- extmaps(Answer)]),
+    [?assertMatch(#{send_extensions := #{?AL := 5}, send_encrypted := [5], recv_encrypted := [5]}, audio_media(J))
+     || J <- [A, B]].
+
+%% A peer that does not know the encrypt URI answers with the clear
+%% form; one that turned encryption off too.
+clear_fallback_test() ->
+    {A, _, _, Answer} = exchange(audio(new(#{encrypt_header_extensions => offer})),
+                                 audio(new(#{encrypt_header_extensions => false}))),
+    ?assert(lists:member(#{id => 1, direction => undefined, uri => ?AL, attributes => undefined}, extmaps(Answer))),
+    ?assertMatch(#{send_extensions := #{?AL := 1}, send_encrypted := [], recv_encrypted := []}, audio_media(A)),
+    %% By default (accept) and with false, our offers have no encrypt
+    %% line.
+    [begin
+         {_, _, Offer2, _} = exchange(audio(new(O)), audio(new())),
+         ?assertEqual([], [E || #{uri := ?ENC} = E <- extmaps(Offer2)])
+     end || O <- [#{}, #{encrypt_header_extensions => false}]].
+
+%% An offer with the clear form only is answered in clear.
+plain_offer_test() ->
+    {A, B, _, Answer} = exchange(audio(new(#{extensions => #{audio => [#{id => 1, uri => ?AL}]}})), audio(new())),
+    ?assertEqual([1], [Id || #{id := Id, uri := ?AL} <- extmaps(Answer)]),
+    [?assertMatch(#{send_encrypted := [], recv_encrypted := []}, audio_media(J)) || J <- [A, B]].
+
+%% An answer with both forms of one extension is refused.
+both_forms_refused_test() ->
+    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, audio(new(#{encrypt_header_extensions => offer}))),
+    {ok, A2} = webrtc_jsep:set_local_description(offer, Offer, A1),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), audio(new())),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    Bin = webrtc_sdp:encode(Answer),
+    Both = binary:replace(Bin, <<"a=extmap:5 ">>, <<"a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=extmap:5 ">>),
+    {ok, Bad} = webrtc_sdp:parse(Both),
+    ?assertMatch({error, {both_extension_forms, _}}, webrtc_jsep:set_remote_description(answer, Bad, A2)).

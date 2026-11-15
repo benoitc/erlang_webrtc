@@ -73,18 +73,21 @@ ctx_pair(Profile, Opts) ->
 
 prop_rtp_roundtrip() ->
     ?FORALL(
-        {Profile, Packets},
-        {profile(), non_empty(list(rtp_packet()))},
+        {Profile, Ids, Cryptex, Packets},
+        {profile(), list(choose(1, 255)), boolean(), non_empty(list(rtp_packet()))},
         begin
-            {Tx, Rx} = ctx_pair(Profile, #{}),
+            %% Any set of RFC 6904 encrypted elements, with or without
+            %% cryptex, round trips.
+            {Tx, Rx} = ctx_pair(Profile, #{encrypted_extensions => Ids, cryptex => Cryptex}),
             %% Sequence numbers in a list may repeat; protect refuses a
             %% reused index, which must also be refused on receive.
             {_, _, Ok} = lists:foldl(
                 fun(Pkt, {T, R, Acc}) ->
                     case webrtc_srtp:protect_rtp(Pkt, T) of
                         {ok, S, T1} ->
+                            Expected = expected(Pkt, Cryptex),
                             case webrtc_srtp:unprotect_rtp(S, R) of
-                                {ok, Pkt, R1} -> {T1, R1, Acc};
+                                {ok, Expected, R1} -> {T1, R1, Acc};
                                 Other -> {T1, R, [{Pkt, Other} | Acc]}
                             end;
                         {error, E} when E =:= replay; E =:= too_old ->
@@ -105,6 +108,15 @@ prop_rtp_roundtrip() ->
             ?WHENFAIL(io:format("failures: ~p~n", [Ok]), Ok =:= [])
         end
     ).
+
+%% RFC 9335 §5.1: with cryptex, CSRCs without an extension travel with
+%% an empty one, which the receiver keeps.
+expected(<<V:2, P:1, 0:1, CC:4, Fixed:11/binary, Rest/binary>>, true) when CC > 0 ->
+    CL = CC * 4,
+    <<Csrcs:CL/binary, Tail/binary>> = Rest,
+    <<V:2, P:1, 1:1, CC:4, Fixed/binary, Csrcs/binary, 16#BEDE:16, 0:16, Tail/binary>>;
+expected(Pkt, _) ->
+    Pkt.
 
 cryptex_profile(<<_:3, 1:1, CC:4, _/binary>> = Pkt) ->
     Off = 12 + CC * 4,

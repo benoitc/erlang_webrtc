@@ -13,6 +13,8 @@
     count/3,
     egress/3,
     mid_ext/1,
+    header_ext/2,
+    audio_level/2,
     nack_timeouts/2,
     pace/4,
     pick_pt/2,
@@ -51,10 +53,12 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     ]),
     SendExt = maps:get(send_extensions, Sec, #{}),
     MidExt = maps:get(?URI_MID, SendExt, undefined),
+    AudioLevel = maps:get(?URI_AUDIO_LEVEL, SendExt, undefined),
     TwccExt = maps:get(?URI_TWCC, SendExt, undefined),
     {Pause, HoldOff} = pause(Sec, Old),
     case Old of
-        #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff};
+        #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff,
+                          audio_level_ext = AudioLevel};
         undefined ->
             #snd{
                 mid = Mid,
@@ -70,7 +74,8 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 tx = webrtc_rtp_stats:tx_new(),
                 buffer = webrtc_nack_buffer:new(#{size => ?BUFFER_SIZE}),
                 pause = Pause,
-                hold_off = HoldOff
+                hold_off = HoldOff,
+                audio_level_ext = AudioLevel
             }
     end.
 
@@ -190,6 +195,24 @@ sent_stats(Mid, Pkt, false, M) ->
             count(rtp_sent, M#media{senders = (M#media.senders)#{Mid := S#snd{tx = Tx}}});
         error ->
             count(rtp_sent, M)
+    end.
+
+%% @doc The RFC 6464 audio level element for the `audio_level' option of
+%% a send, when the extension is negotiated (in clear or encrypted,
+%% RFC 6904).
+audio_level(#{audio_level := {Voice, Level}}, #snd{audio_level_ext = Id}) when is_integer(Id) ->
+    [{Id, webrtc_rtp_ext:audio_level(Voice, Level)}];
+audio_level(_, _) ->
+    undefined.
+
+%% @doc Our identification elements, plus the audio level the packet
+%% carries when it is one of ours.
+header_ext(#snd{audio_level_ext = Id} = S, Ext) ->
+    Level = [E || is_integer(Id), is_list(Ext), {I, _} = E <- Ext, I =:= Id],
+    case mid_ext(S) of
+        undefined when Level =:= [] -> undefined;
+        undefined -> Level;
+        Mine -> Mine ++ Level
     end.
 
 %% RFC 9143 §9.1: carry the MID so the receiver can demultiplex before

@@ -30,7 +30,10 @@
     peer_offers_ice_tcp/1,
     erlang_offers_unbundled/1,
     erlang_receives_simulcast/1,
-    cryptex_echo/1
+    cryptex_echo/1,
+    erlang_sends_audio_level/1,
+    erlang_offers_encrypted_audio_level/1,
+    peer_sends_audio_level/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -52,7 +55,10 @@ cases() ->
         erlang_sends_simulcast,
         erlang_offers_unbundled,
         erlang_receives_simulcast,
-        cryptex_echo
+        cryptex_echo,
+        erlang_sends_audio_level,
+        erlang_offers_encrypted_audio_level,
+        peer_sends_audio_level
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -636,6 +642,83 @@ wire_profile(Timeout) ->
     after Timeout ->
         timeout
     end.
+
+%% RFC 6464: by default we offer the audio level in clear only (we
+%% accept an encrypted one, RFC 6904, when offered). Media flows and a
+%% browser reads the level we sent.
+-define(AL, <<"urn:ietf:params:rtp-hdrext:ssrc-audio-level">>).
+-define(ENC_AL, <<"urn:ietf:params:rtp-hdrext:encrypt urn:ietf:params:rtp-hdrext:ssrc-audio-level">>).
+
+erlang_sends_audio_level(Config) ->
+    audio_level_offer(Config, #{}).
+
+%% With `encrypt_header_extensions => offer' both forms are offered.
+%% No peer here negotiates the encrypted form, so each falls back:
+%% Firefox to the clear level, Chromium 149 to no level at all, Pion
+%% has none; aiortc 1.16 cannot parse the offer.
+erlang_offers_encrypted_audio_level(Config) ->
+    case ?config(peer, Config) of
+        aiortc -> {skip, "aiortc 1.16 cannot parse an extmap with an extension attribute (RFC 8285 8)"};
+        _ -> audio_level_offer(Config, #{encrypt_header_extensions => offer})
+    end.
+
+audio_level_offer(Config, Opts) ->
+    Peer = ?config(peer, Config),
+    %% Cryptex would hide the form the extension takes on the wire.
+    {Pc, P0} = start(Config, Opts#{cryptex => false}),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"audio">>]}),
+    ?assertEqual(nomatch, binary:match(webrtc:remote_description(Pc), ?ENC_AL)),
+    [#{send_extensions := Exts, send_encrypted := []}] = webrtc:transceivers(Pc),
+    ct:log("audio level negotiated with ~p: ~p", [Peer, maps:find(?AL, Exts)]),
+    %% Paced as real audio: browsers update their synchronization sources
+    %% as the audio plays out.
+    [begin
+         ok = webrtc:send_rtp(Pc, <<"0">>, <<16#F8, 16#FF, 16#FE, (N rem 256)>>, #{timestamp => N * 960, audio_level => {true, 30}}),
+         timer:sleep(20)
+     end || N <- lists:seq(1, 150)],
+    {ok, P2, _} = ?P:wait_event(P1, <<"rtp">>, #{<<"kind">> => <<"audio">>}),
+    case is_browser(Peer) andalso maps:is_key(?AL, Exts) of
+        true ->
+            %% 30 dB below overload: 10^(-30/20).
+            {ok, P3, _} = ?P:wait(P2, fun(#{<<"event">> := <<"audio_level">>, <<"level">> := L}) ->
+                                             abs(L - 0.0316) < 0.005;
+                                        (_) -> false
+                                     end, 10000),
+            put(peer, P3);
+        false ->
+            put(peer, P2)
+    end.
+
+%% The peer offers and sends its own audio with the level (in clear: no
+%% peer here offers it encrypted); we read it.
+peer_sends_audio_level(Config) ->
+    case ?config(peer, Config) of
+        pion -> {skip, "the Pion adapter sends no media"};
+        _ -> peer_sends_audio_level_(Config)
+    end.
+
+peer_sends_audio_level_(Config) ->
+    {Pc, P0} = start(Config, #{cryptex => false}),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    P1 = peer_offer(Pc, P0, #{media => [<<"audio">>]}),
+    [#{recv_extensions := Exts, recv_encrypted := Enc}] = webrtc:transceivers(Pc),
+    ct:log("answer:~n~s~nencrypted ids ~p", [webrtc:local_description(Pc), Enc]),
+    ?assertEqual([], Enc),
+    case maps:find(?AL, Exts) of
+        {ok, Id} ->
+            {rtp, <<"0">>, #rtp{ext = Ext}} =
+                wait_erlang(Pc, fun({rtp, <<"0">>, #rtp{ext = E}}) when is_list(E) -> lists:keymember(Id, 1, E);
+                                   (_) -> false end),
+            {ok, Data} = webrtc_rtp_ext:find(Id, Ext),
+            ?assertMatch({ok, {_, L}} when L =< 127, webrtc_rtp_ext:decode_audio_level(Data)),
+            put(peer, P1);
+        error ->
+            put(peer, P1),
+            {skip, "the peer does not offer the audio level"}
+    end.
+
+is_browser(P) -> lists:member(P, [chromium, firefox, chromium_mdns]).
 
 %% Until every layer has delivered 50 packets.
 count_layers(Pc, Counts, Deadline) ->

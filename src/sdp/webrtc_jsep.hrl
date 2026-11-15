@@ -84,5 +84,7 @@
     %% The local description of the negotiation is the answer.
     answerer = false :: boolean(),
     %% Offer and accept encrypted CSRCs and header extensions (RFC 9335).
-    cryptex = true :: boolean()
+    cryptex = true :: boolean(),
+    %% Offer the encrypted forms of header extensions (RFC 6904).
+    encrypt_offer = false :: boolean()
 }).

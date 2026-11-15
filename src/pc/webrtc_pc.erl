@@ -59,7 +59,7 @@ init(#{owner := App} = Opts) ->
     process_flag(trap_exit, true),
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
-    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex], Opts), #{
+    Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex, encrypt_header_extensions], Opts), #{
         ice_ufrag => ice_string(8),
         ice_pwd => ice_string(24),
         fingerprints => [FP],
@@ -296,7 +296,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
         maps:with(
             [stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
                 rtcp_report_interval, ice_tcp,
-                mdns_host_candidates, dtls],
+                mdns_host_candidates, dtls, srtp_profiles],
             St#st.opts
         ),
         #{

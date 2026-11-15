@@ -64,6 +64,9 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Erlang as ICE-Lite agent answering a full agent | Pass | Pass | Pass | Pass |
 | Peer sends three simulcast layers (rid q, h, f), Erlang receives 50+ packets on each and a keyframe request reaches one layer only | Skipped (3) | Skipped (3) | Pass | Pass |
 | Erlang sends three simulcast layers, the peer receives each one by rid | Pass | Skipped (4) | Skipped (4) | Pass |
+| Erlang sends Opus with the RFC 6464 audio level (offered in clear), the peer reads the level | Pass (no level negotiated) | Pass | Pass | Pass |
+| Erlang offers the audio level clear and encrypted (RFC 6904, `encrypt_header_extensions => offer`), the peer falls back | Pass (no level) | Skipped (13) | Pass (14) | Pass (clear) |
+| The peer sends its audio with the level, Erlang reads it | Skipped (2) | Pass | Pass | Pass |
 | Cryptex (RFC 9335): the answer accepts it, Erlang's RTP leaves with encrypted extensions (0xC0DE), the peer decrypts and echoes it | Pass | Skipped (12) | Skipped (12) | Skipped (12) |
 | Erlang offers to receive three simulcast layers, the peer answers sending them, Erlang receives 50+ packets on each | Skipped (10) | Skipped (10) | Skipped (11) | Pass |
 | Peer offers with mDNS host candidates only, Erlang resolves them, data channel both ways | | | Pass (5) | |
@@ -83,6 +86,8 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 10. The peer answers with a single stream.
 11. Chromium 147 answers an offer to receive simulcast with `a=inactive`.
 12. The peer answers without `a=cryptex`.
+13. aiortc 1.16 cannot parse an `a=extmap` line with an extension attribute (see the findings).
+14. Chromium 149 answers without the audio level at all when it is offered in both forms.
 5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings
@@ -96,6 +101,8 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Chromium | Its bandwidth estimate stays at the start value when transport-wide congestion control is negotiated but no feedback comes, so the top simulcast layer is never encoded. | Fixed by our transport-wide congestion control feedback: with it negotiated, Chromium encodes all three layers. With a 640x360 capture Chromium also limits itself to two layers; the case captures 1280x720. |
 | Firefox | Offers with the max-bundle policy: every bundled m= section but the first has port 0 and `a=bundle-only`. We treated port 0 as rejected and answered the video section rejected, so Firefox never sent video. | Our bug (RFC 9143 §6, RFC 9429 §5.2.1). Bundle-only sections of a BUNDLE group are now accepted (`webrtc_jsep_tests:bundle_only_section_accepted_test`). Chromium uses port 9 everywhere, which hid it. |
 | aiortc 1.16.0 | Answers an offer without BUNDLE with `a=group:BUNDLE` over every section. We accepted it, so our transports no longer matched the answer and ICE never completed. | aiortc bug (RFC 9143 §7.3). Such answers are now refused with `bundle_not_offered` (`webrtc_jsep_tests:answer_adds_bundle_refused_test`). |
+| aiortc 1.16.0 | Raises `ValueError` on `a=extmap:N urn:ietf:params:rtp-hdrext:encrypt <uri>`: its parser expects exactly two fields, while RFC 8285 §8 allows extension attributes. | aiortc bug. We offer the encrypted forms only with `encrypt_header_extensions => offer`; the default accepts them when offered. |
+| Chromium 149 | Never negotiates RFC 6904 (not with `WebRtcEncryptedRtpHeaderExtensions` either) and, offered an extension in both forms, answers without it. Its synchronization sources (the RFC 6464 level) only update while the received audio plays out. | Default as above. The browser adapter plays received audio in a muted element to read the level. |
 | Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |
 | Chromium | Its mDNS responder ignores queries with more than one question and QU questions, and answers QM questions by multicast only. | The resolver sends A and AAAA in separate messages, retransmits as QM after 250 ms and listens on the group (SO_REUSEPORT) as well as on its query port. |
 | Chromium | When Chromium is controlling, ICE may complete through the peer-reflexive candidate its checks create before the names resolve. | Expected (draft section 6.3); the resolved candidates are still added. |

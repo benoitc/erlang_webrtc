@@ -119,12 +119,22 @@ configure(Sections, #media{} = M) ->
         M#media.cc
     ),
     Cryptex = Sections =/= [] andalso lists:all(fun(S) -> maps:get(cryptex, S, false) end, Sections),
+    %% One SRTP context per transport: the encrypted ids of its sections
+    %% together (ids are unique within a BUNDLE group).
+    SendEnc = lists:usort(lists:append([maps:get(send_encrypted, S, []) || S <- Sections])),
+    RecvEnc = lists:usort(lists:append([maps:get(recv_encrypted, S, []) || S <- Sections])),
     M#media{
         cryptex = Cryptex,
+        send_encrypted = SendEnc,
+        recv_encrypted = RecvEnc,
         out = case M#media.out of
                   undefined -> undefined;
-                  Out -> webrtc_srtp:set_cryptex(Cryptex, Out)
+                  Out -> webrtc_srtp:set_encrypted_extensions(SendEnc, webrtc_srtp:set_cryptex(Cryptex, Out))
               end,
+        in = case M#media.in of
+                 undefined -> undefined;
+                 In -> webrtc_srtp:set_encrypted_extensions(RecvEnc, In)
+             end,
         senders = Senders,
         twcc_ids = TwccIds,
         cc = Cc,
@@ -142,7 +152,9 @@ configure(Sections, #media{} = M) ->
 %% @doc Install the SRTP contexts from the DTLS-SRTP handshake.
 -spec set_srtp(webrtc_srtp:profile(), binary(), client | server, integer(), state()) -> state().
 set_srtp(Profile, Material, Role, Now, M) ->
-    {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{cryptex => M#media.cryptex}),
+    {Out0, In0} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{cryptex => M#media.cryptex}),
+    Out = webrtc_srtp:set_encrypted_extensions(M#media.send_encrypted, Out0),
+    In = webrtc_srtp:set_encrypted_extensions(M#media.recv_encrypted, In0),
     Rtcp = webrtc_rtcp_sched:new(Now, (M#media.rtcp_opts)#{session_bandwidth => session_bandwidth(M)}),
     M#media{out = Out, in = In, rtcp = Rtcp}.
 
@@ -180,7 +192,8 @@ send(Mid0, Payload, Opts, Now, M) ->
                         pt = Pt,
                         marker = maps:get(marker, Opts, false),
                         ts = maps:get(timestamp, Opts, 0),
-                        payload = Payload
+                        payload = Payload,
+                        ext = webrtc_media_out:audio_level(Opts, S)
                     },
                     send_packet(Mid, Pkt, Now, M);
                 error ->
@@ -211,7 +224,8 @@ send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
     end.
 
 send_packet(Mid, S, Pkt0, Now, M) ->
-    Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs, ext = webrtc_media_out:mid_ext(S)},
+    Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs,
+                   ext = webrtc_media_out:header_ext(S, Pkt0#rtp.ext)},
     Next = (S#snd.seq + 1) band 16#FFFF,
     S1 = S#snd{
         seq = Next,

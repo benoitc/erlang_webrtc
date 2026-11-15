@@ -56,6 +56,10 @@
 %% <li>`cryptex' (default `false'): encrypt the CSRC list and header
 %%     extension of outgoing RTP too (RFC 9335; see `set_cryptex/2').
 %%     Incoming cryptex packets are always accepted.</li>
+%% <li>`encrypted_extensions' (default `[]'): ids of the header
+%%     extension elements encrypted in this direction (RFC 6904; see
+%%     `set_encrypted_extensions/2'). A packet sent with cryptex is not
+%%     masked as well; a received cryptex packet is not unmasked.</li>
 %% </ul>
 %%
 %% `forget/2' drops the receive state of an SSRC (a stream that ended).
@@ -95,7 +99,8 @@
     roc/3,
     set_roc/4,
     set_rtcp_index/3,
-    set_cryptex/2
+    set_cryptex/2,
+    set_encrypted_extensions/2
 ]).
 
 -export_type([ctx/0, profile/0, opts/0, error_reason/0]).
@@ -106,7 +111,8 @@
     replay_window => pos_integer(),
     rtcp_replay_window => pos_integer(),
     encrypt_rtcp => boolean(),
-    cryptex => boolean()
+    cryptex => boolean(),
+    encrypted_extensions => [1..255]
 }.
 -type error_reason() :: malformed | auth_failed | replay | too_old | key_exhausted | too_many_streams.
 
@@ -126,6 +132,10 @@
     encrypt_rtcp :: boolean(),
     %% Send with the CSRC list and header extension encrypted (RFC 9335).
     cryptex = false :: boolean(),
+    %% RFC 6904: header extension key and salt, and the ids of the
+    %% elements encrypted in this direction.
+    hdr :: undefined | {binary(), <<_:112>>},
+    encrypted = [] :: [1..255],
     rtp_tx = #{} :: #{ssrc() => #rtp_stream{}},
     rtp_rx = #{} :: #{ssrc() => #rtp_stream{}},
     %% Next SRTCP index to send, per SSRC.
@@ -180,8 +190,28 @@ from_session_keys(Profile, Keys, Opts) when is_map(Opts) ->
         window = window_opt(replay_window, 1024, Opts),
         rtcp_window = window_opt(rtcp_replay_window, 128, Opts),
         encrypt_rtcp = bool_opt(encrypt_rtcp, true, Opts),
-        cryptex = bool_opt(cryptex, false, Opts)
+        cryptex = bool_opt(cryptex, false, Opts),
+        hdr =
+            case Keys of
+                #{rtp_hdr_key := HK, rtp_hdr_salt := <<_:112>> = HS} -> {HK, HS};
+                #{} -> undefined
+            end,
+        encrypted = ids_opt(maps:get(encrypted_extensions, Opts, []))
     }.
+
+ids_opt(Ids) when is_list(Ids) ->
+    case lists:all(fun(I) -> is_integer(I) andalso I >= 1 andalso I =< 255 end, Ids) of
+        true -> lists:usort(Ids);
+        false -> erlang:error({badarg, {encrypted_extensions, Ids}})
+    end;
+ids_opt(Other) ->
+    erlang:error({badarg, {encrypted_extensions, Other}}).
+
+%% @doc The header extension elements (by id) encrypted in this
+%% direction (RFC 6904), as negotiated with `urn:ietf:params:rtp-hdrext:encrypt'.
+-spec set_encrypted_extensions([1..255], ctx()) -> ctx().
+set_encrypted_extensions(Ids, #srtp{} = C) ->
+    C#srtp{encrypted = ids_opt(Ids)}.
 
 bool_opt(Key, Default, Opts) ->
     case maps:get(Key, Opts, Default) of
@@ -269,7 +299,7 @@ unprotect_rtp(Packet, #srtp{rtp = Keys} = C) when is_binary(Packet) ->
             maybe
                 ok ?= room(SSRC, Rx),
                 {ok, V, Index, S} ?= rtp_index(SSRC, Seq, Rx, C#srtp.window),
-                {ok, Plain} ?= unprotect(Packet, HdrLen, SSRC, Index, Keys),
+                {ok, Plain} ?= unprotect(Packet, HdrLen, SSRC, Index, C),
                 {ok, Plain, C#srtp{rtp_rx = Rx#{SSRC => advance(S, V, Seq, Index)}}}
             end;
         _ ->
@@ -278,14 +308,17 @@ unprotect_rtp(Packet, #srtp{rtp = Keys} = C) when is_binary(Packet) ->
 unprotect_rtp(_, #srtp{}) ->
     {error, malformed}.
 
-protect(Packet, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex}) ->
-    case {Cryptex andalso cryptex_parts(Packet), is_cryptex(Packet)} of
+protect(Packet0, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex} = C) ->
+    case {Cryptex andalso cryptex_parts(Packet0), is_cryptex(Packet0)} of
         {{ok, Parts}, _} ->
+            %% Cryptex encrypts every element: no RFC 6904 mask on top.
             webrtc_srtp_cipher:rtp_protect_cryptex(Keys, SSRC, Index, Parts);
         {_, true} ->
             %% The receiver would take it for cryptex (RFC 9335 §6.3).
             {error, malformed};
         {_, false} ->
+            %% RFC 6904 §4: elements are encrypted before the tag.
+            Packet = header_crypt(Packet0, SSRC, Index, C),
             <<Hdr:HdrLen/binary, Payload/binary>> = Packet,
             webrtc_srtp_cipher:rtp_protect(Keys, SSRC, Index, Hdr, Payload)
     end.
@@ -302,11 +335,106 @@ is_cryptex(_) ->
 
 %% A receiver recognises cryptex by the extension profile (RFC 9335
 %% §6.3).
-unprotect(<<_:4, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, Keys) ->
+unprotect(<<_:4, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, #srtp{rtp = Keys} = C) ->
     case is_cryptex(Packet) of
-        true -> webrtc_srtp_cipher:rtp_unprotect_cryptex(Keys, SSRC, Index, Packet, CC);
-        false -> webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen)
+        true ->
+            webrtc_srtp_cipher:rtp_unprotect_cryptex(Keys, SSRC, Index, Packet, CC);
+        false ->
+            %% RFC 6904 §4: decrypt the elements only once the packet is
+            %% authenticated.
+            case webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen) of
+                {ok, Plain} -> {ok, header_crypt(Plain, SSRC, Index, C)};
+                Error -> Error
+            end
     end.
+
+%% RFC 6904 §4: XOR the keystream into the data of the encrypted
+%% elements; element headers, padding and the other elements stay as
+%% they are. The same operation encrypts and decrypts. A block that does
+%% not parse is left alone.
+header_crypt(Packet, _SSRC, _Index, #srtp{encrypted = []}) ->
+    Packet;
+header_crypt(Packet, _SSRC, _Index, #srtp{hdr = undefined}) ->
+    Packet;
+header_crypt(<<_:3, 1:1, CC:4, _/binary>> = Packet, SSRC, Index, #srtp{hdr = {K, S}, encrypted = Ids}) ->
+    Off = 12 + CC * 4,
+    case Packet of
+        <<Head:Off/binary, Profile:16, Words:16, Data:Words/binary-unit:32, Rest/binary>> ->
+            case element_ranges(Profile, Data, Ids) of
+                {ok, []} ->
+                    Packet;
+                {ok, Ranges} ->
+                    Ks = webrtc_srtp_cipher:header_keystream(K, S, SSRC, Index, byte_size(Data)),
+                    <<Head/binary, Profile:16, Words:16, (apply_mask(Data, Ks, Ranges))/binary, Rest/binary>>;
+                error ->
+                    Packet
+            end;
+        _ ->
+            Packet
+    end;
+header_crypt(Packet, _SSRC, _Index, _C) ->
+    Packet.
+
+%% Offsets and lengths of the data of the elements with an id in `Ids',
+%% for the one-byte (0xBEDE) and two-byte (0x100x) forms of RFC 8285.
+element_ranges(16#BEDE, Data, Ids) ->
+    one_byte(Data, 0, Ids, []);
+element_ranges(Profile, Data, Ids) when Profile band 16#FFF0 =:= 16#1000 ->
+    two_byte(Data, 0, Ids, []);
+element_ranges(_, _, _) ->
+    error.
+
+one_byte(Data, Pos, _Ids, Acc) when Pos >= byte_size(Data) ->
+    {ok, lists:reverse(Acc)};
+one_byte(Data, Pos, Ids, Acc) ->
+    case binary:at(Data, Pos) of
+        0 ->
+            one_byte(Data, Pos + 1, Ids, Acc);
+        B when B bsr 4 =:= 15 ->
+            %% RFC 8285 §4.2: id 15 stops the parsing.
+            {ok, lists:reverse(Acc)};
+        B ->
+            Len = (B band 15) + 1,
+            case Pos + 1 + Len =< byte_size(Data) of
+                true -> one_byte(Data, Pos + 1 + Len, Ids, add_range(B bsr 4, Pos + 1, Len, Ids, Acc));
+                false -> error
+            end
+    end.
+
+two_byte(Data, Pos, _Ids, Acc) when Pos >= byte_size(Data) ->
+    {ok, lists:reverse(Acc)};
+two_byte(Data, Pos, Ids, Acc) ->
+    case binary:at(Data, Pos) of
+        0 ->
+            two_byte(Data, Pos + 1, Ids, Acc);
+        Id when Pos + 1 < byte_size(Data) ->
+            Len = binary:at(Data, Pos + 1),
+            case Pos + 2 + Len =< byte_size(Data) of
+                true -> two_byte(Data, Pos + 2 + Len, Ids, add_range(Id, Pos + 2, Len, Ids, Acc));
+                false -> error
+            end;
+        _ ->
+            error
+    end.
+
+add_range(Id, Pos, Len, Ids, Acc) when Len > 0 ->
+    case lists:member(Id, Ids) of
+        true -> [{Pos, Len} | Acc];
+        false -> Acc
+    end;
+add_range(_Id, _Pos, _Len, _Ids, Acc) ->
+    Acc.
+
+apply_mask(Data, Ks, Ranges) ->
+    lists:foldl(
+        fun({Pos, Len}, D) ->
+            <<A:Pos/binary, X:Len/binary, B/binary>> = D,
+            <<_:Pos/binary, K:Len/binary, _/binary>> = Ks,
+            <<A/binary, (crypto:exor(X, K))/binary, B/binary>>
+        end,
+        Data,
+        Ranges
+    ).
 
 %% The parts of a packet that cryptex encrypts (RFC 9335 §5): CSRCs
 %% without an extension get an empty one; extensions other than the

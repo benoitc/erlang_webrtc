@@ -2,6 +2,7 @@
 %% webrtc_media_out).
 
 -define(URI_MID, <<"urn:ietf:params:rtp-hdrext:sdes:mid">>).
+-define(URI_AUDIO_LEVEL, <<"urn:ietf:params:rtp-hdrext:ssrc-audio-level">>).
 -define(URI_RID, <<"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id">>).
 -define(URI_RRID, <<"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
@@ -38,6 +39,8 @@
     rid :: undefined | binary(),
     rid_ext :: undefined | pos_integer(),
     rrid_ext :: undefined | pos_integer(),
+    %% RFC 6464 audio level extension id, when negotiated.
+    audio_level_ext :: undefined | pos_integer(),
     %% RFC 7728 pause state when negotiated, the hold-off before pausing
     %% (0 with nowait) and the sequence number cycles, for PAUSED.
     pause :: undefined | webrtc_rtp_pause:sender(),
@@ -85,6 +88,9 @@
     %% Every section negotiated cryptex (RFC 9335): what we send has its
     %% CSRCs and header extensions encrypted.
     cryptex = false :: boolean(),
+    %% RFC 6904: ids of the extensions encrypted in each direction.
+    send_encrypted = [] :: [pos_integer()],
+    recv_encrypted = [] :: [pos_integer()],
     %% RTP packets sent at the last regular report (we_sent, §6.3).
     rtp_sent_mark = 0 :: non_neg_integer(),
     %% First source to report next when they do not all fit.

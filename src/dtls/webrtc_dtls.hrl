@@ -128,6 +128,10 @@
     %% the peer's spare CIDs, a rotation waiting for one, and the CID
     %% messages waiting for the current flight to be acknowledged.
     cids = [] :: [binary()],
+    %% The CID of ours the peer's records carry now, and those it moved
+    %% away from (dropped from `cids' when a request needs room).
+    cid_in_use :: undefined | binary(),
+    cid_retired = [] :: [binary()],
     peer_spares = [] :: [binary()],
     rotate = false :: boolean(),
     cid_queue = [] :: [{request, pos_integer()} | {spares, pos_integer()}],

@@ -450,6 +450,17 @@ unbundled_local_offer_test() ->
     ?assertEqual([?M:ice_credentials(M, Offer) || M <- Offer#sdp.media], [?M:ice_credentials(M, Offer2) || M <- Offer2#sdp.media]),
     ?assertEqual(webrtc_jsep:transports(A2), webrtc_jsep:transports(A3)).
 
+%% RFC 9143 §7.3: an answer that bundles sections the offer did not
+%% bundle is refused.
+answer_adds_bundle_refused_test() ->
+    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, av_data(new(#{bundle => false}))),
+    {ok, A2} = webrtc_jsep:set_local_description(offer, Offer, A1),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), new()),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    Bin = binary:replace(webrtc_sdp:encode(Answer), <<"t=0 0\r\n">>, <<"t=0 0\r\na=group:BUNDLE 0 1 2\r\n">>),
+    {ok, Bundled} = webrtc_sdp:parse(Bin),
+    ?assertEqual({error, bundle_not_offered}, webrtc_jsep:set_remote_description(answer, Bundled, A2)).
+
 %% Answering real browser offers.
 browser_offer_test_() ->
     [?_test(answer_sample(Name)) || Name <- [chrome_offer, firefox_offer, safari_offer]].

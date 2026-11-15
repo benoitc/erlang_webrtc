@@ -522,7 +522,20 @@ validate_sections([M | Rest], Sdp) ->
 validate_answer(#sdp{media = Am}, #sdp{media = Om}, _J) when length(Am) =/= length(Om) ->
     {error, mline_count_mismatch};
 validate_answer(#sdp{media = Am} = A, #sdp{media = Om} = O, J) ->
-    check_sections([{OM, AM} || {OM, AM} <- lists:zip(Om, Am)], fun(OM, AM) -> answer_section(OM, O, AM, A, J) end).
+    case answer_bundles(A, O) of
+        ok -> check_sections([{OM, AM} || {OM, AM} <- lists:zip(Om, Am)], fun(OM, AM) -> answer_section(OM, O, AM, A, J) end);
+        {error, _} = E -> E
+    end.
+
+%% RFC 9143 §7.3: an answer keeps or removes sections of the offered
+%% BUNDLE groups, it never bundles what the offer did not.
+answer_bundles(A, O) ->
+    Offered = webrtc_sdp_media:groups(<<"BUNDLE">>, O),
+    Within = fun(G) -> lists:any(fun(OG) -> G -- OG =:= [] end, Offered) end,
+    case lists:all(Within, webrtc_sdp_media:groups(<<"BUNDLE">>, A)) of
+        true -> ok;
+        false -> {error, bundle_not_offered}
+    end.
 
 check_sections([], _Check) ->
     ok;

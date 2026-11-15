@@ -47,6 +47,23 @@ Apple M-series laptop, 14 schedulers, OTP 29.1.2, OpenSSL 4.1, loopback UDP. Tre
 | `send_rtp/4`, 1100 byte payloads, pacing off | 23 us per call, 44 000 packets/s |
 | RTP forwarding, sender to an Erlang relay peer to a receiver, 1100 byte payloads, one stream | 40 000 to 46 000 packets/s end to end, no loss |
 
+### Congestion control (RFC 8867)
+
+The RMCAT cases run in simulation (`rebar3 eunit --module=webrtc_rmcat_tests`, about 20 s). Rates are averages from 10 s after each change; see the RMCAT rows of [compliance/rtp.md](compliance/rtp.md) for the bounds.
+
+| Case | Result |
+|---|---|
+| 5.1, one flow, capacity 1, 2.5, 0.6, 1 Mbps | 0.93 to 1.00 of the available rate, queue p95 at most 72 ms |
+| 5.2, two flows, capacity 4 to 1 Mbps | together 0.92 to 1.00 of the available rate |
+| 5.3, media both ways | 0.92 to 1.00 of the share in each direction |
+| 5.4, three flows joining | Jain index 0.95, 0.93 of the link |
+| 5.5, RTT fairness | Jain index 0.71 (not met) |
+| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 214 / 475 kbps, TCP 1698 / 1447 kbps |
+| 5.7, against ten short TCP flows | media 311 and 334 kbps, never below the minimum |
+| 5.8, pause and resume | Jain index 0.89 after the resume (not met) |
+| 6.2, ECN, one flow | 0.95 to 1.00 of the available rate, queue p95 at most 40 ms |
+| 6.2, ECN, three flows | Jain index 0.87 (not met) |
+
 ## Where the time goes
 
 - Each peer connection is two processes: `webrtc_pc` (signaling) and `webrtc_transport` (packets). Peer connections scale with schedulers; there is no shared state on the packet path.

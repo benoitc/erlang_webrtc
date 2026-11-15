@@ -12,16 +12,21 @@
     nack_actions/5,
     sender_by_ssrc/2,
     rtcp_in/3,
-    rtp_in/3
+    rtp_in/3,
+    rtp_in/4
 ]).
 
 rtp_in(Bin, Now, M) ->
+    rtp_in(Bin, Now, M, 0).
+
+rtp_in(Bin, Now, M, Ecn) ->
     case webrtc_srtp:unprotect_rtp(Bin, M#media.in) of
         {ok, Plain, In} ->
             M1 = M#media{in = In},
             case webrtc_rtp:decode(Plain, #{extensions => parse}) of
-                {ok, #rtp{ssrc = Ssrc} = Pkt} ->
-                    {M2, Acts} = route(Pkt, Now, twcc_arrival(Pkt, Now, M1)),
+                {ok, #rtp{ssrc = Ssrc, seq = Seq} = Pkt} ->
+                    M1b = M1#media{cc = webrtc_cc:ccfb_arrival(Ssrc, Seq, Ecn, Now, M1#media.cc)},
+                    {M2, Acts} = route(Pkt, Now, twcc_arrival(Pkt, Now, M1b)),
                     {keep_srtp(Ssrc, M2), Acts};
                 {error, _} ->
                     {webrtc_media_out:count(dropped, M1), []}
@@ -315,7 +320,7 @@ rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
     {lists:foldl(fun forget/2, M, Ssrcs), Events};
 rtcp_packet2(#rtcp_pause{} = P, Now, M) ->
     webrtc_media_pause:rtcp(P, Now, M);
-rtcp_packet2(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
+rtcp_packet2(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc); is_record(P, rtcp_ccfb) ->
     {Events, Cc} = webrtc_cc:rtcp(P, Now, M#media.cc),
     {M#media{cc = Cc}, [{event, {rtcp, undefined, P}} | [{event, E} || E <- Events]]};
 rtcp_packet2(_P, _Now, M) ->

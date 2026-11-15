@@ -57,6 +57,8 @@
 
 -record(media, {
     cname :: binary(),
+    %% The socket reads and sets ECN marks (RFC 6679).
+    ecn = false :: boolean(),
     rtcp_ssrc :: non_neg_integer(),
     out :: undefined | term(),
     in :: undefined | term(),

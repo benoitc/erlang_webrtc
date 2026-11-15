@@ -84,6 +84,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # OpenSSL 4 for the DTLS 1.3 interop cases (the runners ship 3.0).
+      # Built once per architecture and cached; the rpath keeps the
+      # system libcrypto that Erlang's crypto links to untouched.
+      - name: Cache OpenSSL 4
+        id: openssl4
+        uses: actions/cache@v4
+        with:
+          path: ~/openssl4
+          key: openssl-4.1.0-${{ matrix.arch }}
+      - name: Build OpenSSL 4
+        if: steps.openssl4.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz | tar xz
+          cd openssl-4.1.0
+          ./Configure --prefix=$HOME/openssl4 --libdir=lib no-docs no-tests "-Wl,-rpath,$HOME/openssl4/lib"
+          make -j"$(nproc)"
+          make install_sw
+      - name: Put OpenSSL 4 first in PATH
+        run: |
+          echo "$HOME/openssl4/bin" >> "$GITHUB_PATH"
+          "$HOME/openssl4/bin/openssl" version
       - name: Build peer adapters
         run: make -C interop all
       - name: Install headless browsers

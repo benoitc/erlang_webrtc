@@ -66,7 +66,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | WRTP-14 | 5.1.6 | Understand TMMBR, answer with TMMBN | webrtc_rtcp_fb | tmmbr_test, tmmbn_test | Unit tested (codec only; the bounding set of RFC 5104 §3.5.4 is not implemented) |
 | WRTP-15 | 5.2 | Header extensions follow RFC 8285 | webrtc_rtp_ext | webrtc_rtp_ext_tests | Unit tested |
 | WRTP-16 | 5.2.1 | Rapid synchronisation (RFC 6051) | | | Not implemented |
-| WRTP-17 | 5.2.2 | Client-to-mixer audio level (RFC 6464) | webrtc_rtp_ext | audio_level_test | Unit tested (the level is encrypted with cryptex, RFC 9335, see [srtp](srtp.md)) |
+| WRTP-17 | 5.2.2 | Client-to-mixer audio level (RFC 6464), sent with the `audio_level` option of `send_rtp`, encrypted with RFC 6904 when negotiated (the capability is required, its use recommended) | webrtc_rtp_ext, webrtc_media_out | audio_level_test, webrtc_pc_SUITE:header_extension_encryption, webrtc_pc_interop_SUITE:erlang_sends_audio_level, peer_sends_audio_level | Interoperability tested in clear (Chromium and Firefox read our level, we read theirs); encrypted between Erlang peers |
 | WRTP-18 | 5.2.4 | MID header extension | webrtc_rtp_ext | sdes_test | Unit tested |
 | WRTP-19 | 5.2.5 | Video orientation (CVO) header extension | webrtc_rtp_ext | video_orientation_test | Unit tested |
 | WRTP-20 | 6.1 | Senders understand generic NACK | webrtc_rtcp_fb, webrtc_nack_buffer | nack_test, webrtc_nack_buffer_tests:buffer_test | Unit tested |

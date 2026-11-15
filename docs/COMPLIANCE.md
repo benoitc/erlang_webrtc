@@ -22,7 +22,7 @@ What works today, end to end and against independent implementations (see [INTER
 - Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, ICE-TCP (passive and active), TURN relays reached over UDP, TCP or TLS.
 - Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved over IPv4 and IPv6 multicast without blocking the transport; optional mDNS names for our own host candidates, answered with NSEC for the family they lack.
 - DTLS 1.3 (RFC 9147) by default with fallback to DTLS 1.2 (use_srtp, extended master secret), connection IDs on request: 1.3 verified with OpenSSL 4.1 and Chromium in both roles, 1.2 with OTP ssl, OpenSSL, Pion and aiortc.
-- SRTP and SRTCP (AES-CM and AES-GCM profiles), with CSRCs and header extensions encrypted by cryptex (RFC 9335) when the peer accepts it, verified with Pion.
+- SRTP and SRTCP (AES-CM and AES-GCM profiles), with CSRCs and header extensions encrypted by cryptex (RFC 9335) when the peer accepts it, verified with Pion, and single elements such as the audio level encrypted with RFC 6904 when negotiated.
 - One transport for a BUNDLE group, or one per group or unbundled section, offered and answered, verified with Chromium and Firefox.
 - RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset, priorities through a weighted fair queueing scheduler.
@@ -66,6 +66,7 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | Fingerprints | RFC 8122 | updated by RFC 8842 | [dtls](compliance/dtls.md) |
 | SRTP | RFC 3711 | | [srtp](compliance/srtp.md) |
 | SRTP AES-GCM | RFC 7714 | | [srtp](compliance/srtp.md) |
+| Encrypted header extensions | RFC 6904 | | [srtp](compliance/srtp.md) |
 | Cryptex | RFC 9335 | | [srtp](compliance/srtp.md) |
 | RTP/RTCP | RFC 3550 | | [rtp](compliance/rtp.md) |
 | RTP usage in WebRTC | RFC 8834 | | [rtp](compliance/rtp.md) |

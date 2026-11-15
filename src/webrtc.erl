@@ -167,6 +167,15 @@ new_peer_connection() ->
 %% <li>`dtls': DTLS options; `connection_id' (`true' or a binary) offers
 %%     and accepts a DTLS 1.3 connection ID (RFC 9147 §9), default off:
 %%     ICE already follows address changes and browsers do not use it.</li>
+%% <li>`encrypt_header_extensions': RFC 6904 encrypted header extension
+%%     elements (the audio level, RFC 8834 §5.2.2). `accept' (default)
+%%     answers an encrypted offer encrypted but offers the clear form
+%%     only, as aiortc and Chromium mishandle the encrypted one; `offer'
+%%     offers both forms; `false' neither offers nor accepts them.
+%%     `transceivers/1' reports the negotiated ids.</li>
+%% <li>`srtp_profiles': SRTP protection profile ids offered in DTLS,
+%%     most preferred first (default AES-GCM 128 and 256, then
+%%     AES-CM 80 and 32).</li>
 %% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
 %%     extensions (RFC 9335), default `true'. Media is sent that way
 %%     when every section of the connection negotiated it.</li>
@@ -257,8 +266,10 @@ restart_ice(Pc) ->
     call(Pc, restart_ice).
 
 %% @doc Send an RTP payload on a transceiver. `Opts': `timestamp',
-%% `marker', `codec' (name) or `pt', and `rid' to send on one simulcast
-%% layer of the transceiver.
+%% `marker', `codec' (name) or `pt', `rid' to send on one simulcast
+%% layer of the transceiver, and `audio_level' (`{Voice, Level}',
+%% RFC 6464, level in -dBov 0..127) added when the extension is
+%% negotiated, encrypted when negotiated so (RFC 6904).
 -spec send_rtp(pc(), binary(), binary(), map()) -> ok | {error, term()}.
 send_rtp(Pc, Mid, Payload, Opts) ->
     transport(Pc, Mid, fun(T) -> webrtc_transport:send_rtp(T, Mid, Payload, Opts) end).

@@ -298,7 +298,10 @@ cc_timeouts(Now, M) ->
 probes([], _Now, M) ->
     {[], M};
 probes(Probes, Now, M) ->
-    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined] of
+    %% With transport-cc the probes carry its sequence numbers; with RFC
+    %% 8888 feedback their own RTP sequence numbers are reported.
+    Ccfb = webrtc_cc:ccfb_send(M#media.cc),
+    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined orelse Ccfb] of
         [] ->
             {[], M};
         Senders ->
@@ -327,8 +330,8 @@ probe({probe, Cluster, Size}, Mid, Key, Now, M) ->
     Wire = add_twcc(S#snd.twcc_ext, webrtc_cc:twcc_seq(M1#media.cc), Pkt),
     case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Wire), M1#media.out) of
         {ok, Srtp, Out} ->
-            Cc = webrtc_cc:sent_probe(Mid, byte_size(Srtp), Now, Cluster, M1#media.cc),
-            {[{send, Srtp}], count(probe_sent, M1#media{out = Out, cc = Cc})};
+            Cc = webrtc_cc:sent_probe_rtp(Mid, Wire#rtp.ssrc, Wire#rtp.seq, byte_size(Srtp), Now, Cluster, M1#media.cc),
+            {[out(Srtp, M1)], count(probe_sent, M1#media{out = Out, cc = Cc})};
         {error, _} ->
             {[], count(srtp_failed, M1)}
     end.

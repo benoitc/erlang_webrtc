@@ -59,6 +59,8 @@
     twcc_seq/1,
     sent/4,
     sent_rtp/6,
+    sent_probe_rtp/7,
+    ccfb_send/1,
     ecn_mark/1,
     ccfb_arrival/5,
     sent_probe/5,
@@ -104,7 +106,7 @@
     %% RFC 8888 feedback when transport-cc is not negotiated: what we
     %% sent, by {Ssrc, Seq} ({SendMs, Size, Key, Marked}), and the
     %% receiver of the peer's packets.
-    ccfb_tx :: undefined | #{{0..16#FFFFFFFF, 0..65535} => {integer(), non_neg_integer(), term(), boolean()}},
+    ccfb_tx :: undefined | #{{0..16#FFFFFFFF, 0..65535} => {integer(), non_neg_integer(), term(), boolean(), term()}},
     ccfb_rx :: undefined | webrtc_ccfb_receiver:state(),
     %% ECN (RFC 6679, RFC 8888 §6): the socket can mark and read; the
     %% marking state, validated by the feedback; CE marks and packets
@@ -240,14 +242,28 @@ twcc_seq(#cc{twcc_tx = Tx}) -> webrtc_twcc_sender:next_seq(Tx).
 %% @doc RTP packet `Ssrc'/`Seq' of stream `Key' left with `Size' bytes:
 %% `sent/4', and kept for RFC 8888 feedback when that is negotiated.
 -spec sent_rtp(term(), 0..16#FFFFFFFF, 0..65535, non_neg_integer(), integer(), state()) -> state().
-sent_rtp(Key, Ssrc, Seq, Size, Now, #cc{ccfb_tx = Tx} = Cc) when Tx =/= undefined ->
-    Tx1 = case map_size(Tx) >= ?CCFB_MAX of true -> prune_ccfb(Now, Tx); false -> Tx end,
-    (sent(Key, Size, Now, Cc))#cc{ccfb_tx = Tx1#{{Ssrc, Seq} => {Now, Size, Key, ecn_mark(Cc)}}};
+sent_rtp(Key, Ssrc, Seq, Size, Now, #cc{ccfb_tx = Tx} = Cc0) when Tx =/= undefined ->
+    %% Media leaving while a probe cluster is sent is part of it.
+    {Tag, Probe} =
+        case webrtc_cc_probe:media(Now, Size, Cc0#cc.probe) of
+            {undefined, P} -> {undefined, P};
+            {Id, P} -> {{probe, Id}, P}
+        end,
+    Cc = sent(Key, Size, Now, Cc0#cc{probe = Probe}),
+    Cc#cc{ccfb_tx = ccfb_put({Ssrc, Seq}, {Now, Size, Key, ecn_mark(Cc), Tag}, Now, Tx)};
 sent_rtp(Key, _Ssrc, _Seq, Size, Now, Cc) ->
     sent(Key, Size, Now, Cc).
 
+ccfb_put(K, V, Now, Tx) ->
+    Tx1 = case map_size(Tx) >= ?CCFB_MAX of true -> prune_ccfb(Now, Tx); false -> Tx end,
+    Tx1#{K => V}.
+
 prune_ccfb(Now, Tx) ->
-    maps:filter(fun(_, {At, _, _, _}) -> Now - At < ?CCFB_HISTORY_MS end, Tx).
+    maps:filter(fun(_, {At, _, _, _, _}) -> Now - At < ?CCFB_HISTORY_MS end, Tx).
+
+%% @doc Whether the peer reports on our packets with RFC 8888 feedback.
+-spec ccfb_send(state()) -> boolean().
+ccfb_send(#cc{ccfb_tx = Tx}) -> Tx =/= undefined.
 
 %% @doc Whether RTP should go out ECT(0): RFC 8888 feedback reports the
 %% marks, the socket can set them, and the path did not clear them.
@@ -295,10 +311,23 @@ sent_probe(Key, Size, Now, Cluster, #cc{twcc_tx = Tx} = Cc) when Tx =/= undefine
 sent_probe(_Key, _Size, _Now, _Cluster, Cc) ->
     Cc.
 
+%% @doc The same, with the probe packet's SSRC and sequence number for
+%% RFC 8888 feedback.
+-spec sent_probe_rtp(term(), 0..16#FFFFFFFF, 0..65535, non_neg_integer(), integer(), pos_integer(), state()) ->
+    state().
+sent_probe_rtp(Key, Ssrc, Seq, Size, Now, Cluster, #cc{ccfb_tx = Tx} = Cc) when Tx =/= undefined ->
+    Cc#cc{
+        ccfb_tx = ccfb_put({Ssrc, Seq}, {Now, Size, Key, ecn_mark(Cc), {probe, Cluster}}, Now, Tx),
+        gcc = webrtc_gcc:sent(Size, Now, Cc#cc.gcc),
+        cb = webrtc_circuit_breaker:sent(Key, Size, Now, Cc#cc.cb)
+    };
+sent_probe_rtp(Key, _Ssrc, _Seq, Size, Now, Cluster, Cc) ->
+    sent_probe(Key, Size, Now, Cluster, Cc).
+
 %% @doc A video packet left: with transport-wide feedback the first
 %% probes start (`webrtc_cc_probe').
 -spec video_sent(integer(), state()) -> state().
-video_sent(_Now, #cc{twcc_tx = undefined} = Cc) ->
+video_sent(_Now, #cc{twcc_tx = undefined, ccfb_tx = undefined} = Cc) ->
     Cc;
 video_sent(Now, #cc{probe = P, gcc = G} = Cc) ->
     Cc#cc{probe = webrtc_cc_probe:start(Now, webrtc_gcc:target(G), P)}.
@@ -327,20 +356,22 @@ rtcp(#rtcp_ccfb{reports = Reports, timestamp = Ts}, Now, #cc{ccfb_tx = Tx} = Cc)
     %% RFC 8888 §3.1: arrival = report timestamp - offset, on the
     %% receiver's clock (only differences matter to the estimator).
     TsUs = Ts * 1000000 div 65536,
-    {Results, Tx1, Ecn} = lists:foldl(
+    {Results, Tx1, Ecn, Tagged} = lists:foldl(
         fun({Ssrc, Begin, Metrics}, Acc0) ->
             {_, Acc} = lists:foldl(
-                fun(M, {Seq, {R, T, E}}) ->
+                fun(M, {Seq, {R, T, E, G}}) ->
                     case maps:take({Ssrc, Seq}, T) of
-                        {{At, Size, Key, Marked}, T1} ->
+                        {{At, Size, Key, Marked, Tag}, T1} ->
                             {Arr, E1} =
                                 case M of
                                     not_received -> {lost, E};
                                     {Cp, Ato} -> {TsUs - Ato * 1000000 div 1024, [{Key, Marked, Cp} | E]}
                                 end,
-                            {(Seq + 1) band 16#FFFF, {[{At * 1000, Arr, Size} | R], T1, E1}};
+                            G1 = case Tag of {probe, Id} -> [{Id, At * 1000, Arr, Size} | G]; _ -> G end,
+                            Res = case M of {3, _} -> {At * 1000, Arr, Size, ce}; _ -> {At * 1000, Arr, Size} end,
+                            {(Seq + 1) band 16#FFFF, {[Res | R], T1, E1, G1}};
                         error ->
-                            {(Seq + 1) band 16#FFFF, {R, T, E}}
+                            {(Seq + 1) band 16#FFFF, {R, T, E, G}}
                     end
                 end,
                 {Begin, Acc0},
@@ -348,12 +379,19 @@ rtcp(#rtcp_ccfb{reports = Reports, timestamp = Ts}, Now, #cc{ccfb_tx = Tx} = Cc)
             ),
             Acc
         end,
-        {[], Tx, []},
+        {[], Tx, [], []},
         Reports
     ),
     {Events, Gcc} = webrtc_gcc:feedback(lists:keysort(1, Results), Now, Cc#cc.gcc),
-    Cc1 = ecn_feedback(Ecn, Cc#cc{ccfb_tx = prune_ccfb(Now, Tx1), gcc = Gcc}),
-    {Events, retarget(Now, Cc1)};
+    %% Probe clusters get their results from these reports too.
+    {Probed, Probe} = webrtc_cc_probe:feedback(lists:reverse(Tagged), Now, Cc#cc.probe),
+    {ProbeEvents, Gcc1} = lists:foldl(
+        fun(Bps, {Ev, G}) -> {E, G1} = webrtc_gcc:probe_result(Bps, Now, G), {Ev ++ E, G1} end,
+        {[], Gcc},
+        Probed
+    ),
+    Cc1 = ecn_feedback(Ecn, Cc#cc{ccfb_tx = prune_ccfb(Now, Tx1), gcc = Gcc1, probe = Probe}),
+    {Events ++ ProbeEvents, retarget(Now, follow(Now, Cc1))};
 rtcp(#rtcp_remb{bitrate = Bps}, Now, Cc) ->
     {Events, Gcc} = webrtc_gcc:remb(Bps, Now, Cc#cc.gcc),
     {Events, retarget(Now, Cc#cc{gcc = Gcc})};

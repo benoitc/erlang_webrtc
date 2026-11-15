@@ -116,6 +116,10 @@ psk_exts(#dtls{psk = #{ticket := T, age_add := A, received := R, suite := Id, ma
     Early = St#dtls.early_data andalso M > 0 andalso St#dtls.hrr =:= false,
     [webrtc_dtls13_msg:early_data_ext() || Early] ++
         [webrtc_dtls13_msg:psk_modes_ext(), webrtc_dtls13_msg:client_psk_ext(T, Age, webrtc_dtls13_keys:hash_len(H))];
+%% Without a ticket the modes still go out, so the server issues one
+%% (RFC 8446 §4.2.9: no NewSessionTicket without them).
+psk_exts(#dtls{resumption = true}) ->
+    [webrtc_dtls13_msg:psk_modes_ext()];
 psk_exts(_) ->
     [].
 

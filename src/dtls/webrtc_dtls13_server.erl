@@ -177,8 +177,15 @@ proceed(Group, Shares, T0, CR, M, #dtls{suite13 = #{id := SuiteId, hash := H}} =
         ] ++ [webrtc_dtls13_msg:connection_id_ext(St#dtls.cid) || PeerCid =/= undefined]
           ++ [webrtc_dtls13_msg:server_psk_ext(0) || Resume =/= none]
     }),
+    %% No ticket for a client that offered no psk_dhe_ke (RFC 8446 §4.2.9).
+    Tickets = St#dtls.resumption andalso
+        case webrtc_dtls13_msg:ext(client_hello, psk_key_exchange_modes, Exts) of
+            {ok, Ms} -> lists:member(1, Ms);
+            _ -> false
+        end,
     St1 = St#dtls{
         version = dtls13,
+        resumption = Tickets,
         peer_cid = PeerCid,
         client_random = CR,
         server_random = SR,

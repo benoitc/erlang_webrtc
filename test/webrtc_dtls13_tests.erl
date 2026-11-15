@@ -1103,3 +1103,16 @@ no_ticket_no_early_data_test() ->
     {C1, _} = pair(zero_rtt_opts(), zero_rtt_opts()),
     {Cl, _} = webrtc_dtls:start(0, C1),
     ?assertEqual({error, not_connected}, webrtc_dtls:send(<<"x">>, Cl)).
+
+%% RFC 8446 §4.2.9: no NewSessionTicket for a client that offered no
+%% psk_key_exchange_modes; a client with resumption on offers them in
+%% its first ClientHello, before it holds any ticket.
+tickets_need_psk_modes_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    {C1, S1} = pair(#{}, resume_opts()),
+    #{s := Ss1} = run(C1, S1),
+    ?assertEqual(0, Ss1#dtls.ticket_nonce),
+    {C2, S2} = pair(resume_opts(), resume_opts()),
+    #{s := Ss2} = run(C2, S2),
+    ?assertEqual(1, Ss2#dtls.ticket_nonce).
+

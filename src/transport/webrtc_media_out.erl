@@ -28,12 +28,13 @@
 senders(#{mid := Mid, send_rids := [_ | _] = Layers} = Sec, Old) ->
     Exts = maps:get(send_extensions, Sec, #{}),
     [
-        {{Mid, Rid}, (sender(Sec#{ssrc := S, rtx_ssrc := X}, maps:get({Mid, Rid}, Old, undefined)))#snd{
+        {{Mid, Rid}, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false)},
+                             maps:get({Mid, Rid}, Old, undefined)))#snd{
             rid = Rid,
             rid_ext = maps:get(?URI_RID, Exts, undefined),
             rrid_ext = maps:get(?URI_RRID, Exts, undefined)
         }}
-     || #{rid := Rid, ssrc := S, rtx_ssrc := X} <- Layers
+     || #{rid := Rid, ssrc := S, rtx_ssrc := X} = L <- Layers
     ];
 senders(#{mid := Mid} = Sec, Old) ->
     [{Mid, sender(Sec, maps:get(Mid, Old, undefined))}].
@@ -51,8 +52,9 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     SendExt = maps:get(send_extensions, Sec, #{}),
     MidExt = maps:get(?URI_MID, SendExt, undefined),
     TwccExt = maps:get(?URI_TWCC, SendExt, undefined),
+    {Pause, HoldOff} = pause(Sec, Old),
     case Old of
-        #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt};
+        #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff};
         undefined ->
             #snd{
                 mid = Mid,
@@ -66,9 +68,24 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 seq = rand16(),
                 rtx_seq = rand16(),
                 tx = webrtc_rtp_stats:tx_new(),
-                buffer = webrtc_nack_buffer:new(#{size => ?BUFFER_SIZE})
+                buffer = webrtc_nack_buffer:new(#{size => ?BUFFER_SIZE}),
+                pause = Pause,
+                hold_off = HoldOff
             }
     end.
+
+%% RFC 7728: a stream keeps its pause state across renegotiations; a
+%% layer the answer marked paused (RFC 8853 §5.3) starts paused.
+%% Without nowait the hold-off is 2 * RTT + T_dither_max, 500 ms while
+%% no RTT is known.
+pause(#{pause := #{nowait := NoWait}} = Sec, Old) ->
+    HoldOff = case NoWait of true -> 0; false -> 500 end,
+    case Old of
+        #snd{pause = P} when P =/= undefined -> {P, HoldOff};
+        _ -> {webrtc_rtp_pause:sender(maps:get(paused, Sec, false)), HoldOff}
+    end;
+pause(_Sec, _Old) ->
+    {undefined, 0}.
 
 pick_pt(#{pt := Pt}, #snd{codecs = Cs}) ->
     case [P || #{pt := P} <- Cs, P =:= Pt] of

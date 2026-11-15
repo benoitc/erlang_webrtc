@@ -228,3 +228,44 @@ sdes_test() ->
         rid_state()
     ),
     ?assertEqual([<<"q">>, <<"f">>, undefined, undefined], [webrtc_media_rid:rid(S, R) || S <- [1, 2, 3, 4]]).
+
+%% RFC 7728 per layer: PAUSE stops one layer, PAUSED answers it, RESUME
+%% restarts it; the other layers keep flowing.
+layer_pause_test() ->
+    {SA0, SB0} = pair(),
+    {Out, SA1} = lists:foldl(
+        fun(Rid, {Acc, S}) -> {O, S1} = send(Rid, <<"x">>, 1, S), {Acc ++ O, S1} end,
+        {[], SA0},
+        ?RIDS
+    ),
+    {SB1, _} = deliver(Out, SB0, 0),
+    {ok, Pause, SB2} = webrtc_media:request_pause({<<"0">>, <<"h">>}, pause, 0, SB1),
+    {SA2, A1} = deliver(Pause, SA1, 0),
+    ?assertEqual([{stream_paused, <<"0">>, <<"h">>}], events(A1)),
+    ?assertEqual({error, paused}, webrtc_media:send(<<"0">>, <<"y">>, #{rid => <<"h">>}, 0, SA2)),
+    {_, SA3} = send(<<"q">>, <<"y">>, 2, SA2),
+    {SB3, A2} = deliver(sends(A1), SB2, 0),
+    ?assertEqual([{remote_paused, <<"0">>, <<"h">>}], events(A2)),
+    {ok, Resume, SB4} = webrtc_media:request_pause({<<"0">>, <<"h">>}, resume, 0, SB3),
+    {SA4, A3} = deliver(Resume, SA3, 0),
+    ?assertEqual([{stream_resumed, <<"0">>, <<"h">>}], events(A3)),
+    {Again, _} = send(<<"h">>, <<"z">>, 3, SA4),
+    {_, A4} = deliver(Again, SB4, 0),
+    ?assertMatch([{remote_resumed, <<"0">>, <<"h">>}, {rtp, <<"0">>, <<"h">>, #rtp{payload = <<"z">>}}], events(A4)).
+
+%% RFC 8853 §5.3: a layer the answer marks paused starts paused; the
+%% receiver learns its SSRC from SDES and resumes it.
+answer_paused_layer_test() ->
+    {MA0, MB} = negotiate(),
+    [#{send_rids := Layers} = Sec] = MA0,
+    MA = [Sec#{send_rids := [L#{paused := R =:= <<"f">>} || #{rid := R} = L <- Layers]}],
+    {SA0, SB0} = sessions(MA, MB),
+    ?assertEqual({error, paused}, webrtc_media:send(<<"0">>, <<"y">>, #{rid => <<"f">>}, 0, SA0)),
+    {_, SA1} = send(<<"q">>, <<"y">>, 1, SA0),
+    ?assertEqual({error, unknown_stream}, webrtc_media:request_pause({<<"0">>, <<"f">>}, resume, 0, SB0)),
+    {SA2, Report} = webrtc_media:handle_timeout(10000, SA1),
+    {SB1, _} = deliver(sends(Report), SB0, 10000),
+    {ok, Resume, _} = webrtc_media:request_pause({<<"0">>, <<"f">>}, resume, 10000, SB1),
+    {SA3, A} = deliver(Resume, SA2, 10000),
+    ?assertEqual([{stream_resumed, <<"0">>, <<"f">>}], events(A)),
+    {_, _} = send(<<"f">>, <<"z">>, 2, SA3).

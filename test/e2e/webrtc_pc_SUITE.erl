@@ -29,7 +29,8 @@
     ice_tcp_only/1,
     simulcast_layers/1,
     simulcast_sfu_forward/1,
-    unbundled/1
+    unbundled/1,
+    pause_resume/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -58,7 +59,8 @@ all() ->
         ice_tcp_only,
         simulcast_layers,
         simulcast_sfu_forward,
-        unbundled
+        unbundled,
+        pause_resume
     ].
 
 init_per_suite(Config) ->
@@ -273,6 +275,36 @@ unbundled(_Config) ->
     webrtc:close(A),
     webrtc:close(B),
     ?assertEqual([], ets:match_object(webrtc_transports, {{A, '_'}, '_'})).
+
+%% RFC 7728: the receiver pauses the remote video stream and resumes it.
+pause_resume(_Config) ->
+    A = pc(),
+    B = pc(),
+    av(A),
+    av(B),
+    {Offer, _} = ?S:connect(A, B),
+    ?assertNotEqual(nomatch, binary:match(Offer, <<"ccm pause nowait">>)),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"v1">>, #{timestamp => 1, marker => true}),
+    _ = rtp(B, <<"1">>, <<"v1">>),
+    %% Audio has no pause line.
+    ?assertEqual({error, pause_not_negotiated}, webrtc:request_pause(B, <<"0">>)),
+    ok = webrtc:request_pause(B, <<"1">>),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_paused, <<"1">>} end, 5000),
+    {ok, _} = ?S:wait(B, fun(E) -> E =:= {remote_paused, <<"1">>} end, 5000),
+    ?assertEqual({error, paused}, webrtc:send_rtp(A, <<"1">>, <<"v2">>, #{timestamp => 2})),
+    %% Audio keeps flowing.
+    ok = webrtc:send_rtp(A, <<"0">>, <<"a1">>, #{timestamp => 1}),
+    _ = rtp(B, <<"0">>, <<"a1">>),
+    ok = webrtc:request_resume(B, <<"1">>),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_resumed, <<"1">>} end, 5000),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"v3">>, #{timestamp => 3, marker => true}),
+    _ = rtp(B, <<"1">>, <<"v3">>),
+    {ok, _} = ?S:wait(B, fun(E) -> E =:= {remote_resumed, <<"1">>} end, 5000),
+    %% A second pause uses the next PauseID.
+    ok = webrtc:request_pause(B, <<"1">>),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {stream_paused, <<"1">>} end, 5000),
+    webrtc:close(A),
+    webrtc:close(B).
 
 keyframe_request(_Config) ->
     A = pc(),

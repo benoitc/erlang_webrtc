@@ -10,6 +10,7 @@
 -export([
     expire_idle/2,
     nack_actions/5,
+    sender_by_ssrc/2,
     rtcp_in/3,
     rtp_in/3
 ]).
@@ -95,6 +96,7 @@ forget(Ssrc, #media{rtx_ssrc = Rtx} = M) ->
                         error -> maps:remove(S, Acc#media.ssrc_mid)
                     end,
                 rtx_ssrc = maps:remove(S, Acc#media.rtx_ssrc),
+                pause_req = maps:remove(S, Acc#media.pause_req),
                 rids = webrtc_media_rid:forget(S, Acc#media.rids),
                 in =
                     case Acc#media.in of
@@ -183,13 +185,14 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
         end,
     R1 = R0#rcv{rx = Rx, nack = Nack},
     M1 = learn(Ssrc, Mid, Now, M#media{receivers = (M#media.receivers)#{Ssrc => R1}}),
-    {Out, M2} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
+    {Out, M2a} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
+    {M2, PauseEvents} = webrtc_media_pause:rtp(Ssrc, M2a),
     Event =
         case webrtc_media_rid:rid(Ssrc, M2#media.rids) of
             undefined -> {rtp, Mid, Pkt};
             Rid -> {rtp, Mid, Rid, Pkt}
         end,
-    {webrtc_media_out:count(rtp_received, M2), [{event, Event} | Out]}.
+    {webrtc_media_out:count(rtp_received, M2), PauseEvents ++ [{event, Event} | Out]}.
 
 new_receiver(Mid, Ssrc, Pt, M) ->
     Sec = maps:get(Mid, M#media.recv, #{}),
@@ -283,6 +286,8 @@ rtcp_packet(#rtcp_rr{reports = Rbs}, Now, M) ->
 rtcp_packet(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
     Events = [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs],
     {lists:foldl(fun forget/2, M, Ssrcs), Events};
+rtcp_packet(#rtcp_pause{} = P, Now, M) ->
+    webrtc_media_pause:rtcp(P, Now, M);
 rtcp_packet(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc) ->
     {Events, Cc} = webrtc_cc:rtcp(P, Now, M#media.cc),
     {M#media{cc = Cc}, [{event, {rtcp, undefined, P}} | [{event, E} || E <- Events]]};

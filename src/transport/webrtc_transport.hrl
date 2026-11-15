@@ -49,8 +49,12 @@
     next_accept = 1 :: pos_integer(),
     %% Host name candidates (mDNS, FQDN) being resolved.
     mdns :: webrtc_mdns_client:client(),
-    %% Datagrams dropped before DTLS or SRTP, by reason.
+    %% Datagrams dropped before DTLS or SRTP, by reason, and the last one
+    %% dropped for an unvalidated source (class, socket, source).
     dropped = #{} :: #{atom() => pos_integer()},
+    dropped_last :: undefined | {atom(), term(), term()},
+    %% Datagrams received on the sockets, by class (webrtc_demux).
+    received = #{} :: #{atom() => pos_integer()},
     %% The selected pair, to tell a path change (connection ID
     %% rotation); `restart' after an ICE restart.
     pair :: undefined | restart | {term(), term()}

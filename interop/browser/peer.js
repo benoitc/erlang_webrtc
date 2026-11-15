@@ -115,6 +115,19 @@ const pageScript = () => {
             window.emit({ event: 'rtp', kind: s.kind, count: n, bytes: s.bytesReceived || 0 });
           }
         });
+        // Each transport as the browser sees it, for failure reports.
+        const cands = {};
+        stats.forEach((s) => { if (s.type === 'local-candidate' || s.type === 'remote-candidate') cands[s.id] = s; });
+        stats.forEach((s) => {
+          if (s.type !== 'transport') return;
+          const pair = s.selectedCandidatePairId && stats.get(s.selectedCandidatePairId);
+          const addr = (id) => id && cands[id] ? cands[id].address + ':' + cands[id].port : '';
+          const v = [s.dtlsState, s.iceState || '', pair ? addr(pair.localCandidateId) + '>' + addr(pair.remoteCandidateId) : ''].join(' ');
+          if (last['t' + s.id] !== v) {
+            last['t' + s.id] = v;
+            window.emit({ event: 'transport', id: s.id, state: v });
+          }
+        });
         // The RFC 6464 audio level of received packets, as the browser
         // read it (after RFC 6904 decryption when negotiated).
         for (const r of pc.getReceivers()) {

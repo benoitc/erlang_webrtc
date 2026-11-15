@@ -225,6 +225,8 @@ handle_call(stats, _From, St) ->
     Stats = #{
         addresses => [A || {_, A} <- St#st.sockets],
         dropped => St#st.dropped,
+        dropped_last => St#st.dropped_last,
+        received => St#st.received,
         ice => webrtc_ice_agent:stats(St#st.ice),
         dtls => case St#st.dtls of undefined -> undefined; D -> webrtc_dtls:info(D) end,
         media => webrtc_media:stats(St#st.media),

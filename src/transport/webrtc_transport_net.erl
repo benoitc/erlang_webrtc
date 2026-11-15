@@ -70,15 +70,17 @@ usable({169, 254, _, _}) -> false;
 usable({A, _, _, _, _, _, _, _}) when A band 16#FFC0 =:= 16#FE80 -> false;
 usable(_) -> true.
 
-datagram(Sock, Src, Bin, Now, St) ->
-    case webrtc_demux:classify(Bin) of
+datagram(Sock, Src, Bin, Now, St0) ->
+    Class0 = webrtc_demux:classify(Bin),
+    St = St0#st{received = maps:update_with(Class0, fun(N) -> N + 1 end, 1, St0#st.received)},
+    case Class0 of
         C when C =:= stun; C =:= turn_channel ->
             {I1, Acts} = webrtc_ice_agent:handle_packet(Sock, Src, Bin, Now, St#st.ice),
             ice_actions(Acts, St#st{ice = I1});
         Class ->
             case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
                 true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, St);
-                false -> drop(unvalidated_source, St)
+                false -> drop(unvalidated_source, St#st{dropped_last = {Class, Sock, Src}})
             end
     end.
 

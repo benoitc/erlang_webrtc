@@ -94,7 +94,10 @@
 %%     the list has a DTLS 1.3 suite.</li>
 %% <li>`mtu' (default 1200), `use_cookie' (server, default true; a
 %%     HelloVerifyRequest in DTLS 1.2, a HelloRetryRequest with a
-%%     stateless cookie in DTLS 1.3), `require_ems' (DTLS 1.2, default
+%%     stateless cookie in DTLS 1.3), `address_validated' (server,
+%%     default false: without a cookie it sends at most three times what
+%%     it received until the handshake ends, RFC 9147 §5.1; true when the
+%%     owner validated the address, ICE for instance), `require_ems' (DTLS 1.2, default
 %%     true), `rtx_initial' (ms, default 400), `rtx_max' (ms, default
 %%     60000), `rtx_limit' (default 7), `rekey_records' (DTLS 1.3:
 %%     records sent before a KeyUpdate, default 2^23),
@@ -142,6 +145,7 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         groups = maps:get(groups, Opts, [x25519, secp256r1, secp384r1]),
         require_ems = maps:get(require_ems, Opts, true),
         use_cookie = maps:get(use_cookie, Opts, true),
+        addr_valid = maps:get(address_validated, Opts, false),
         resumption = maps:get(resumption, Opts, false),
         early_data = maps:get(early_data, Opts, false),
         ticket_lifetime = maps:get(ticket_lifetime, Opts, 7200),
@@ -180,11 +184,17 @@ start(_Now, St) ->
 handle_packet(_Bin, _Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
     {St, []};
 handle_packet(Bin, Now, #dtls{version = dtls12} = St0) ->
-    run(Now, St0, fun(S) -> webrtc_dtls12:handle_records(webrtc_dtls_record:decode(Bin, cid_len(S)), Now, S) end);
+    run(Now, received(Bin, St0),
+        fun(S) -> webrtc_dtls12:handle_records(webrtc_dtls_record:decode(Bin, cid_len(S)), Now, S) end);
 handle_packet(Bin, Now, St0) ->
     %% Hello exchange or DTLS 1.3: plaintext and unified header records
     %% may share a datagram (RFC 9147 §4.1).
-    run(Now, St0, fun(S) -> webrtc_dtls13:handle_records(webrtc_dtls13_record:split(Bin, cid_len(S)), Now, S) end).
+    run(Now, received(Bin, St0),
+        fun(S) -> webrtc_dtls13:handle_records(webrtc_dtls13_record:split(Bin, cid_len(S)), Now, S) end).
+
+%% Bytes from a client whose address is not validated yet.
+received(Bin, #dtls{role = server, addr_valid = false, amp_in = In} = St) -> St#dtls{amp_in = In + byte_size(Bin)};
+received(_Bin, St) -> St.
 
 %% Records carry our connection ID once we offered a non-empty one.
 cid_len(#dtls{cid = C}) when is_binary(C), byte_size(C) > 0 -> byte_size(C);
@@ -196,7 +206,8 @@ handle_timeout(_Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
 handle_timeout(Now, #dtls{version = dtls13} = St) ->
     run(Now, St, fun(S) -> webrtc_dtls13:timeout(Now, S) end);
 handle_timeout(Now, St) ->
-    webrtc_dtls12:timeout(Now, St).
+    {St1, Acts} = webrtc_dtls12:timeout(Now, St),
+    amplification(St1, Acts).
 
 -spec next_timeout(state()) -> integer() | infinity.
 next_timeout(#dtls{rtx_at = At, ack_at = Ack}) ->
@@ -360,7 +371,33 @@ run(Now, St0, F) ->
             dtls13 -> webrtc_dtls13:flush(Now, St1);
             _ -> webrtc_dtls12:flush(Now, St1)
         end,
-    {St2#dtls{out = []}, lists:reverse(St2#dtls.out)}.
+    amplification(St2#dtls{out = []}, lists:reverse(St2#dtls.out)).
+
+%% RFC 9147 §5.1 (and for DTLS 1.2 without a cookie): until the
+%% client's address is validated a server sends at most three times the
+%% bytes it received from it. Datagrams over the limit wait, in order,
+%% for more bytes from the client or for the validation.
+amplification(#dtls{role = server, addr_valid = false} = St, Acts) ->
+    case St#dtls.handshake_done of
+        true ->
+            amplification(St#dtls{addr_valid = true}, Acts);
+        false ->
+            {Sends, Other} = lists:partition(fun(A) -> element(1, A) =:= send end, Acts),
+            %% Before validation the server only sends its first flight:
+            %% a retransmission carries all of it, held copies included.
+            Queue = case Sends of [] -> St#dtls.amp_held; _ -> [D || {send, D} <- Sends] end,
+            {Out, Held, Sent} = budget(Queue, 3 * St#dtls.amp_in - St#dtls.amp_out, []),
+            {St#dtls{amp_held = Held, amp_out = St#dtls.amp_out + Sent}, [{send, D} || D <- Out] ++ Other}
+    end;
+amplification(#dtls{amp_held = [_ | _] = Held} = St, Acts) ->
+    {St#dtls{amp_held = []}, [{send, D} || D <- Held] ++ Acts};
+amplification(St, Acts) ->
+    {St, Acts}.
+
+budget([D | Rest], Left, Acc) when byte_size(D) =< Left ->
+    budget(Rest, Left - byte_size(D), [D | Acc]);
+budget(Held, _Left, Acc) ->
+    {lists:reverse(Acc), Held, lists:sum([byte_size(D) || D <- Acc])}.
 
 %% @private Abort the handshake from webrtc_dtls_hs.
 -spec fail(0..255, term(), state()) -> no_return().

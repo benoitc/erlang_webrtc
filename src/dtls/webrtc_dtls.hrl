@@ -93,6 +93,18 @@
     rtx_count = 0 :: non_neg_integer(),
     rtx_limit :: non_neg_integer(),
     last_peer_rtx = undefined :: undefined | integer(),
+    %% DTLS 1.3 timer (RFC 9147 §5.8.2): the value new flights start
+    %% with, 1.5 times the RTT of a flight acknowledged without
+    %% retransmission, and when the current flight was sent.
+    rtx_base :: undefined | pos_integer(),
+    flight_at :: undefined | integer(),
+    %% Amplification limit (RFC 9147 §5.1): until a cookie exchange or
+    %% the end of the handshake validates the client's address, a server
+    %% sends at most three times what it received; the rest waits.
+    addr_valid = false :: boolean(),
+    amp_in = 0 :: non_neg_integer(),
+    amp_out = 0 :: non_neg_integer(),
+    amp_held = [] :: [binary()],
     %% Application data received before the fingerprint is verified.
     held = [] :: [binary()],
     %% DTLS 1.3 (RFC 9147). Client key share {Group, Public, Private}, HRR

@@ -105,12 +105,13 @@ second_client_hello(Cookie, SuiteId, Selected, Shares, CH, CR, M, Now, St) ->
             _ -> fail(?ALERT_ILLEGAL_PARAMETER, bad_key_share_after_hrr, St)
         end,
     HRR = hrr_body(SuiteId, Retry, CGroup, Cookie),
+    %% The cookie came back: the client's address is validated (§5.1).
     T = [
         CH,
         webrtc_dtls13_msg:transcript_msg(server_hello, HRR),
         webrtc_dtls13_msg:message_hash(CH1Hash)
     ],
-    proceed(Group, Shares, T, CR, M, St).
+    proceed(Group, Shares, T, CR, M, St#dtls{addr_valid = true}).
 
 %% Stateless HelloRetryRequest; the server stays in wait_client_hello
 %% and the message sequence is taken from the ClientHello (§5.2).

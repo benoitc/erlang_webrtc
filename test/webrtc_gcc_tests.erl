@@ -319,3 +319,39 @@ probing_slow_link_test_() ->
         ?assert(Avg >= 0.6 * 500000),
         ?assert(avg_queue(S, 3000, 10000) < 100)
     end}.
+
+%% Application limited (ALR): after a dip the flow sends 400 kbps on a
+%% 3 Mbps link. The estimate can only grow to 1.5 times what is acked
+%% (draft-ietf-rmcat-gcc §5.5); once it sits there, ALR probes every
+%% 5 s bring it to the link rate while the flow stays limited.
+probing_application_limited_test_() ->
+    {timeout, 120, fun() ->
+        #{samples := S} = sim(#{
+            link => bottleneck(3000000),
+            flows => [#{media_cap => [{0, 400000}]}],
+            events => [{2000, {capacity, 300000}}, {5000, {capacity, 3000000}}],
+            duration_ms => 27000
+        }),
+        Plateau = webrtc_cc_sim:average(S, 1, 19000, 22000),
+        Peak = lists:max([hd(Ts) || {T, Ts, _} <- S, T >= 22000]),
+        ?debugFmt("400 kbps application limited: plateau ~p, after ALR probes ~p", [round(Plateau), Peak]),
+        ?assert(Plateau =< 800000),
+        ?assert(Peak >= 1500000),
+        ?assert(Peak =< 1.05 * 3000000)
+    end}.
+
+%% A short dip: once over-use ends a probe at 85% of the rate before the
+%% drop lifts the estimate at once instead of the 8% a second ramp.
+probing_after_drop_test_() ->
+    {timeout, 120, fun() ->
+        #{samples := S} = sim(#{
+            link => bottleneck(3000000),
+            events => [{8000, {capacity, 800000}}, {9000, {capacity, 3000000}}],
+            duration_ms => 11000
+        }),
+        Low = webrtc_cc_sim:min_after(S, 1, 8500, 9400),
+        After = webrtc_cc_sim:min_after(S, 1, 10000, 11000),
+        ?debugFmt("dip to 800 kbps: low ~p, one second after ~p", [Low, After]),
+        ?assert(Low =< 900000),
+        ?assert(After >= 1.6 * Low)
+    end}.

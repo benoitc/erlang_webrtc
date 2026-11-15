@@ -65,6 +65,7 @@
     target/1,
     has_input/1,
     sending_rate/2,
+    delay_state/1,
     set_limits/2,
     info/1
 ]).
@@ -284,6 +285,10 @@ sending_rate(Now, #gcc{sent_rate = R}) ->
         undefined -> 0;
         Bps -> Bps
     end.
+
+%% @doc The delay detector's signal: `normal', `overuse' or `underuse'.
+-spec delay_state(state()) -> atom().
+delay_state(#gcc{delay = D}) -> maps:get(state, webrtc_gcc_delay:info(D)).
 
 -spec sent(non_neg_integer(), integer(), state()) -> state().
 sent(Size, Now, G) ->

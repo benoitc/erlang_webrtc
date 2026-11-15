@@ -37,7 +37,9 @@
 %% Probing (`webrtc_cc_probe'): with transport-wide feedback, the first
 %% video packet starts probe clusters of padding packets ahead of the
 %% estimate; their results lift it at once instead of the slow startup
-%% ramp.
+%% ramp. Later it probes again while media is application limited,
+%% after a large drop once the path recovers, and on a raised
+%% `max_bitrate'.
 %%
 %% Options (all optional): `pacing' (default true), `probing' (default
 %% true), `pacing_factor' (2.5), `burst_ms' (10), `max_queue_packets' (1000), `max_queue_ms'
@@ -85,6 +87,8 @@
     twcc_rx :: undefined | webrtc_twcc_receiver:state(),
     twcc_interval :: pos_integer(),
     rtx_sent :: webrtc_cc_rate:rate(),
+    %% Media sent (probe padding left out), for the ALR detector.
+    media_sent :: webrtc_cc_rate:rate(),
     rtx_limited = 0 :: non_neg_integer(),
     unpaced = 0 :: non_neg_integer(),
     %% Streams halted by a circuit breaker: Key => {Reason, TrippedAt}.
@@ -117,6 +121,7 @@ new(Opts) ->
         cb = webrtc_circuit_breaker:new(maps:with([rtcp_timeout], Opts)),
         twcc_interval = maps:get(twcc_interval, Opts, 100),
         rtx_sent = webrtc_cc_rate:new(1000),
+        media_sent = webrtc_cc_rate:new(1000),
         probe = webrtc_cc_probe:new(maps:with([probing, max_bitrate], Opts))
     }.
 
@@ -145,8 +150,11 @@ configure(#{twcc_send := Send, twcc_recv := Recv, sender_ssrc := Ssrc}, Cc) ->
 -spec set_options(map(), integer(), state()) -> {[term()], [event()], state()}.
 set_options(Opts, Now, Cc0) ->
     {Events, Gcc} = webrtc_gcc:set_limits(maps:with([min_bitrate, max_bitrate], Opts), Cc0#cc.gcc),
+    Max = maps:get(max_bitrate, Opts, Cc0#cc.max_bitrate),
+    Probe = webrtc_cc_probe:max_raised(Now, Cc0#cc.max_bitrate, Max, webrtc_gcc:target(Cc0#cc.gcc), Cc0#cc.probe),
     Cc1 = retarget(Now, Cc0#cc{
-        max_bitrate = maps:get(max_bitrate, Opts, Cc0#cc.max_bitrate),
+        max_bitrate = Max,
+        probe = Probe,
         gcc = Gcc,
         pacing = maps:get(pacing, Opts, Cc0#cc.pacing),
         factor = float(maps:get(pacing_factor, Opts, Cc0#cc.factor))
@@ -200,6 +208,7 @@ sent(Key, Size, Now, Cc) ->
         end,
     Cc#cc{
         twcc_tx = Tx,
+        media_sent = webrtc_cc_rate:add(Now, Size, Cc#cc.media_sent),
         gcc = webrtc_gcc:sent(Size, Now, Cc#cc.gcc),
         cb = webrtc_circuit_breaker:sent(Key, Size, Now, Cc#cc.cb)
     }.
@@ -243,7 +252,7 @@ rtcp(#rtcp_twcc{} = Fb, Now, #cc{twcc_tx = Tx} = Cc) when Tx =/= undefined ->
         {[], Gcc},
         Probed
     ),
-    {Events ++ ProbeEvents, retarget(Now, Cc#cc{twcc_tx = Tx1, gcc = Gcc1, probe = Probe})};
+    {Events ++ ProbeEvents, retarget(Now, follow(Now, Cc#cc{twcc_tx = Tx1, gcc = Gcc1, probe = Probe}))};
 rtcp(#rtcp_remb{bitrate = Bps}, Now, Cc) ->
     {Events, Gcc} = webrtc_gcc:remb(Bps, Now, Cc#cc.gcc),
     {Events, retarget(Now, Cc#cc{gcc = Gcc})};
@@ -321,7 +330,8 @@ resume(Key, Now, #cc{halted = H, hold = Hold} = Cc) ->
 %% packet of that size and report it with `sent_probe/5'), the
 %% transport-wide feedback to send and events.
 -spec handle_timeout(integer(), state()) -> {[term()], [#rtcp_twcc{}], [event()], state()}.
-handle_timeout(Now, Cc00) ->
+handle_timeout(Now, Cc000) ->
+    Cc00 = follow(Now, Cc000),
     {Probes, Probe} = webrtc_cc_probe:handle_timeout(Now, Cc00#cc.probe),
     Cc0 = Cc00#cc{probe = Probe},
     {Pkts, P} = webrtc_pacer:handle_timeout(Now, Cc0#cc.pacer),
@@ -371,6 +381,12 @@ stats(#cc{} = Cc) ->
             receive_stats => case Cc#cc.twcc_rx of undefined -> undefined; R -> webrtc_twcc_receiver:stats(R) end
         }
     }.
+
+%% The probe controller follows the estimate and what media sends.
+follow(Now, #cc{gcc = G, probe = P} = Cc) ->
+    Sending = case webrtc_cc_rate:rate(Now, Cc#cc.media_sent) of undefined -> 0; R -> R end,
+    Cc#cc{probe = webrtc_cc_probe:update(Now, #{estimate => webrtc_gcc:target(G), sending => Sending,
+                                                 delay_state => webrtc_gcc:delay_state(G)}, P)}.
 
 retarget(Now, #cc{pacer = P, factor = F, gcc = G} = Cc) ->
     Rate = pacing_rate(F, webrtc_gcc:target(G)),

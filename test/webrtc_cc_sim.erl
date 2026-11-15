@@ -6,7 +6,9 @@
 %%
 %% The encoder of each flow produces 30 frames per second at the
 %% current target bitrate (frame sizes vary by +-10%), cut into packets
-%% of at most 1200 bytes.
+%% of at most 1200 bytes. A flow's `media_cap' ([{AtMs, Bps | unlimited}])
+%% makes it application limited: frames are sized for the smaller of
+%% the target and the cap.
 -module(webrtc_cc_sim).
 
 -include("webrtc_rtp_rtcp.hrl").
@@ -33,7 +35,7 @@ run(Opts) ->
 new_flow(I, Opts, Seed) ->
     Cc = webrtc_cc:configure(
         #{twcc_send => true, twcc_recv => false, sender_ssrc => I},
-        webrtc_cc:new(maps:without([start_ms], Opts))
+        webrtc_cc:new(maps:without([start_ms, media_cap], Opts))
     ),
     Rx = webrtc_cc:configure(
         #{twcc_send => false, twcc_recv => true, sender_ssrc => 1000 + I},
@@ -44,6 +46,7 @@ new_flow(I, Opts, Seed) ->
         cc => Cc,
         rx => Rx,
         start => maps:get(start_ms, Opts, 0),
+        cap => lists:keysort(1, maps:get(media_cap, Opts, [])),
         next_frame => float(maps:get(start_ms, Opts, 0)),
         rand => rand:seed_s(exsss, {Seed, I, 99})
     }.
@@ -84,7 +87,7 @@ encoder(T, #{next_frame := Next} = F, Sim) when T < Next ->
     {F, Sim};
 encoder(T, #{next_frame := Next, cc := Cc0, rand := R0} = F, Sim) ->
     {U, R1} = rand:uniform_s(R0),
-    Bytes = round(webrtc_cc:target(Cc0) / 8 / 30 * (0.9 + 0.2 * U)),
+    Bytes = round(min(webrtc_cc:target(Cc0), cap(T, maps:get(cap, F))) / 8 / 30 * (0.9 + 0.2 * U)),
     Sizes = split(max(Bytes, 100)),
     {Out, Cc} = lists:foldl(
         fun(Sz, {Acc, C}) ->
@@ -95,6 +98,12 @@ encoder(T, #{next_frame := Next, cc := Cc0, rand := R0} = F, Sim) ->
         Sizes
     ),
     egress(Out, T, F#{next_frame := Next + 1000 / 30, cc := Cc, rand := R1}, Sim).
+
+cap(T, Caps) ->
+    case [C || {At, C} <- Caps, At =< T] of
+        [] -> infinity;
+        Cs -> case lists:last(Cs) of unlimited -> infinity; C -> C end
+    end.
 
 split(B) when B =< 1200 -> [B];
 split(B) ->

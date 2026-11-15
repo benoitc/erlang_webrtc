@@ -103,7 +103,9 @@
     drop :: undefined | {pos_integer(), integer()},
     delay_state = normal :: atom(),
     %% Start times of the probes after start-up, within BUDGET_MS.
-    probed = [] :: [integer()]
+    probed = [] :: [integer()],
+    %% A raised maximum to probe once no cluster is in flight.
+    raise :: undefined | pos_integer()
 }).
 
 -opaque state() :: #probe{}.
@@ -132,7 +134,8 @@ update(Now, #{estimate := E, sending := Sent, delay_state := D}, #probe{enabled 
     P1 = alr(Now, E, Sent, P0),
     P2 = drop(Now, E, D, P1),
     P3 = alr_probe(Now, E, P2),
-    P3#probe{estimate = E, delay_state = D};
+    P4 = pending_raise(Now, E, P3),
+    P4#probe{estimate = E, delay_state = D};
 update(_Now, #{estimate := E}, P) ->
     P#probe{estimate = E}.
 
@@ -184,12 +187,23 @@ drop(Now, E, D, #probe{estimate = Prev} = P) ->
 -spec max_raised(integer(), pos_integer(), pos_integer(), pos_integer(), state()) -> state().
 max_raised(Now, Old, New, E, #probe{enabled = true, started = true} = P) when New > Old ->
     P1 = P#probe{max = New},
-    case E >= ?CAPPED * Old of
-        true -> probe(Now, New, P1);
-        false -> P1
+    case {E >= ?CAPPED * Old, idle(P1)} of
+        {true, true} -> probe(Now, New, P1);
+        %% A cluster is in flight: probe the new maximum after it.
+        {true, false} -> P1#probe{raise = New};
+        {false, _} -> P1
     end;
 max_raised(_Now, _Old, New, _E, P) ->
     P#probe{max = New}.
+
+pending_raise(Now, E, #probe{raise = R} = P) when is_integer(R) ->
+    case idle(P) of
+        true when E < R -> probe(Now, R, P#probe{raise = undefined});
+        true -> P#probe{raise = undefined};
+        false -> P
+    end;
+pending_raise(_Now, _E, P) ->
+    P.
 
 %% One cluster at a time, within the budget.
 probe(Now, Rate, P) ->

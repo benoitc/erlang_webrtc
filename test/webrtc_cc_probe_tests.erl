@@ -180,3 +180,18 @@ media_in_cluster_test() ->
     %% Outside a cluster media is not tagged.
     {_, P5} = drain(P4, 31, 100, []),
     ?assertMatch({undefined, _}, ?P:media(200, 1200, P5)).
+
+%% A raise while a cluster is in flight is probed once it is done.
+max_raised_while_busy_test() ->
+    P0 = ?P:max_raised(6000, 1000000, 3000000, 950000, settled(#{max_bitrate => 1000000})),
+    ?assertMatch(#{pending := 1}, ?P:info(P0)),
+    P1 = ?P:max_raised(6001, 3000000, 5000000, 2900000, P0),
+    ?assertMatch(#{pending := 1}, ?P:info(P1)),
+    %% The first cluster goes out and gets no answer.
+    {_, P2} = drain(P1, 6001, 6100, []),
+    {[], P3} = ?P:handle_timeout(8200, P2),
+    ?assertMatch(#{pending := 0}, ?P:info(P3)),
+    P4 = up(8200, 2900000, 2800000, P3),
+    ?assertMatch(#{pending := 1}, ?P:info(P4)),
+    {Rate, _} = next_cluster(8200, P4),
+    ?assert(Rate >= 5000000 andalso Rate < 5500000).

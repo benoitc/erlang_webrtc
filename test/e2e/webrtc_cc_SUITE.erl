@@ -195,7 +195,7 @@ probing_fills_link_at_start(Config) ->
 
 %% The application caps the estimate at 800 kbps on a 3 Mbps link, then
 %% lifts the cap: a probe at the new maximum gets the estimate near the
-%% link within a second instead of the 8% a second ramp.
+%% link within seconds instead of the 8% a second ramp.
 probing_on_raised_maximum(Config) ->
     {A, B} = pair(Config, #{rate => 3000000, queue_ms => 300}),
     ok = webrtc:set_congestion_control(A, #{max_bitrate => 800000}),
@@ -207,7 +207,7 @@ probing_on_raised_maximum(Config) ->
     ct:log("estimates ~p~nprobing ~p", [Est, maps:get(probing, stats_target(A))]),
     ?assert(lists:all(fun(X) -> X =< 800000 end, window(Est, 2000, 6000))),
     case [T || {T, Bps} <- Est, T >= 6000, Bps >= 1600000] of
-        [First | _] -> ?assert(First =< 7500);
+        [First | _] -> ?assert(First =< 8500);
         [] -> ct:fail({never_reached, Est})
     end,
     ?assert(lists:all(fun(X) -> X =< 3300000 end, window(Est, 6000, 9000))),

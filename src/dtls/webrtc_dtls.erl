@@ -130,6 +130,12 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         groups = maps:get(groups, Opts, [x25519, secp256r1, secp384r1]),
         require_ems = maps:get(require_ems, Opts, true),
         use_cookie = maps:get(use_cookie, Opts, true),
+        cid =
+            case maps:get(connection_id, Opts, false) of
+                false -> undefined;
+                true -> crypto:strong_rand_bytes(8);
+                C when is_binary(C), byte_size(C) =< 255 -> C
+            end,
         cookie_secret = crypto:strong_rand_bytes(32),
         mtu = maps:get(mtu, Opts, 1200),
         rtx_initial = Initial,
@@ -167,7 +173,11 @@ handle_packet(Bin, Now, #dtls{version = dtls12} = St0) ->
 handle_packet(Bin, Now, St0) ->
     %% Hello exchange or DTLS 1.3: plaintext and unified header records
     %% may share a datagram (RFC 9147 §4.1).
-    run(Now, St0, fun(S) -> webrtc_dtls13:handle_records(webrtc_dtls13_record:split(Bin), Now, S) end).
+    run(Now, St0, fun(S) -> webrtc_dtls13:handle_records(webrtc_dtls13_record:split(Bin, cid_len(S)), Now, S) end).
+
+%% Records carry our connection ID once we offered a non-empty one.
+cid_len(#dtls{cid = C}) when is_binary(C), byte_size(C) > 0 -> byte_size(C);
+cid_len(_) -> undefined.
 
 -spec handle_timeout(integer(), state()) -> {state(), [action()]}.
 handle_timeout(_Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
@@ -254,7 +264,8 @@ role(#dtls{role = R}) -> R.
 %% transcript, the property RFC 7627 adds to DTLS 1.2.
 -spec info(state()) -> map().
 info(#dtls{version = dtls13} = St) ->
-    (info12(St))#{suite => suite_name(St#dtls.suite13), extended_master_secret => true};
+    (info12(St))#{suite => suite_name(St#dtls.suite13), extended_master_secret => true,
+                  connection_id => St#dtls.peer_cid =/= undefined};
 info(#dtls{} = St) ->
     info12(St).
 

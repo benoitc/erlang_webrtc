@@ -120,6 +120,10 @@
     ku_pending = false :: boolean(),
     rekey_records :: pos_integer(),
     cookie_lifetime :: pos_integer(),
+    %% Connection ID (RFC 9147 §9, RFC 9146): the one we offered to
+    %% receive and the one the peer asked us to send, once negotiated.
+    cid :: undefined | binary(),
+    peer_cid :: undefined | binary(),
     out = [] :: [term()]
 }).
 

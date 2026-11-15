@@ -199,3 +199,14 @@ split_layout_test() ->
         }
     ),
     ?assertError(badarg, webrtc_srtp:split_dtls_keying_material(srtp_aead_aes_128_gcm, Bin)).
+
+%% RFC 6904 Appendix A.1: the header extension key and salt.
+rfc6904_header_keys_test() ->
+    K = webrtc_srtp_kdf:session_keys(
+        srtp_aes128_cm_hmac_sha1_80, b("E1F97A0D3E018BE0D64FA32C06DE4139"), b("0EC675AD498AFEEBB6960B3AABE6")
+    ),
+    ?assertEqual(b("549752054D6FB708622C4A2E596A1B93"), maps:get(rtp_hdr_key, K)),
+    ?assertEqual(b("AB01818174C40D39A3781F7C2D27"), maps:get(rtp_hdr_salt, K)),
+    %% AES-GCM: a 14 octet header salt (AES-CM, RFC 7714 §8.3).
+    G = webrtc_srtp_kdf:session_keys(srtp_aead_aes_128_gcm, <<0:128>>, <<0:96>>),
+    ?assertEqual({16, 14}, {byte_size(maps:get(rtp_hdr_key, G)), byte_size(maps:get(rtp_hdr_salt, G))}).

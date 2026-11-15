@@ -184,10 +184,21 @@ ensure_pair(LId, RId, _Now, S) ->
         false ->
             L = local(LId, S),
             R = remote(RId, S),
-            S1 = add_pair(new_pair(LId, RId, L, R, S), S),
+            P = new_pair(LId, RId, L, R, S),
+            S1 = add_pair(P, S),
             case maps:is_key(Id, S1#ice.pairs) of
-                true -> {Id, S1};
-                false -> {none, S1}
+                true ->
+                    {Id, S1};
+                false ->
+                    %% The pair of an authenticated check is added even when
+                    %% the checklist is full of higher priority pairs
+                    %% (RFC 8445 §7.3.1.4), within a hard bound: otherwise
+                    %% a peer reachable only by a low priority path (TCP, a
+                    %% relay) cannot get through.
+                    case webrtc_ice_candidate:can_pair(L, R) andalso map_size(S#ice.pairs) < 2 * S#ice.max_pairs of
+                        true -> {Id, put_pair(P#pair{state = new_state(P, S)}, S)};
+                        false -> {none, S1}
+                    end
             end
     end.
 

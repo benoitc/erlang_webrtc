@@ -20,7 +20,7 @@ A protocol is complete only when its mandatory requirements reach E2E tested, an
 What works today, end to end and against independent implementations (see [INTEROP.md](INTEROP.md)):
 
 - Full ICE and ICE-Lite, trickle, consent freshness, ICE restart in both directions, ICE-TCP (passive and active), TURN relays reached over UDP, TCP or TLS.
-- Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved without blocking the transport; optional mDNS names for our own host candidates.
+- Remote candidates with mDNS `.local` names (Chromium's default) or DNS names, resolved over IPv4 and IPv6 multicast without blocking the transport; optional mDNS names for our own host candidates, answered with NSEC for the family they lack.
 - DTLS 1.3 (RFC 9147) by default with fallback to DTLS 1.2 (use_srtp, extended master secret): 1.3 verified with OpenSSL 4.1 and Chromium in both roles, 1.2 with OTP ssl, OpenSSL, Pion and aiortc.
 - SRTP and SRTCP (AES-CM and AES-GCM profiles), with CSRCs and header extensions encrypted by cryptex (RFC 9335) when the peer accepts it, verified with Pion.
 - One transport for a BUNDLE group, or one per group or unbundled section, offered and answered, verified with Chromium and Firefox.
@@ -37,7 +37,7 @@ Known gaps that matter for a full WebRTC deployment:
 |---|---|---|
 | DTLS 1.3 extras: connection ID, PSK and resumption, 3x amplification limit without cookies, RTT based timers | Not needed by WebRTC peers seen so far; see DTLS-57 to DTLS-59 | [dtls](compliance/dtls.md) |
 | RFC 8888 feedback as estimator input, ECN circuit breaker, probing after the start | Peers that only send RFC 8888 feedback give no estimate; probing does not repeat once the start is over | [rtp](compliance/rtp.md) |
-| mDNS over IPv6 multicast, NSEC answers, public address detection for hidden candidates | Remote `.local` candidates resolve over IPv4 multicast (A and AAAA); with `mdns_host_candidates` every host address is hidden | [ice](compliance/ice.md) |
+| Public address detection for hidden candidates | With `mdns_host_candidates` every host address is hidden, public ones too | [ice](compliance/ice.md) |
 | SCTP PMTUD | Fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |
 
 Codec encoding and decoding are not part of the library. Opus, G.711, VP8 and H.264 are negotiated and their RTP payloads are transported and forwarded; producing or consuming the media is the application's job.

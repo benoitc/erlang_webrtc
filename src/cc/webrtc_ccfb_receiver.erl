@@ -70,7 +70,9 @@ next_timeout(#rx{next_at = At}) -> At.
 
 -spec handle_timeout(integer(), state()) -> {[#rtcp_ccfb{}], state()}.
 handle_timeout(Now, #rx{next_at = At} = S) when At =/= infinity, Now >= At ->
-    Ts = webrtc_rtp_stats:ntp_middle(webrtc_rtp_stats:ntp_from_us(erlang:system_time(microsecond))),
+    %% The report timestamp on the same clock as the arrivals (the
+    %% sender only uses differences): compact NTP of `Now'.
+    Ts = (Now * 65536 div 1000) band 16#FFFFFFFF,
     {Reports, Sources} = maps:fold(
         fun(Ssrc, #src{highest = H, base = B0, got = Got} = Src, {Acc, SAcc}) when map_size(Got) > 0 ->
                 B = max(B0, H - ?MAX_PER_SOURCE + 1),

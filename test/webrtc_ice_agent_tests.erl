@@ -738,3 +738,96 @@ stream_turn_connect_failure_test() ->
     ?assertEqual(complete, ?AG:gathering_state(A3)),
     {_, Close} = ?AG:close(2000, A3),
     ?assertEqual([], [X || {close_stream, _} = X <- Close]).
+
+%%--------------------------------------------------------------------
+%% TURN retries (RFC 8656 §7.4)
+%%--------------------------------------------------------------------
+
+-define(L2, {{10, 0, 0, 1}, 5001}).
+
+src(s) -> ?L;
+src(s2) -> ?L2.
+
+%% Route UDP sends to the test TURN servers by destination.
+pump_udp(Acts, Now, A, Srv, Evs, Other) ->
+    lists:foldl(
+        fun
+            ({send, Sock, Dest, Bin}, {A0, S0, E0, O0}) when is_map_key(Dest, S0) ->
+                Src = src(Sock),
+                {S1, Out} = webrtc_test_turn_server:handle(Src, Dest, Bin, Now, maps:get(Dest, S0)),
+                lists:foldl(
+                    fun({send, _, To, B}, {AA, SA, EA, OA}) when To =:= Src ->
+                            {AA1, Acts1} = ?AG:handle_packet(Sock, Dest, B, Now, AA),
+                            pump_udp(Acts1, Now, AA1, SA, EA, OA);
+                       (_, Acc) ->
+                            Acc
+                    end,
+                    {A0, S0#{Dest => S1}, E0, O0},
+                    Out
+                );
+            ({event, E}, {A0, S0, E0, O0}) ->
+                {A0, S0, E0 ++ [E], O0};
+            (Act, {A0, S0, E0, O0}) ->
+                {A0, S0, E0, O0 ++ [Act]}
+        end,
+        {A, Srv, Evs, Other},
+        Acts
+    ).
+
+settle_udp(Now, Until, A, Srv, Evs, Other) ->
+    case ?AG:next_timeout(A) of
+        T when T =< Until ->
+            {A1, Acts} = ?AG:handle_timeout(max(Now, T), A),
+            {A2, Srv2, Evs2, Other2} = pump_udp(Acts, max(Now, T), A1, Srv, Evs, Other),
+            settle_udp(max(Now, T), Until, A2, Srv2, Evs2, Other2);
+        _ ->
+            {A, Srv, Evs, Other}
+    end.
+
+turn_cfg(Addr) -> #{address => Addr, username => <<"user">>, password => <<"pass">>}.
+
+relays(Evs) -> [C || {local_candidate, #ice_cand{type = relay} = C} <- Evs].
+
+%% A 300 sends the allocation to the alternate server.
+turn_try_alternate_test() ->
+    Alt = {{198, 51, 100, 9}, 3478},
+    A0 = ?AG:new(#{ufrag => ?U, pwd => ?P, role => controlled, seed => {1, 2, 3}, turn_servers => [turn_cfg(?TURN_U)]}),
+    Srv = #{?TURN_U => webrtc_test_turn_server:new(#{address => ?TURN_U, alternate => Alt}),
+            Alt => webrtc_test_turn_server:new(#{address => Alt})},
+    {A1, Acts} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, Srv2, Evs, _} = pump_udp(Acts, 0, A1, Srv, [], []),
+    {A3, _, Evs3, _} = settle_udp(0, 5000, A2, Srv2, Evs, []),
+    ?assertMatch([#ice_cand{}], relays(Evs3)),
+    ?assertEqual([], [E || {turn_error, _, _} = E <- Evs3]),
+    ?assertEqual(complete, ?AG:gathering_state(A3)).
+
+%% Redirections stop at a server already tried.
+turn_alternate_loop_test() ->
+    Alt = {{198, 51, 100, 9}, 3478},
+    A0 = ?AG:new(#{ufrag => ?U, pwd => ?P, role => controlled, seed => {1, 2, 3}, turn_servers => [turn_cfg(?TURN_U)]}),
+    Srv = #{?TURN_U => webrtc_test_turn_server:new(#{address => ?TURN_U, alternate => Alt}),
+            Alt => webrtc_test_turn_server:new(#{address => Alt, alternate => ?TURN_U})},
+    {A1, Acts} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, Srv2, Evs, _} = pump_udp(Acts, 0, A1, Srv, [], []),
+    {A3, _, Evs3, _} = settle_udp(0, 5000, A2, Srv2, Evs, []),
+    ?assertEqual([], relays(Evs3)),
+    ?assertMatch([{turn_error, Alt, {try_alternate, ?TURN_U}}], [E || {turn_error, _, _} = E <- Evs3]),
+    ?assertEqual(complete, ?AG:gathering_state(A3)).
+
+%% A 437 asks the owner for a new local port, and the allocation from
+%% it succeeds.
+turn_allocation_mismatch_test() ->
+    A0 = ?AG:new(#{ufrag => ?U, pwd => ?P, role => controlled, seed => {1, 2, 3}, turn_servers => [turn_cfg(?TURN_U)]}),
+    Srv = #{?TURN_U => webrtc_test_turn_server:new(#{address => ?TURN_U, mismatch => [?L]})},
+    {A1, Acts} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, Srv2, Evs, Other} = pump_udp(Acts, 0, A1, Srv, [], []),
+    {A3, Srv3, Evs3, Other3} = settle_udp(0, 5000, A2, Srv2, Evs, Other),
+    [{open_udp, Ref, #{local := IP}}] = [O || {open_udp, _, _} = O <- Other3],
+    ?assertEqual(element(1, ?L), IP),
+    ?assertEqual(gathering, ?AG:gathering_state(A3)),
+    {A4, Acts4} = ?AG:udp_socket_up(Ref, s2, 5000, A3),
+    {A5, Srv5, Evs5, _} = pump_udp(Acts4, 5000, A4, Srv3, Evs3, []),
+    {A6, _, Evs6, _} = settle_udp(5000, 10000, A5, Srv5, Evs5, []),
+    [Relay] = relays(Evs6),
+    ?assertEqual({relay, s2, ?TURN_U}, webrtc_ice_gather:via(Relay, undefined)),
+    ?assertEqual(complete, ?AG:gathering_state(A6)).

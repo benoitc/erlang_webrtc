@@ -461,7 +461,13 @@ fingerprint_mismatch_fails(_Config) ->
     {ok, Answer} = webrtc:create_answer(B, #{}),
     ok = webrtc:set_local_description(B, answer, Answer),
     ok = webrtc:set_remote_description(A, answer, Answer),
-    ?assertMatch({error, {failed, B}}, ?S:wait_connected([A, B], 10000)),
+    %% B refuses A's certificate; A may learn it from B's alert first.
+    {error, {failed, First}} = ?S:wait_connected([A, B], 10000),
+    ?assert(First =:= A orelse First =:= B),
+    case First of
+        B -> ok;
+        A -> {ok, _} = ?S:wait(B, fun(E) -> E =:= {connection_state, failed} end, 10000)
+    end,
     webrtc:close(A),
     webrtc:close(B).
 

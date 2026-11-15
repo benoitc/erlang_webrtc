@@ -125,3 +125,12 @@ encode_validation_test() ->
     ?assertError({invalid_sdp, _}, ?C:encode(C#sdp_candidate{extensions = [{<<"x">>, <<"a b">>}]})),
     ?assertError({invalid_sdp, _}, ?C:encode(C#sdp_candidate{address = <<"x\r\n">>})),
     ?assertError({invalid_sdp, _}, ?C:encode(C#sdp_candidate{port = 70000})).
+
+%% inet:ntoa/1 writes a zone for link-local IPv6 addresses; the SDP
+%% form has none and parses back to the same address.
+link_local_ipv6_test() ->
+    {ok, C} = webrtc_sdp_candidate:parse(<<"candidate:a 1 udp 1 fe80::1 9 typ host">>),
+    Addr = {16#fe80, 1, 0, 0, 0, 0, 0, 0},
+    Bin = webrtc_sdp_candidate:encode(C#sdp_candidate{address = Addr}),
+    ?assertEqual(nomatch, binary:match(Bin, <<"%">>)),
+    ?assertMatch({ok, #sdp_candidate{address = Addr}}, webrtc_sdp_candidate:parse(Bin)).

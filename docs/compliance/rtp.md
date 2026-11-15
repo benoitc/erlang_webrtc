@@ -262,7 +262,11 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 | H264-2 | RFC 6184 §5.7.1 | STAP-A: F is the OR, NRI the maximum of the aggregated units | webrtc_rtp_h264 | stap_a_test | Unit tested |
 | H264-3 | RFC 6184 §5.8 | FU-A fragmentation and reassembly; S and E never both set | webrtc_rtp_h264 | fu_a_test, h264_errors_test_ | Unit tested |
 | H264-4 | RFC 6184 §5.8 | Fragments of a NAL unit with a lost fragment are discarded | webrtc_rtp_h264 | fu_a_test | Unit tested |
-| H264-5 | RFC 6184 §5.4, §6.4 | Interleaved mode (STAP-B, MTAP, FU-B); mode 1 (§6.3) is the one implemented | webrtc_rtp_h264 | h264_errors_test_ | Not implemented: rejected as unsupported |
+| H264-5 | RFC 6184 §5.7.1, §6.4 | Interleaved mode: STAP-B with its DON, a unit alone in a STAP-B since single NAL unit packets and STAP-A are not allowed | webrtc_rtp_h264 | stap_b_test, interleaved_errors_test_ | Unit tested |
+| H264-7 | RFC 6184 §5.7.2 | MTAP16 and MTAP24: DONB the first unit in decoding order, DOND and timestamp offset per unit | webrtc_rtp_h264 | mtap_test | Unit tested |
+| H264-8 | RFC 6184 §5.8 | FU-B for the first fragment with the DON, FU-A for the others; S and E never both set | webrtc_rtp_h264 | fu_b_test, deinterleave_fragments_test | Unit tested |
+| H264-10 | RFC 6184 §8.2.2 | packetization-mode 2 negotiated as its own codec when the application configures it (`codecs` option), never against mode 1 | webrtc_jsep_caps | webrtc_jsep_caps_tests:h264_interleaved_test | Unit tested |
+| H264-9 | RFC 6184 §5.5, §7.2 | De-interleaving: units leave in DON order once sprop-interleaving-depth + 1 VCL units wait, the rest on flush | webrtc_rtp_h264 | deinterleave_test, prop_webrtc_rtp:prop_h264_interleaved_roundtrip | Unit tested; no peer we test against sends mode 2, and the buffer ignores sprop-deint-buf-req, sprop-init-buf-time and sprop-max-don-diff |
 | H264-6 | RFC 6184 §5.3 | Key frame detection by IDR (type 5), including STAP-A and FU-A start | webrtc_rtp_h264 | stap_a_test, fu_a_test | Unit tested |
 | OPUS-1 | RFC 7587 §4.2 | One Opus packet per RTP payload, never fragmented | webrtc_rtp_opus | webrtc_rtp_opus_tests:opus_test_ | Unit tested |
 | OPUS-2 | RFC 7587 §4.1 | RTP clock rate 48000 | webrtc_rtp_opus | opus_test_ | Unit tested |

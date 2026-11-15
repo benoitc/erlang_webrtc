@@ -211,8 +211,15 @@ encode_address(B) when is_binary(B) ->
     B;
 encode_address(A) when is_tuple(A) ->
     case inet:ntoa(A) of
-        {error, einval} -> erlang:error({invalid_sdp, {address, A}});
-        S -> list_to_binary(S)
+        {error, einval} ->
+            erlang:error({invalid_sdp, {address, A}});
+        S ->
+            case lists:member($%, S) of
+                %% inet:ntoa/1 writes a zone for link-local IPv6
+                %% addresses; SDP addresses have none.
+                true -> string:lowercase(iolist_to_binary(lists:join($:, [integer_to_binary(W, 16) || W <- tuple_to_list(A)])));
+                false -> list_to_binary(S)
+            end
     end.
 
 %% @doc Raise `{invalid_sdp, {What, Value}}' unless `Value' is a binary

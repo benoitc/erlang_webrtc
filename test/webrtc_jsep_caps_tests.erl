@@ -31,3 +31,17 @@ pause_params_test() ->
     ?assertEqual([], ?C:pause_params(fb(<<"ccm">>, <<"pause">>))),
     ?assertEqual(undefined, ?C:pause_params(fb(<<"ccm">>, <<"fir">>))),
     ?assertEqual(undefined, ?C:pause_params(fb(<<"nack">>, undefined))).
+
+%% RFC 6184 §8.2.2: packetization-mode 2 is another codec than mode 1;
+%% it is answered only when configured locally.
+h264(Pt, Mode) ->
+    #{pt => Pt, name => <<"H264">>, clock_rate => 90000, channels => undefined, rtcp_fb => [],
+      fmtp => [{<<"packetization-mode">>, Mode}, {<<"profile-level-id">>, <<"42e01f">>},
+               {<<"sprop-interleaving-depth">>, <<"4">>}]}.
+
+h264_interleaved_test() ->
+    Offer = [h264(100, <<"2">>), h264(102, <<"1">>)],
+    ?assertEqual([102], [Pt || #{pt := Pt} <- ?C:answer_codecs(Offer, ?C:default_codecs(video))]),
+    Local = [h264(120, <<"2">>)],
+    ?assertEqual([100], [Pt || #{pt := Pt} <- ?C:answer_codecs(Offer, Local)]),
+    ?assertNot(?C:same_codec(h264(1, <<"1">>), h264(2, <<"2">>))).

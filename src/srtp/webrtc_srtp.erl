@@ -279,26 +279,34 @@ unprotect_rtp(_, #srtp{}) ->
     {error, malformed}.
 
 protect(Packet, HdrLen, SSRC, Index, #srtp{rtp = Keys, cryptex = Cryptex}) ->
-    case Cryptex andalso cryptex_parts(Packet) of
-        {ok, Parts} ->
+    case {Cryptex andalso cryptex_parts(Packet), is_cryptex(Packet)} of
+        {{ok, Parts}, _} ->
             webrtc_srtp_cipher:rtp_protect_cryptex(Keys, SSRC, Index, Parts);
-        _ ->
+        {_, true} ->
+            %% The receiver would take it for cryptex (RFC 9335 §6.3).
+            {error, malformed};
+        {_, false} ->
             <<Hdr:HdrLen/binary, Payload/binary>> = Packet,
             webrtc_srtp_cipher:rtp_protect(Keys, SSRC, Index, Hdr, Payload)
     end.
 
-%% A receiver recognises cryptex by the extension profile (RFC 9335
-%% §6.3).
-unprotect(<<_:3, 1:1, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, Keys) ->
+%% An extension with a profile reserved for cryptex.
+is_cryptex(<<_:3, 1:1, CC:4, _/binary>> = Packet) ->
     Off = 12 + CC * 4,
     case Packet of
-        <<_:Off/binary, Profile:16, _/binary>> when Profile =:= 16#C0DE; Profile =:= 16#C2DE ->
-            webrtc_srtp_cipher:rtp_unprotect_cryptex(Keys, SSRC, Index, Packet, CC);
-        _ ->
-            webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen)
+        <<_:Off/binary, Profile:16, _/binary>> -> Profile =:= 16#C0DE orelse Profile =:= 16#C2DE;
+        _ -> false
     end;
-unprotect(Packet, HdrLen, SSRC, Index, Keys) ->
-    webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen).
+is_cryptex(_) ->
+    false.
+
+%% A receiver recognises cryptex by the extension profile (RFC 9335
+%% §6.3).
+unprotect(<<_:4, CC:4, _/binary>> = Packet, HdrLen, SSRC, Index, Keys) ->
+    case is_cryptex(Packet) of
+        true -> webrtc_srtp_cipher:rtp_unprotect_cryptex(Keys, SSRC, Index, Packet, CC);
+        false -> webrtc_srtp_cipher:rtp_unprotect(Keys, SSRC, Index, Packet, HdrLen)
+    end.
 
 %% The parts of a packet that cryptex encrypts (RFC 9335 §5): CSRCs
 %% without an extension get an empty one; extensions other than the

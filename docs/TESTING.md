@@ -34,6 +34,23 @@ Every protocol engine is sans-IO (see [ARCHITECTURE.md](ARCHITECTURE.md)), so te
 
 Loss, duplication and reordering are injected by the network helper of each test module with a fixed `rand:seed/2`. When a randomized test fails, the seed in the test reproduces it exactly.
 
+## Corpora
+
+`test/corpora/libwebrtc` holds the seed inputs of libwebrtc's fuzzers: unit test samples, captures, browser SDPs and inputs that once crashed a parser. Use them when you change a decoder.
+
+- `webrtc_corpus_tests` runs every file through every decoder of its kind. Nothing may raise, and each file must get its expected verdict: the rejected files are listed in `?REJECTED` with the requirement that rejects them, every other file must decode.
+- `prop_webrtc_parsers:prop_corpus_mutations` mutates the files (bit flips, inserts, deletes, truncations, splices, length fields) and feeds them to every decoder.
+
+When a decoder change makes a file decode or fail differently, the test names the file. If the new verdict is right, update `?REJECTED` with the reason and its RFC section.
+
+To refresh the files:
+
+```sh
+curl -sL https://webrtc.googlesource.com/src/+archive/refs/heads/main/test/fuzzers/corpora.tar.gz | tar xz -C /tmp/corpora
+```
+
+Copy the directories listed in `test/corpora/libwebrtc/README.md` and update the commit it names.
+
 ## Interop adapters
 
 Each independent implementation runs behind the same line-delimited JSON protocol ([interop/PROTOCOL.md](../interop/PROTOCOL.md)). The controller is `test/interop/webrtc_interop_peer.erl`.

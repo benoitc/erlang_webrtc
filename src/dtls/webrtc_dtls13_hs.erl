@@ -26,6 +26,11 @@
 -export([
     offers13/1,
     client_hello_parts/1,
+    take_ticket/1,
+    bind_psk/2,
+    client_early_keys/1,
+    ticket_key/1,
+    resumption_secret/1,
     client_server_hello/3,
     handle/5,
     final_flight_acked/1
@@ -66,17 +71,83 @@ offers13(#dtls{versions = Vs, suites13 = S13}) ->
 %% @doc Suites and extensions the ClientHello adds for DTLS 1.3, given
 %% the key share stored in the state.
 -spec client_hello_parts(#dtls{}) -> {[0..16#FFFF], [{non_neg_integer(), binary()}]}.
-client_hello_parts(#dtls{kx = {Group, Pub, _}, versions = Vs, suites13 = S13, cookie13 = Cookie, cid = Cid}) ->
+client_hello_parts(#dtls{kx = {Group, Pub, _}, versions = Vs, suites13 = S13, cookie13 = Cookie, cid = Cid} = St) ->
     Versions = [?DTLS13 || lists:member(dtls13, Vs)] ++ [?DTLS12 || lists:member(dtls12, Vs)],
     Exts =
         [
             webrtc_dtls13_msg:supported_versions_ext(Versions),
             webrtc_dtls13_msg:key_share_ext([{webrtc_dtls_crypto:group_id(Group), Pub}])
         ] ++ [webrtc_dtls13_msg:cookie_ext(Cookie) || Cookie =/= undefined]
-          ++ [webrtc_dtls13_msg:connection_id_ext(Cid) || is_binary(Cid), lists:member(dtls13, Vs)],
+          ++ [webrtc_dtls13_msg:connection_id_ext(Cid) || is_binary(Cid), lists:member(dtls13, Vs)]
+          ++ psk_exts(St),
     {S13, Exts};
 client_hello_parts(_) ->
     {[], []}.
+
+%%====================================================================
+%% Resumption, client side (RFC 8446 §2.2, §4.2.11)
+%%====================================================================
+
+%% @doc The ticket stored for this peer (its fingerprints), taken once.
+-spec take_ticket(#dtls{}) -> #dtls{}.
+take_ticket(#dtls{resumption = true, remote_fps = [_ | _] = FPs, suites13 = S13} = St) ->
+    case webrtc_dtls_tickets:take_client(ticket_key(FPs)) of
+        {ok, #{suite := Id} = T} ->
+            case lists:member(Id, S13) of
+                true -> St#dtls{psk = T};
+                false -> St
+            end;
+        error ->
+            St
+    end;
+take_ticket(St) ->
+    St.
+
+%% @doc Where tickets for a peer are kept: its fingerprints.
+-spec ticket_key([webrtc_dtls_cert:fingerprint()]) -> term().
+ticket_key(FPs) ->
+    lists:sort(FPs).
+
+%% early_data (when 0-RTT is wanted and allowed), the PSK modes and, as
+%% the last extension, pre_shared_key with a zero binder.
+psk_exts(#dtls{psk = #{ticket := T, age_add := A, received := R, suite := Id, max_early := M}} = St) ->
+    {ok, #{hash := H}} = webrtc_dtls13_keys:suite(Id),
+    Age = (erlang:system_time(millisecond) - R + A) band 16#FFFFFFFF,
+    Early = St#dtls.early_data andalso M > 0 andalso St#dtls.hrr =:= false,
+    [webrtc_dtls13_msg:early_data_ext() || Early] ++
+        [webrtc_dtls13_msg:psk_modes_ext(), webrtc_dtls13_msg:client_psk_ext(T, Age, webrtc_dtls13_keys:hash_len(H))];
+psk_exts(_) ->
+    [].
+
+%% @doc Fill the binder of an encoded ClientHello: the Finished
+%% construction over the transcript up to the identities (§4.2.11.2).
+-spec bind_psk(binary(), #dtls{}) -> binary().
+bind_psk(Body, #dtls{psk = #{psk := Psk, suite := Id}, transcript = T} = St) ->
+    {ok, #{hash := H}} = webrtc_dtls13_keys:suite(Id),
+    HL = webrtc_dtls13_keys:hash_len(H),
+    P = webrtc_dtls13_keys:prefix(),
+    Truncated = binary:part(Body, 0, byte_size(Body) - 3 - HL),
+    Prior = case St#dtls.hrr of true -> lists:reverse(T); false -> [] end,
+    TH = crypto:hash(H, [Prior, <<1, (byte_size(Body)):24>>, Truncated]),
+    BK = webrtc_dtls13_keys:binder_key(P, H, webrtc_dtls13_keys:early_secret(P, H, Psk)),
+    <<Truncated/binary, (HL + 1):16, HL, (webrtc_dtls13_keys:binder(P, H, BK, TH))/binary>>;
+bind_psk(Body, _St) ->
+    Body.
+
+%% @doc Once the first ClientHello with early_data is out, early data
+%% goes in epoch 1 with the client early traffic keys (RFC 9147 §6.1).
+-spec client_early_keys(#dtls{}) -> #dtls{}.
+client_early_keys(#dtls{psk = #{psk := Psk, suite := Id, max_early := M}, early_data = true, hrr = false,
+                        zero_rtt = undefined} = St) when M > 0 ->
+    {ok, #{hash := H} = Suite} = webrtc_dtls13_keys:suite(Id),
+    P = webrtc_dtls13_keys:prefix(),
+    CES = webrtc_dtls13_keys:client_early_secret(P, H, webrtc_dtls13_keys:early_secret(P, H, Psk),
+                                                 crypto:hash(H, client_hello_msg(St))),
+    Keys = webrtc_dtls13_keys:traffic_keys(P, Suite, CES),
+    St#dtls{zero_rtt = offered, write_ciphers = (St#dtls.write_ciphers)#{1 => Keys},
+            write_seq = (St#dtls.write_seq)#{1 => 0}};
+client_early_keys(St) ->
+    St.
 
 %%====================================================================
 %% ServerHello and HelloRetryRequest
@@ -158,7 +229,19 @@ server_hello(#{hash := H} = Suite, SR, Exts, Body, St) ->
         Suite -> ok;
         _ -> fail(?ALERT_ILLEGAL_PARAMETER, suite_changed_after_hrr, St)
     end,
-    only_extensions([43, 51] ++ [54 || is_binary(St#dtls.cid)], Exts, St),
+    only_extensions([43, 51] ++ [54 || is_binary(St#dtls.cid)] ++ [41 || St#dtls.psk =/= undefined], Exts, St),
+    %% RFC 8446 §4.2.11: the server took our ticket.
+    Resumed =
+        case {St#dtls.psk, webrtc_dtls13_msg:ext(server_hello, pre_shared_key, Exts)} of
+            {#{suite := TId}, {ok, 0}} ->
+                {ok, #{hash := TH}} = webrtc_dtls13_keys:suite(TId),
+                TH =:= maps:get(hash, Suite) orelse fail(?ALERT_ILLEGAL_PARAMETER, psk_hash_mismatch, St),
+                true;
+            {_, undefined} ->
+                false;
+            _ ->
+                fail(?ALERT_ILLEGAL_PARAMETER, bad_pre_shared_key, St)
+        end,
     %% RFC 9147 §9: the server's connection ID, sent in our records from
     %% the handshake epoch on.
     PeerCid =
@@ -190,6 +273,7 @@ server_hello(#{hash := H} = Suite, SR, Exts, Body, St) ->
         end,
     St1 = add(webrtc_dtls13_msg:transcript_msg(server_hello, Body), St#dtls{
         version = dtls13,
+        resumed = Resumed,
         peer_cid = PeerCid,
         suite13 = Suite,
         group = Group,
@@ -197,7 +281,12 @@ server_hello(#{hash := H} = Suite, SR, Exts, Body, St) ->
         kx = undefined,
         transcript = T0
     }),
-    HS = webrtc_dtls13_keys:handshake_secret(webrtc_dtls13_keys:prefix(), H, Shared),
+    Early =
+        case Resumed of
+            true -> webrtc_dtls13_keys:early_secret(webrtc_dtls13_keys:prefix(), H, maps:get(psk, St#dtls.psk));
+            false -> webrtc_dtls13_keys:early_secret(webrtc_dtls13_keys:prefix(), H)
+        end,
+    HS = webrtc_dtls13_keys:handshake_secret(webrtc_dtls13_keys:prefix(), H, Shared, Early),
     St2 = install_handshake_keys(HS, St1),
     webrtc_dtls13:implicit_ack(St2#dtls{state = wait_ee}).
 
@@ -265,8 +354,17 @@ check_epoch(Epoch, #dtls{state = S} = St) ->
             _ -> fail(?ALERT_UNEXPECTED_MESSAGE, {wrong_epoch, Epoch}, St)
         end.
 
-client(wait_ee, encrypted_extensions, Exts, Full, _Now, St) ->
-    only_extensions([?EXT_SUPPORTED_GROUPS, ?EXT_USE_SRTP], Exts, St),
+client(wait_ee, encrypted_extensions, Exts, Full, _Now, St0) ->
+    Offered = St0#dtls.zero_rtt =:= offered,
+    only_extensions([?EXT_SUPPORTED_GROUPS, ?EXT_USE_SRTP] ++ [42 || Offered], Exts, St0),
+    %% RFC 8446 §4.2.10: early data was accepted when the server echoes
+    %% early_data (only possible when it resumed).
+    St =
+        case {Offered, lists:keymember(42, 1, Exts) andalso St0#dtls.resumed} of
+            {true, true} -> St0#dtls{zero_rtt = accepted};
+            {true, false} -> webrtc_dtls:emit(early_data_rejected, St0#dtls{zero_rtt = rejected});
+            {false, _} -> St0
+        end,
     Profile =
         case proplists:get_value(use_srtp, Exts) of
             undefined ->
@@ -278,7 +376,16 @@ client(wait_ee, encrypted_extensions, Exts, Full, _Now, St) ->
             _ ->
                 fail(?ALERT_ILLEGAL_PARAMETER, bad_use_srtp, St)
         end,
-    add(Full, St#dtls{srtp_profile = Profile, state = wait_cert_cr});
+    case St#dtls.resumed of
+        %% A resumed handshake has no certificates (§2.2): the peer is
+        %% the certificate of the full handshake the ticket came from,
+        %% checked again against the current fingerprints.
+        true ->
+            St1 = peer_certificate([maps:get(peer_cert, St#dtls.psk)], St),
+            add(Full, St1#dtls{srtp_profile = Profile, state = wait_finished, cv_ok = true});
+        false ->
+            add(Full, St#dtls{srtp_profile = Profile, state = wait_cert_cr})
+    end;
 client(wait_cert_cr, certificate_request, #{context := Ctx, extensions := Exts}, Full, _Now, St) ->
     Schemes =
         case proplists:get_value(signature_algorithms, Exts) of
@@ -308,13 +415,16 @@ client(wait_finished, finished, VD, Full, _Now, St) ->
                 St2
         end,
     #{chs := CHS, cap := CAP} = St3#dtls.secrets,
-    St4 = queue(finished, finished_body(CHS, St3), St3),
-    %% Application data uses epoch 3 once our Finished is sent.
-    webrtc_dtls13_epoch:install_write(3, CAP, St4#dtls{state = wait_ack});
-client(S, new_session_ticket, _M, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
-    %% No resumption: the ticket is acknowledged and dropped. The server
-    %% only sends it after our Finished, so it also confirms our flight.
+    St4 = resumption_secret(queue(finished, finished_body(CHS, St3), St3)),
+    %% Application data uses epoch 3 once our Finished is sent; early
+    %% data ends here.
+    ZeroRtt = case St4#dtls.zero_rtt of undefined -> undefined; _ -> done end,
+    webrtc_dtls13_epoch:install_write(3, CAP, St4#dtls{state = wait_ack, zero_rtt = ZeroRtt});
+client(S, new_session_ticket, M, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
+    %% The server only sends it after our Finished, so it also confirms
+    %% our flight. Kept for a later resumption with the same peer.
     St1 = maybe_final(St),
+    store_ticket(M, St1),
     St1#dtls{ack_now = true};
 client(S, key_update, Req, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
     webrtc_dtls13_epoch:peer_key_update(Req, maybe_final(St));
@@ -375,11 +485,32 @@ derive_application(#dtls{secrets = #{hs := HS} = Secrets} = St) ->
     MS = webrtc_dtls13_keys:master_secret(P, H, HS),
     St#dtls{
         secrets = Secrets#{
+            ms => MS,
             cap => webrtc_dtls13_keys:derive_secret(P, H, MS, <<"c ap traffic">>, TH),
             sap => webrtc_dtls13_keys:derive_secret(P, H, MS, <<"s ap traffic">>, TH)
         },
         exporter = webrtc_dtls13_keys:derive_secret(P, H, MS, <<"exp master">>, TH)
     }.
+
+%% @doc resumption_master_secret, once the client Finished is in the
+%% transcript (RFC 8446 §7.1).
+-spec resumption_secret(#dtls{}) -> #dtls{}.
+resumption_secret(#dtls{resumption = true, secrets = #{ms := MS} = Secrets} = St) ->
+    {P, H} = prefix_hash(St),
+    St#dtls{secrets = Secrets#{rms => webrtc_dtls13_keys:resumption_master_secret(P, H, MS, transcript_hash(St))}};
+resumption_secret(St) ->
+    St.
+
+store_ticket(#{ticket := T, nonce := N, age_add := A, lifetime := L, max_early_data := M},
+             #dtls{resumption = true, secrets = #{rms := RMS}, suite13 = #{id := Id, hash := H},
+                   remote_fps = [_ | _] = FPs, peer_cert = Cert}) when is_binary(Cert), L > 0 ->
+    Psk = webrtc_dtls13_keys:resumption_psk(webrtc_dtls13_keys:prefix(), H, RMS, N),
+    ok = webrtc_dtls_tickets:put_client(ticket_key(FPs), #{
+        ticket => T, psk => Psk, suite => Id, age_add => A, lifetime => L, max_early => M,
+        received => erlang:system_time(millisecond), peer_cert => Cert
+    });
+store_ticket(_M, _St) ->
+    ok.
 
 %% @doc Queue a handshake message of the flight being built and add it
 %% to the transcript.

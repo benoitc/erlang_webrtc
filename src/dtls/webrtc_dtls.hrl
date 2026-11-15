@@ -124,6 +124,17 @@
     %% receive and the one the peer asked us to send, once negotiated.
     cid :: undefined | binary(),
     peer_cid :: undefined | binary(),
+    %% Resumption and 0-RTT (RFC 8446 §2.2, §2.3): enabled, the ticket
+    %% offered (client) or accepted (server), whether this handshake
+    %% resumed, and early data: offered, accepted, rejected or done.
+    resumption = false :: boolean(),
+    early_data = false :: boolean(),
+    ticket_lifetime = 7200 :: pos_integer(),
+    ticket_nonce = 0 :: non_neg_integer(),
+    psk :: undefined | map(),
+    resumed = false :: boolean(),
+    zero_rtt :: undefined | offered | accepted | rejected | done,
+    early_sent = 0 :: non_neg_integer(),
     out = [] :: [term()]
 }).
 

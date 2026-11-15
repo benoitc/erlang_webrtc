@@ -67,7 +67,9 @@
     {connected, map()}
     | {data, binary()}
     | {closed, term()}
-    | {failed, term()}.
+    | {failed, term()}
+    %% DTLS 1.3 0-RTT: the server did not take our early data; resend it.
+    | early_data_rejected.
 
 -define(DEFAULT_SRTP, [16#0007, 16#0008, 16#0001, 16#0002]).
 
@@ -95,7 +97,10 @@
 %%     true), `rtx_initial' (ms, default 400), `rtx_max' (ms, default
 %%     60000), `rtx_limit' (default 7), `rekey_records' (DTLS 1.3:
 %%     records sent before a KeyUpdate, default 2^23),
-%%     `cookie_lifetime' (ms, default 60000).</li>
+%%     `cookie_lifetime' (ms, default 60000), `resumption' (DTLS 1.3:
+%%     issue tickets and resume with them, default false),
+%%     `early_data' (0-RTT with resumption, default false),
+%%     `ticket_lifetime' (s, default 7200).</li>
 %% </ul>
 -spec new(map()) -> state().
 new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
@@ -130,6 +135,9 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         groups = maps:get(groups, Opts, [x25519, secp256r1, secp384r1]),
         require_ems = maps:get(require_ems, Opts, true),
         use_cookie = maps:get(use_cookie, Opts, true),
+        resumption = maps:get(resumption, Opts, false),
+        early_data = maps:get(early_data, Opts, false),
+        ticket_lifetime = maps:get(ticket_lifetime, Opts, 7200),
         cid =
             case maps:get(connection_id, Opts, false) of
                 false -> undefined;
@@ -210,6 +218,20 @@ send(Data, #dtls{state = connected, verified = true, write_epoch = E} = St) when
         false ->
             {error, too_large}
     end;
+send(Data, #dtls{zero_rtt = offered, psk = #{max_early := Max}, early_sent = Sent} = St) ->
+    %% 0-RTT (RFC 8446 §2.3, RFC 9147 §6.1): before the handshake ends
+    %% data goes in epoch 1, within the ticket's limit. It may be
+    %% rejected (`early_data_rejected'): the caller resends it.
+    Bin = iolist_to_binary(Data),
+    case Sent + byte_size(Bin) =< Max of
+        true ->
+            case webrtc_dtls13:encode_record(application_data, 1, Bin, St) of
+                {ok, Rec, St1} -> {ok, St1#dtls{early_sent = Sent + byte_size(Bin)}, [{send, Rec}]};
+                {error, _} = Err -> Err
+            end;
+        false ->
+            {error, not_connected}
+    end;
 send(_Data, _St) ->
     {error, not_connected}.
 
@@ -265,7 +287,8 @@ role(#dtls{role = R}) -> R.
 -spec info(state()) -> map().
 info(#dtls{version = dtls13} = St) ->
     (info12(St))#{suite => suite_name(St#dtls.suite13), extended_master_secret => true,
-                  connection_id => St#dtls.peer_cid =/= undefined};
+                  connection_id => St#dtls.peer_cid =/= undefined, resumed => St#dtls.resumed,
+                  early_data => St#dtls.zero_rtt};
 info(#dtls{} = St) ->
     info12(St).
 

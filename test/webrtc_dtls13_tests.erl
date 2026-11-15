@@ -1020,3 +1020,86 @@ rfc8448_resumption_test() ->
     ?assertEqual(hx("3f bb e6 a6 0d eb 66 c3 0a 32 79 5a ba 0e ff 7e aa 10 10 55 86 e7 be 5c 09 67 8d 63 b6 ca ab 62"),
                  K:client_early_secret(?T13, sha256, Early,
                      hx("08 ad 0f a0 5d 7c 72 33 b1 77 5b a2 ff 9f 4c 5b 8b 59 27 6b 7f 22 7f 13 a9 76 24 5f 5d 96 09 13"))).
+
+%%====================================================================
+%% Resumption and 0-RTT (RFC 8446 §2.2, §2.3)
+%%====================================================================
+
+resume_opts() -> #{resumption => true}.
+
+info(E) -> webrtc_dtls:info(E).
+
+%% A full handshake leaves a ticket with the client; the next
+%% handshake between the same certificates resumes with it, and gets a
+%% new ticket for the one after.
+resumption_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, resume_opts(), resume_opts()),
+    W1 = run(C1, S1),
+    #{c := Cs1} = W1,
+    ?assertMatch(#{resumed := false}, info(Cs1)),
+    lists:foreach(
+        fun(_) ->
+            {C2, S2} = pair(C, S, resume_opts(), resume_opts()),
+            #{c := Cs2, s := Ss2, ev := #{c := CE, s := SE}} = run(C2, S2),
+            ?assertMatch([_], connected(CE)),
+            ?assertMatch([_], connected(SE)),
+            ?assertMatch(#{resumed := true}, info(Cs2)),
+            ?assertMatch(#{resumed := true}, info(Ss2)),
+            ?assertEqual(webrtc_dtls:export_keying_material(?LABEL, no_context, 60, Cs2),
+                         webrtc_dtls:export_keying_material(?LABEL, no_context, 60, Ss2)),
+            {Cs3, Ss3, _} = data(Cs2, Ss2, <<"after resumption">>, 1000),
+            _ = data(Ss3, Cs3, <<"back">>, 1000)
+        end,
+        [1, 2]
+    ).
+
+%% The ticket's client certificate is no longer among the server's
+%% fingerprints (the client changed certificate): a full handshake.
+resumption_refused_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, resume_opts(), resume_opts()),
+    _ = run(C1, S1),
+    C2 = webrtc_dtls_cert:generate(),
+    {Cl, Sv} = pair(C2, S, resume_opts(), resume_opts()),
+    #{c := Cs, s := Ss, ev := #{c := CE}} = run(Cl, Sv),
+    ?assertMatch([_], connected(CE)),
+    ?assertMatch(#{resumed := false}, info(Cs)),
+    ?assertMatch(#{resumed := false}, info(Ss)).
+
+zero_rtt_opts() -> #{resumption => true, early_data => true}.
+
+%% 0-RTT: data sent right after the ClientHello reaches the server in
+%% epoch 1 and is delivered once the connection is up.
+early_data_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    _ = run(C1, S1),
+    {C2, S2} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    {Cl1, A1} = webrtc_dtls:start(0, C2),
+    {ok, Cl2, A2} = webrtc_dtls:send(<<"early hello">>, Cl1),
+    W0 = webrtc_dtls_sim:run(Cl2, S2, fun webrtc_dtls_sim:pass/3, #{start => false}),
+    #{s := Ss, c := Cs, ev := #{s := SE}} = webrtc_dtls_sim:deliver(W0, c, A1 ++ A2),
+    ?assert(lists:member({data, <<"early hello">>}, SE)),
+    ?assertMatch(#{resumed := true, early_data := accepted}, info(Ss)),
+    ?assertMatch(#{early_data := done}, info(Cs)),
+    %% The same first flight again (a replay) to another server: the
+    %% early data is refused (single use, §8.1) and the server answers
+    %% with a cookie instead.
+    {_, S3} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    {Ss3, Out} = lists:foldl(fun({send, D}, {Sv, Acc}) -> {Sv1, A} = webrtc_dtls:handle_packet(D, 0, Sv), {Sv1, Acc ++ A} end,
+                             {S3, []}, A1 ++ A2),
+    ?assertNotEqual(accepted, maps:get(early_data, info(Ss3), undefined)),
+    ?assertNot(lists:member({event, {data, <<"early hello">>}}, Out)).
+
+%% Without a ticket nothing can be sent before the handshake.
+no_ticket_no_early_data_test() ->
+    {C1, _} = pair(zero_rtt_opts(), zero_rtt_opts()),
+    {Cl, _} = webrtc_dtls:start(0, C1),
+    ?assertEqual({error, not_connected}, webrtc_dtls:send(<<"x">>, Cl)).

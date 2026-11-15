@@ -30,6 +30,7 @@ const launchOpts = {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--allow-loopback-in-peer-connection',
+      '--autoplay-policy=no-user-gesture-required',
       ...(mdns ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns']),
     ],
   },
@@ -91,6 +92,15 @@ const pageScript = () => {
     pc.ondatachannel = (e) => window.watch(e.channel);
     pc.ontrack = (e) => {
       window.emit({ event: 'track', kind: e.track.kind, mid: e.transceiver.mid, ssrc: 0, codec: '' });
+      if (e.track.kind === 'audio') {
+        // Chromium updates synchronization sources (and so the RFC 6464
+        // audio level) as received audio plays out.
+        const a = document.createElement('audio');
+        a.srcObject = new MediaStream([e.track]);
+        a.muted = true;
+        a.play().catch(() => {});
+        document.body.appendChild(a);
+      }
     };
     // Report decoded video frames and received audio packets.
     const last = {};
@@ -105,6 +115,17 @@ const pageScript = () => {
             window.emit({ event: 'rtp', kind: s.kind, count: n, bytes: s.bytesReceived || 0 });
           }
         });
+        // The RFC 6464 audio level of received packets, as the browser
+        // read it (after RFC 6904 decryption when negotiated).
+        for (const r of pc.getReceivers()) {
+          if (r.track.kind !== 'audio') continue;
+          for (const src of r.getSynchronizationSources()) {
+            if (src.audioLevel !== undefined && src.audioLevel !== last.level) {
+              last.level = src.audioLevel;
+              window.emit({ event: 'audio_level', level: src.audioLevel });
+            }
+          }
+        }
       } catch (err) {
         console.log('stats: ' + err);
       }

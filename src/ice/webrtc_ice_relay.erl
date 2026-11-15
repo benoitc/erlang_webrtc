@@ -18,6 +18,8 @@
 
 -export([
     allocate/6,
+    stream_up/3,
+    stream_down/4,
     send/5,
     turn_key/3,
     turn_packet/4,
@@ -31,8 +33,9 @@
 -spec allocate(term(), pos_integer(), tuple(), map(), integer(), #ice{}) -> {#ice{}, [term()]}.
 allocate(Key, HostId, Job, Opts, Now, S) ->
     C0 = webrtc_turn_client:new(Opts),
+    {relay, _, Cfg, _} = Job,
     {C1, TActs} = webrtc_turn_client:allocate(Now, C0),
-    Entry = #{client => C1, host => HostId, job => Job, relay => undefined},
+    Entry = #{client => C1, host => HostId, job => Job, relay => undefined, transport => maps:get(transport, Cfg, udp)},
     {S1, Acts, _} = turn_actions(Key, TActs, Now, S#ice{turn = (S#ice.turn)#{Key => Entry}}),
     {S1, Acts}.
 
@@ -101,9 +104,12 @@ turn_actions({Sock, Server} = Key, TActs, Now, S) ->
 
 turn_event({Sock, Server} = Key, {allocated, #{relayed := {RIP, RPort}, mapped := Mapped}}, Now, S) ->
     case maps:find(Key, S#ice.turn) of
-        {ok, #{host := HostId, job := {relay, _, _, Idx} = Job} = E} ->
+        {ok, #{host := HostId, job := {relay, _, _, Idx} = Job, transport := Transport} = E} ->
             Host = webrtc_ice_checklist:local(HostId, S),
             HostLP = (Host#ice_cand.priority bsr 8) band 16#FFFF,
+            %% A relay reached over TCP or TLS comes after one over UDP
+            %% (as browsers order them): its local preference is lower.
+            Penalty = case Transport of udp -> 0; tcp -> 16#400; tls -> 16#800 end,
             Comp = Host#ice_cand.component,
             {SIP, _} = Server,
             {RelA, RelP} = case Mapped of
@@ -111,9 +117,9 @@ turn_event({Sock, Server} = Key, {allocated, #{relayed := {RIP, RPort}, mapped :
                 undefined -> {undefined, undefined}
             end,
             Relay = #ice_cand{
-                foundation = webrtc_ice_candidate:foundation(relay, RIP, SIP, udp),
+                foundation = webrtc_ice_candidate:foundation(relay, RIP, SIP, Transport),
                 component = Comp,
-                priority = webrtc_ice_candidate:priority(relay, max(0, HostLP - Idx), Comp),
+                priority = webrtc_ice_candidate:priority(relay, max(0, HostLP - Idx - Penalty), Comp),
                 address = RIP,
                 port = RPort,
                 type = relay,
@@ -244,14 +250,48 @@ bind_channel(#pair{} = P, Now, S) ->
             {S, []}
     end.
 
-%% @doc Delete every allocation.
+%% @doc Delete every allocation; stream connections are closed once
+%% the deletion is sent, pending ones at once.
 -spec close(integer(), #ice{}) -> {#ice{}, [term()]}.
 close(Now, S) ->
-    maps:fold(
+    {S1, Acts} = maps:fold(
         fun({Sock, Server}, #{client := C}, {SA, AA}) ->
             {_, TActs} = webrtc_turn_client:close(Now, C),
-            {SA, AA ++ [{send, Sock, Server, B} || {send, B} <- TActs]}
+            Close = [{close_stream, Sock} || element(1, Sock) =:= stream],
+            {SA, AA ++ [{send, Sock, Server, B} || {send, B} <- TActs] ++ Close}
         end,
         {S#ice{turn = #{}}, []},
         S#ice.turn
-    ).
+    ),
+    {S1#ice{streams = #{}}, Acts ++ [{close_stream, Ref} || Ref <- maps:keys(S#ice.streams)]}.
+
+%% @doc The stream connection of a relay job is up: allocate over it.
+%% There is no retransmission on a reliable transport; a transaction
+%% fails after 39.5 s (RFC 8489 §6.2.2).
+-spec stream_up({stream, pos_integer()}, integer(), #ice{}) -> {#ice{}, [term()]}.
+stream_up(Ref, Now, S) ->
+    case maps:take(Ref, S#ice.streams) of
+        {{HostId, {relay, _, #{address := Server}, _} = Job, Opts}, Streams} ->
+            allocate({Ref, Server}, HostId, Job, Opts#{rc => 1, rm => 79, rto => 500}, Now, S#ice{streams = Streams});
+        error ->
+            {S, [{close_stream, Ref}]}
+    end.
+
+%% @doc The stream connection failed or closed: the job fails, or the
+%% allocation over it is lost.
+-spec stream_down({stream, pos_integer()}, term(), integer(), #ice{}) -> {#ice{}, [term()]}.
+stream_down(Ref, Reason, Now, S) ->
+    case maps:take(Ref, S#ice.streams) of
+        {{_HostId, {relay, _, #{address := Server}, _} = Job, _}, Streams} ->
+            S1 = S#ice{streams = Streams, gather_pending = lists:delete(Job, S#ice.gather_pending)},
+            {S2, A} = webrtc_ice_gather:maybe_complete(S1),
+            {S2, A ++ [{event, {turn_error, Server, {stream, Reason}}}]};
+        error ->
+            case [K || {R, _} = K <- maps:keys(S#ice.turn), R =:= Ref] of
+                [{_, Server} = Key] ->
+                    {S1, A, _} = drop_relay(Key, [{event, {turn_error, Server, {allocation_lost, {stream, Reason}}}}], Now, S),
+                    {S1, A};
+                [] ->
+                    {S, []}
+            end
+    end.

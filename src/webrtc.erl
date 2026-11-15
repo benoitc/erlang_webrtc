@@ -107,7 +107,13 @@ new_peer_connection() ->
 %% <li>`owner': pid receiving events (default: the caller).</li>
 %% <li>`stun_servers': `[{IP, Port}]'.</li>
 %% <li>`turn_servers': `[#{address => {IP, Port}, username => U,
-%%     password => P}]'.</li>
+%%     password => P}]', reached over UDP. With `transport => tcp' or
+%%     `tls' the server is reached over a TCP or TLS connection
+%%     (RFC 8656 §3.1; the relay itself is UDP). For TLS the server
+%%     certificate is verified against the system CA store and
+%%     `hostname' (default: the IP address); `tls_options' (`ssl'
+%%     client options) replace these defaults, for example
+%%     `[{cacerts, [Der]}]'.</li>
 %% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
 %%     address).</li>
 %% <li>`addresses': local `[{IP, Port}]' to bind, default every

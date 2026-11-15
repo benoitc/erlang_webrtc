@@ -38,6 +38,9 @@
     %% Optional outbound filter used by impairment tests:
     %% fun((Dest, Bin, FState) -> {[{DelayMs, Bin}], FState}).
     filter :: undefined | {fun(), term()},
+    %% Stream connections to TURN servers (TCP, TLS):
+    %% {stream, N} => #{sock, kind, server, buf}.
+    streams = #{} :: #{{stream, pos_integer()} => map()},
     %% Host name candidates (mDNS, FQDN) being resolved.
     mdns :: webrtc_mdns_client:client()
 }).

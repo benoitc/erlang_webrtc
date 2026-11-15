@@ -17,8 +17,16 @@
     local_candidate/2,
     udp_send/3,
     send_out/2,
-    transmit/2
+    transmit/2,
+    stream_opened/3,
+    stream_data/3,
+    stream_closed/3,
+    stream_passive/2,
+    close_streams/1
 ]).
+
+%% Time allowed to open a stream connection to a TURN server.
+-define(CONNECT_TIMEOUT, 5000).
 
 open_socket({IP, Port}) ->
     Family =
@@ -75,6 +83,13 @@ datagram(Sock, Src, Bin, Now, St) ->
 ice_actions(Acts, St) ->
     lists:foldl(fun ice_action/2, St, Acts).
 
+ice_action({send, {stream, _} = Ref, _Server, Bin}, St) ->
+    stream_send(Ref, Bin, St);
+ice_action({connect, Ref, Params}, St) ->
+    connect(Ref, Params),
+    St;
+ice_action({close_stream, Ref}, St) ->
+    close_stream(Ref, St);
 ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     St;
@@ -143,3 +158,144 @@ send_out(Bin, St) ->
 
 transmit(Acts, St) ->
     lists:foldl(fun({send, B}, S) -> send_out(B, S) end, St, [A || {send, _} = A <- Acts]).
+
+%%====================================================================
+%% Stream connections to TURN servers (RFC 8656 §3.1)
+%%====================================================================
+
+%% Opened from another process so the transport keeps serving packets;
+%% the socket is handed over before the result is sent.
+connect(Ref, #{server := {IP, Port}, transport := Kind, local := Local} = P) ->
+    Self = self(),
+    _ = spawn(fun() -> Self ! {turn_stream, Ref, open(Kind, IP, Port, Local, P, Self)} end),
+    ok.
+
+open(Kind, IP, Port, Local, P, Owner) ->
+    Tcp = [binary, {active, false}, {nodelay, true}, {ip, Local}],
+    case gen_tcp:connect(IP, Port, Tcp, ?CONNECT_TIMEOUT) of
+        {ok, S} when Kind =:= tcp ->
+            ok = gen_tcp:controlling_process(S, Owner),
+            {ok, tcp, S};
+        {ok, S} ->
+            case ssl:connect(S, tls_options(IP, P), ?CONNECT_TIMEOUT) of
+                {ok, T} ->
+                    ok = ssl:controlling_process(T, Owner),
+                    {ok, tls, T};
+                {error, _} = E ->
+                    _ = gen_tcp:close(S),
+                    E
+            end;
+        {error, _} = E ->
+            E
+    end.
+
+%% The server certificate is verified against the system CA store and
+%% the configured `hostname' (or the server IP address); `tls_options'
+%% replace these defaults.
+tls_options(IP, P) ->
+    Name =
+        case maps:get(hostname, P, undefined) of
+            undefined -> inet:ntoa(IP);
+            H when is_binary(H) -> binary_to_list(H);
+            H -> H
+        end,
+    Defaults = [
+        {verify, verify_peer},
+        {cacerts, public_key:cacerts_get()},
+        {server_name_indication, Name},
+        {customize_hostname_check, [{match_fun, public_key:pkix_verify_hostname_match_fun(https)}]}
+    ],
+    User = maps:get(tls_options, P, []),
+    User ++ [O || O <- Defaults, not lists:keymember(element(1, O), 1, User)].
+
+%% @doc Result of a connection attempt.
+-spec stream_opened({stream, pos_integer()}, {ok, tcp | tls, term()} | {error, term()}, #st{}) -> #st{}.
+stream_opened(Ref, {ok, Kind, Sock}, St) ->
+    case St#st.finished of
+        true ->
+            close_sock(Kind, Sock),
+            St;
+        false ->
+            ok = setopts(Kind, Sock, [{active, ?ACTIVE_N}]),
+            St1 = St#st{streams = (St#st.streams)#{Ref => #{sock => Sock, kind => Kind, buf => <<>>}}},
+            ice(fun(Now, I) -> webrtc_ice_agent:stream_up(Ref, Now, I) end, St1)
+    end;
+stream_opened(Ref, {error, Reason}, St) ->
+    ice(fun(Now, I) -> webrtc_ice_agent:stream_down(Ref, Reason, Now, I) end, St).
+
+%% @doc Bytes read from a stream: every complete message goes to the
+%% ICE agent as if it were a datagram from the server.
+-spec stream_data(term(), binary(), #st{}) -> #st{}.
+stream_data(Sock, Data, St) ->
+    case by_sock(Sock, St) of
+        {Ref, #{buf := Buf} = C} ->
+            case webrtc_turn_stream:split(<<Buf/binary, Data/binary>>) of
+                {ok, Msgs, Rest} ->
+                    St1 = St#st{streams = (St#st.streams)#{Ref := C#{buf := Rest}}},
+                    Server = server_of(Ref, St1),
+                    Now = webrtc_transport:now_ms(),
+                    lists:foldl(fun(M, S) -> datagram(Ref, Server, M, Now, S) end, St1, Msgs);
+                {error, Reason} ->
+                    down(Ref, Reason, close_stream(Ref, St))
+            end;
+        error ->
+            St
+    end.
+
+%% @doc The connection closed or failed.
+-spec stream_closed(term(), term(), #st{}) -> #st{}.
+stream_closed(Sock, Reason, St) ->
+    case by_sock(Sock, St) of
+        {Ref, _} -> down(Ref, Reason, close_stream(Ref, St));
+        error -> St
+    end.
+
+-spec stream_passive(term(), #st{}) -> #st{}.
+stream_passive(Sock, St) ->
+    case by_sock(Sock, St) of
+        {_, #{kind := Kind}} -> ok = setopts(Kind, Sock, [{active, ?ACTIVE_N}]), St;
+        error -> St
+    end.
+
+-spec close_streams(#st{}) -> #st{}.
+close_streams(St) ->
+    lists:foldl(fun close_stream/2, St, maps:keys(St#st.streams)).
+
+down(Ref, Reason, St) ->
+    ice(fun(Now, I) -> webrtc_ice_agent:stream_down(Ref, Reason, Now, I) end, St).
+
+ice(F, St) ->
+    {I1, Acts} = F(webrtc_transport:now_ms(), St#st.ice),
+    ice_actions(Acts, St#st{ice = I1}).
+
+stream_send(Ref, Bin, St) ->
+    case maps:find(Ref, St#st.streams) of
+        {ok, #{kind := tcp, sock := S}} -> _ = gen_tcp:send(S, Bin), St;
+        {ok, #{kind := tls, sock := S}} -> _ = ssl:send(S, Bin), St;
+        error -> St
+    end.
+
+close_stream(Ref, St) ->
+    case maps:take(Ref, St#st.streams) of
+        {#{kind := Kind, sock := S}, Streams} ->
+            close_sock(Kind, S),
+            St#st{streams = Streams};
+        error ->
+            St
+    end.
+
+close_sock(tcp, S) -> _ = gen_tcp:close(S), ok;
+close_sock(tls, S) -> _ = ssl:close(S), ok.
+
+setopts(tcp, S, Opts) -> inet:setopts(S, Opts);
+setopts(tls, S, Opts) -> ssl:setopts(S, Opts).
+
+by_sock(Sock, #st{streams = Streams}) ->
+    case [{Ref, C} || Ref := #{sock := S} = C <- Streams, S =:= Sock] of
+        [Found] -> Found;
+        [] -> error
+    end.
+
+%% The server of a stream, from the allocation the agent keeps for it.
+server_of(Ref, #st{ice = I}) ->
+    webrtc_ice_agent:stream_server(Ref, I).

@@ -43,8 +43,8 @@ relay(Peer, Pcs, Done, Deadline) ->
         false ->
             Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
             receive
-                {webrtc, P, {ice_candidate, C, _Mid}} when is_map_key(P, Peer) ->
-                    ok = webrtc:add_ice_candidate(maps:get(P, Peer), C),
+                {webrtc, P, {ice_candidate, C, Mid}} when is_map_key(P, Peer) ->
+                    ok = webrtc:add_ice_candidate(maps:get(P, Peer), C, Mid),
                     relay(Peer, Pcs, Done, Deadline);
                 {webrtc, P, {connection_state, connected}} when is_map_key(P, Peer) ->
                     relay(Peer, Pcs, [P | Done], Deadline);

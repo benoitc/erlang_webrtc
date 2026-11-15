@@ -67,5 +67,16 @@
     tls_id :: binary(),
     %% Remote ICE credentials of the current remote description.
     remote_ice :: undefined | #{ufrag := binary(), pwd := binary()},
-    ice_restart = false :: boolean()
+    ice_restart = false :: boolean(),
+    %% Offer one BUNDLE group (RFC 9143); false gives every section its
+    %% own transport.
+    bundle = true :: boolean(),
+    %% ICE credentials and local candidates of the transports after the
+    %% first (which uses ice_ufrag, ice_pwd and local_candidates), by
+    %% transport key (webrtc_jsep_transport).
+    ice_extra = #{} :: #{binary() => {binary(), binary()}},
+    local_cands = #{} :: #{binary() => {list(), boolean()}},
+    %% Transports of the last answer: later offers keep them (RFC 9429
+    %% §5.2.2, RFC 9143 §7.5).
+    groups = [] :: [webrtc_jsep_transport:group()]
 }).

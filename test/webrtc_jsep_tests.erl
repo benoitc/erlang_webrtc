@@ -388,13 +388,78 @@ validation_test_() ->
                       webrtc_jsep:set_remote_description(offer, Offer#sdp{media = []}, new()))
     ].
 
-unbundled_media_rejected_test() ->
-    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
-    {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
+%% RFC 9143 §7.3: an offer without BUNDLE gives every section its own
+%% transport: distinct ICE credentials in the answer, no a=group, one
+%% transport per section in the negotiated parameters.
+unbundled_offer_test() ->
+    A1 = av_data(new(#{bundle => false})),
     {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A1),
-    NoBundle = Offer#sdp{attributes = [A || {K, _} = A <- Offer#sdp.attributes, K =/= group]},
-    ?assertEqual({error, {unsupported, unbundled_media}},
-                 webrtc_jsep:set_remote_description(offer, NoBundle, new())).
+    NoBundle = wire(Offer),
+    ?assertEqual([], ?M:groups(<<"BUNDLE">>, NoBundle)),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, NoBundle, new()),
+    {ok, Answer, B2} = webrtc_jsep:create_answer(#{}, B1),
+    {ok, B3} = webrtc_jsep:set_local_description(answer, Answer, B2),
+    A = wire(Answer),
+    ?assertEqual([], ?M:groups(<<"BUNDLE">>, A)),
+    Ufrags = [maps:get(ufrag, C) || M <- A#sdp.media, {ok, C} <- [?M:ice_credentials(M, A)]],
+    ?assertEqual(3, length(lists:usort(Ufrags))),
+    #{transports := Ts, media := Media, data := Data} = webrtc_jsep:negotiated(B3),
+    ?assertEqual([[<<"0">>], [<<"1">>], [<<"2">>]], [Ms || #{mids := Ms} <- Ts]),
+    ?assertEqual([<<"0">>, <<"1">>], [T || #{transport := T} <- Media]),
+    ?assertMatch(#{transport := <<"2">>}, Data),
+    %% Each transport has the remote credentials of its own section.
+    ?assertEqual(3, length(lists:usort([maps:get(remote_ufrag, I) || #{ice := I} <- Ts]))),
+    ?assertEqual(lists:usort(Ufrags), lists:usort([maps:get(local_ufrag, I) || #{ice := I} <- Ts])).
+
+%% Two BUNDLE groups: one transport each, mirrored in the answer.
+two_bundle_groups_test() ->
+    A1 = av_data(new()),
+    {ok, Offer, _} = webrtc_jsep:create_offer(#{}, A1),
+    Attrs = [A || {K, _} = A <- Offer#sdp.attributes, K =/= group] ++
+        [{group, #{semantics => <<"BUNDLE">>, mids => [<<"0">>, <<"2">>]}},
+         {group, #{semantics => <<"BUNDLE">>, mids => [<<"1">>]}}],
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer#sdp{attributes = Attrs}), new()),
+    {ok, Answer, B2} = webrtc_jsep:create_answer(#{}, B1),
+    {ok, B3} = webrtc_jsep:set_local_description(answer, Answer, B2),
+    ?assertEqual([[<<"0">>, <<"2">>], [<<"1">>]], ?M:groups(<<"BUNDLE">>, wire(Answer))),
+    #{transports := Ts} = webrtc_jsep:negotiated(B3),
+    ?assertEqual([{<<"0">>, [<<"0">>, <<"2">>]}, {<<"1">>, [<<"1">>]}], [{K, Ms} || #{key := K, mids := Ms} <- Ts]),
+    %% A mid in two groups is refused.
+    Bad = [A || {K, _} = A <- Offer#sdp.attributes, K =/= group] ++
+        [{group, #{semantics => <<"BUNDLE">>, mids => [<<"0">>, <<"1">>]}},
+         {group, #{semantics => <<"BUNDLE">>, mids => [<<"1">>, <<"2">>]}}],
+    ?assertEqual({error, mid_in_two_bundle_groups},
+                 webrtc_jsep:set_remote_description(offer, wire(Offer#sdp{attributes = Bad}), new())).
+
+%% `bundle => false': our offer gives every section its own transport,
+%% and the answerer keeps them apart.
+unbundled_local_offer_test() ->
+    A1 = av_data(new(#{bundle => false})),
+    {A2, B2, Offer, Answer} = exchange(A1, new()),
+    ?assertEqual([], ?M:groups(<<"BUNDLE">>, Offer)),
+    ?assertEqual([], ?M:groups(<<"BUNDLE">>, Answer)),
+    ?assertEqual(3, length(webrtc_jsep:transports(A2))),
+    ?assertEqual(3, length(webrtc_jsep:transports(B2))),
+    #{transports := TA} = webrtc_jsep:negotiated(A2),
+    #{transports := TB} = webrtc_jsep:negotiated(B2),
+    %% Each side's local credentials are the other's remote ones, per transport.
+    ?assertEqual(lists:sort([{maps:get(local_ufrag, I), maps:get(remote_ufrag, I)} || #{ice := I} <- TA]),
+                 lists:sort([{maps:get(remote_ufrag, I), maps:get(local_ufrag, I)} || #{ice := I} <- TB])),
+    %% Credentials stay the same across renegotiation.
+    {A3, _, Offer2, _} = exchange(A2, B2),
+    ?assertEqual([?M:ice_credentials(M, Offer) || M <- Offer#sdp.media], [?M:ice_credentials(M, Offer2) || M <- Offer2#sdp.media]),
+    ?assertEqual(webrtc_jsep:transports(A2), webrtc_jsep:transports(A3)).
+
+%% RFC 9143 §7.3: an answer that bundles sections the offer did not
+%% bundle is refused.
+answer_adds_bundle_refused_test() ->
+    {ok, Offer, A1} = webrtc_jsep:create_offer(#{}, av_data(new(#{bundle => false}))),
+    {ok, A2} = webrtc_jsep:set_local_description(offer, Offer, A1),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(Offer), new()),
+    {ok, Answer, _} = webrtc_jsep:create_answer(#{}, B1),
+    Bin = binary:replace(webrtc_sdp:encode(Answer), <<"t=0 0\r\n">>, <<"t=0 0\r\na=group:BUNDLE 0 1 2\r\n">>),
+    {ok, Bundled} = webrtc_sdp:parse(Bin),
+    ?assertEqual({error, bundle_not_offered}, webrtc_jsep:set_remote_description(answer, Bundled, A2)).
 
 %% Answering real browser offers.
 browser_offer_test_() ->

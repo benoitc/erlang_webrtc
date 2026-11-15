@@ -32,6 +32,10 @@
     add_data_channel/1,
     restart_ice/3,
     set_local_candidates/3,
+    set_local_candidates/4,
+    set_transport_credentials/4,
+    data_mid/1,
+    transports/1,
     create_offer/2,
     create_answer/2,
     set_local_description/3,
@@ -79,7 +83,8 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         session_id = Sid,
         caps = Caps,
         sctp_port = maps:get(sctp_port, Opts, 5000),
-        max_message_size = maps:get(max_message_size, Opts, 262144)
+        max_message_size = maps:get(max_message_size, Opts, 262144),
+        bundle = maps:get(bundle, Opts, true)
     }.
 
 %% @doc Add a transceiver (RTCPeerConnection.addTransceiver). Returns a
@@ -164,6 +169,42 @@ restart_ice(U, P, J) ->
     J#jsep{ice_ufrag = U, ice_pwd = P, ice_restart = true}.
 
 %% @doc Candidates to include in descriptions created from now on.
+%% @doc Candidates of the transport `Key' (see `transports/1') to
+%% include in descriptions created from now on.
+-spec set_local_candidates(binary(), [#sdp_candidate{}], boolean(), state()) -> state().
+set_local_candidates(Key, Cands, EndOfCandidates, J) ->
+    case transports(J) of
+        [#{key := Key} | _] -> set_local_candidates(Cands, EndOfCandidates, J);
+        _ -> J#jsep{local_cands = (J#jsep.local_cands)#{Key => {Cands, EndOfCandidates}}}
+    end.
+
+%% @doc The mid of the data channel section, once it has one.
+-spec data_mid(state()) -> binary() | undefined.
+data_mid(#jsep{data_mid = D}) -> D.
+
+%% @doc New local ICE credentials for a transport after the first (an
+%% ICE restart of that transport); used by the next offer or answer.
+-spec set_transport_credentials(binary(), binary(), binary(), state()) -> state().
+set_transport_credentials(Key, U, P, J) ->
+    J#jsep{ice_extra = (J#jsep.ice_extra)#{Key => {U, P}}}.
+
+%% @doc The transports of the local description (current or pending,
+%% else the offer to be created), first one first: `#{key, mids, ufrag,
+%% pwd}'. A BUNDLE group is one transport (RFC 9143); an unbundled
+%% section has its own.
+-spec transports(state()) -> [map()].
+transports(J) ->
+    Groups =
+        case local_description(J) of
+            undefined -> [];
+            Local -> webrtc_jsep_transport:groups(Local)
+        end,
+    [begin
+         {U, P} = webrtc_jsep_build:creds(K, Groups, J),
+         #{key => K, mids => Ms, ufrag => U, pwd => P}
+     end
+     || {K, Ms, _} <- Groups].
+
 -spec set_local_candidates([#sdp_candidate{}], boolean(), state()) -> state().
 set_local_candidates(Cands, EndOfCandidates, J) ->
     J#jsep{local_candidates = Cands, local_eoc = EndOfCandidates}.
@@ -185,7 +226,8 @@ create_answer(Opts, #jsep{signaling = S} = J0) when
     S =:= have_remote_offer; S =:= have_local_pranswer
 ->
     J = J0#jsep{session_version = J0#jsep.session_version + 1},
-    {ok, webrtc_jsep_build:answer(Opts, J), J};
+    {Answer, J1} = webrtc_jsep_build:answer(Opts, J),
+    {ok, Answer, J1};
 create_answer(_Opts, _J) ->
     {error, invalid_state}.
 
@@ -210,6 +252,7 @@ set_local_description(Type, Sdp, #jsep{signaling = S} = J) when
             {ok, J1#jsep{pending_local = Sdp, signaling = have_local_pranswer}};
         answer ->
             {ok, J1#jsep{
+                groups = webrtc_jsep_transport:groups(Sdp),
                 current_local = Sdp,
                 current_remote = J#jsep.pending_remote,
                 current_remote_orig = J#jsep.pending_remote_orig,
@@ -262,6 +305,7 @@ set_remote_description(Type, Sdp0, #jsep{signaling = S} = J) when
                 {ok, J2#jsep{pending_remote = Sdp, pending_remote_orig = Sdp0, signaling = have_remote_pranswer}};
             answer ->
                 {ok, J2#jsep{
+                    groups = webrtc_jsep_transport:groups(Sdp),
                     current_local = J#jsep.pending_local,
                     current_remote = Sdp,
                     current_remote_orig = Sdp0,
@@ -453,13 +497,11 @@ validate_bundle(ActiveMids, Bundles, Active, Sdp) ->
         true ->
             {error, missing_mid};
         false ->
-            Bundled =
-                case Bundles of
-                    [G | _] -> lists:all(fun(M) -> lists:member(M, G) end, ActiveMids);
-                    [] -> length(ActiveMids) =:= 1
-                end,
-            case Bundled of
-                false -> {error, {unsupported, unbundled_media}};
+            %% RFC 9143 §7: a mid belongs to one BUNDLE group at most;
+            %% sections outside the groups have their own transport.
+            InGroups = lists:append(Bundles),
+            case length(InGroups) =:= length(lists:usort(InGroups)) of
+                false -> {error, mid_in_two_bundle_groups};
                 true -> validate_sections(Active, Sdp)
             end
     end.
@@ -492,7 +534,20 @@ validate_sections([M | Rest], Sdp) ->
 validate_answer(#sdp{media = Am}, #sdp{media = Om}, _J) when length(Am) =/= length(Om) ->
     {error, mline_count_mismatch};
 validate_answer(#sdp{media = Am} = A, #sdp{media = Om} = O, J) ->
-    check_sections([{OM, AM} || {OM, AM} <- lists:zip(Om, Am)], fun(OM, AM) -> answer_section(OM, O, AM, A, J) end).
+    case answer_bundles(A, O) of
+        ok -> check_sections([{OM, AM} || {OM, AM} <- lists:zip(Om, Am)], fun(OM, AM) -> answer_section(OM, O, AM, A, J) end);
+        {error, _} = E -> E
+    end.
+
+%% RFC 9143 §7.3: an answer keeps or removes sections of the offered
+%% BUNDLE groups, it never bundles what the offer did not.
+answer_bundles(A, O) ->
+    Offered = webrtc_sdp_media:groups(<<"BUNDLE">>, O),
+    Within = fun(G) -> lists:any(fun(OG) -> G -- OG =:= [] end, Offered) end,
+    case lists:all(Within, webrtc_sdp_media:groups(<<"BUNDLE">>, A)) of
+        true -> ok;
+        false -> {error, bundle_not_offered}
+    end.
 
 check_sections([], _Check) ->
     ok;

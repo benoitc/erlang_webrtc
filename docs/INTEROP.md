@@ -68,12 +68,16 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Erlang offers, peer answers with mDNS host candidates only, Erlang's checks to the resolved addresses answered | | | Pass (5) | |
 | ICE-TCP, Erlang offers: no UDP leaves Erlang, data channel echo, selected pair TCP | | | Pass (6) | Pass (6) |
 | ICE-TCP, peer offers: the same, the peer sends | | | Pass (6) | Pass (6) |
+| Erlang offers without BUNDLE (`bundle => false`): audio, video and data each on their own ICE and DTLS transport, data channel echo and Opus received | Skipped (7) | Skipped (8) | Pass (9) | Pass |
 
 1. Firefox is the installed release (160 on the development machine), driven over WebDriver BiDi with puppeteer-core. On macOS it is started through launchd: a Firefox started from a terminal inherits the terminal's privacy restrictions and cannot read its profile. Without an installed Firefox the suite falls back to Playwright's build.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
 3. The adapter has no simulcast encoder.
 4. Browsers do not receive simulcast (RFC 9429 §3.7); aiortc answers without it.
 6. Groups `chromium_tcp` and `firefox_tcp`: Erlang with `ice_tcp` and an outbound filter that drops every UDP datagram, so only a TCP pair can work. Both browsers gather active TCP candidates and connect to Erlang's passive one.
+7. Pion runs one ICE transport per peer connection and rejects sections outside a BUNDLE group.
+8. aiortc answers an unbundled offer with a BUNDLE group; we refuse such answers (RFC 9143 §7.3, see the findings).
+9. Chromium with `bundlePolicy: 'balanced'`; with `max-bundle` it refuses offers without BUNDLE, as the W3C policy requires.
 5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings
@@ -86,6 +90,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | Chromium | Discards remote candidates of the previous ICE generation on restart. | Our transport now signals its candidates again after `restart_ice` (RFC 8445 §9); this was a bug on our side, hidden by Pion keeping old candidates. |
 | Chromium | Its bandwidth estimate stays at the start value when transport-wide congestion control is negotiated but no feedback comes, so the top simulcast layer is never encoded. | Fixed by our transport-wide congestion control feedback: with it negotiated, Chromium encodes all three layers. With a 640x360 capture Chromium also limits itself to two layers; the case captures 1280x720. |
 | Firefox | Offers with the max-bundle policy: every bundled m= section but the first has port 0 and `a=bundle-only`. We treated port 0 as rejected and answered the video section rejected, so Firefox never sent video. | Our bug (RFC 9143 §6, RFC 9429 §5.2.1). Bundle-only sections of a BUNDLE group are now accepted (`webrtc_jsep_tests:bundle_only_section_accepted_test`). Chromium uses port 9 everywhere, which hid it. |
+| aiortc 1.16.0 | Answers an offer without BUNDLE with `a=group:BUNDLE` over every section. We accepted it, so our transports no longer matched the answer and ICE never completed. | aiortc bug (RFC 9143 §7.3). Such answers are now refused with `bundle_not_offered` (`webrtc_jsep_tests:answer_adds_bundle_refused_test`). |
 | Harness | Pion adapter echo built RTP headers with version 0, which RFC 7983 demultiplexing classifies as STUN. | Fixed in the adapter; not a stack issue. |
 | Chromium | Its mDNS responder ignores queries with more than one question and QU questions, and answers QM questions by multicast only. | The resolver sends A and AAAA in separate messages, retransmits as QM after 250 ms and listens on the group (SO_REUSEPORT) as well as on its query port. |
 | Chromium | When Chromium is controlling, ICE may complete through the peer-reflexive candidate its checks create before the names resolve. | Expected (draft section 6.3); the resolved candidates are still added. |

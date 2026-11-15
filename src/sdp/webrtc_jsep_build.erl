@@ -5,7 +5,7 @@
 -include("webrtc_sdp.hrl").
 -include("webrtc_jsep.hrl").
 
--export([offer/2, answer/2, session/2, media_kind/1]).
+-export([offer/2, answer/2, session/2, media_kind/1, creds/3]).
 
 -define(PROTO_RTP, <<"UDP/TLS/RTP/SAVPF">>).
 -define(PROTO_SCTP, <<"UDP/DTLS/SCTP">>).
@@ -35,10 +35,52 @@ offer(_Opts, J0) ->
             server -> passive
         end,
     Active = [Mid || {_, Mid, Sec} <- Slots, Sec =/= rejected],
-    Tag = case Active of [T | _] -> T; [] -> undefined end,
-    Media = [offer_section(Slot, Setup, Tag, J1) || Slot <- Slots],
-    Session = session(Active, J1),
-    {Session#sdp{media = Media}, J1}.
+    Order = [Mid || {_, Mid, _} <- Slots],
+    Groups = webrtc_jsep_transport:offer(J1#jsep.groups, Active, Order, J1#jsep.bundle),
+    J2 = ensure_creds(Groups, J1),
+    Media = [offer_section(Slot, Setup, ctx(Mid, Groups, J2), J2) || {_, Mid, _} = Slot <- Slots],
+    Session = session(webrtc_jsep_transport:bundles(Groups), J2),
+    {Session#sdp{media = Media}, J2}.
+
+%% Transport of a section: its credentials and candidates; the first
+%% section of a transport (its tag) carries the candidates.
+ctx(Mid, Groups, J) ->
+    Key = webrtc_jsep_transport:key_of(Mid, Groups),
+    #{creds => creds(Key, Groups, J), tag => Mid =:= Key andalso Key =/= undefined, cands => cands(Key, Groups, J)}.
+
+%% @doc Local ICE credentials of a transport: the first one uses the
+%% engine's ufrag and password, the others their own.
+-spec creds(binary() | undefined, [webrtc_jsep_transport:group()], #jsep{}) -> {binary(), binary()}.
+creds(Key, Groups, J) ->
+    case {Groups, maps:find(Key, J#jsep.ice_extra)} of
+        {[{Key, _, _} | _], _} -> {J#jsep.ice_ufrag, J#jsep.ice_pwd};
+        {_, {ok, C}} -> C;
+        {_, error} -> {J#jsep.ice_ufrag, J#jsep.ice_pwd}
+    end.
+
+cands(Key, Groups, J) ->
+    case {Groups, maps:find(Key, J#jsep.local_cands)} of
+        {[{Key, _, _} | _], _} -> {J#jsep.local_candidates, J#jsep.local_eoc};
+        {_, {ok, C}} -> C;
+        {_, error} -> {[], false}
+    end.
+
+%% Every transport after the first gets credentials of its own (RFC 8445
+%% §5.3); they stay the same across renegotiations.
+ensure_creds([_ | Rest], J) ->
+    Extra = lists:foldl(
+        fun({Key, _, _}, Acc) ->
+            case maps:is_key(Key, Acc) of
+                true -> Acc;
+                false -> Acc#{Key => {webrtc_ice_candidate:random_ufrag(), webrtc_ice_candidate:random_pwd()}}
+            end
+        end,
+        J#jsep.ice_extra,
+        Rest
+    ),
+    J#jsep{ice_extra = Extra};
+ensure_creds([], J) ->
+    J.
 
 %% Give every new transceiver (and the data channel) a mid and an m-line.
 assign_lines(#jsep{transceivers = Trs} = J) ->
@@ -92,19 +134,19 @@ slots(#jsep{transceivers = Trs, data_mline = D, data_mid = DM}) ->
     Data = [{D, DM, data} || D =/= undefined],
     lists:keysort(1, Tr ++ Data).
 
-offer_section({_, Mid, rejected}, _Setup, _Tag, J) ->
+offer_section({_, Mid, rejected}, _Setup, _Ctx, J) ->
     #tr{kind = K} = lists:keyfind(Mid, #tr.mid, J#jsep.transceivers),
     rejected_section(atom_to_binary(K), ?PROTO_RTP, [<<"0">>], Mid);
-offer_section({_, Mid, data}, Setup, Tag, J) ->
-    data_section(Mid, Setup, Mid =:= Tag, J);
-offer_section({_, Mid, #tr{direction = Dir} = T}, Setup, Tag, J) ->
+offer_section({_, Mid, data}, Setup, Ctx, J) ->
+    data_section(Mid, Setup, Ctx, J);
+offer_section({_, Mid, #tr{direction = Dir} = T}, Setup, Ctx, J) ->
     %% RFC 9429 §5.2.1: a=rid and a=simulcast only when sending.
     Rids =
         case Dir =:= sendrecv orelse Dir =:= sendonly of
             true -> webrtc_jsep_simulcast:offer_attrs(T#tr.encodings);
             false -> []
         end,
-    rtp_section(T, Mid, Dir, T#tr.codecs, T#tr.extensions, Setup, Mid =:= Tag, J, Rids).
+    rtp_section(T, Mid, Dir, T#tr.codecs, T#tr.extensions, Setup, Ctx, J, Rids).
 
 %%====================================================================
 %% Answer
@@ -112,7 +154,7 @@ offer_section({_, Mid, #tr{direction = Dir} = T}, Setup, Tag, J) ->
 
 %% @doc Build an answer to the pending remote offer. Transceivers were
 %% associated with the offered m-lines when the offer was applied.
--spec answer(map(), #jsep{}) -> #sdp{}.
+-spec answer(map(), #jsep{}) -> {#sdp{}, #jsep{}}.
 answer(_Opts, #jsep{pending_remote = Offer} = J) ->
     Setup =
         case J#jsep.dtls_role of
@@ -121,17 +163,25 @@ answer(_Opts, #jsep{pending_remote = Offer} = J) ->
             undefined -> answer_setup(Offer)
         end,
     Sections = lists:zip(lists:seq(0, length(Offer#sdp.media) - 1), Offer#sdp.media),
-    Built = [answer_section(I, M, Offer, Setup, J) || {I, M} <- Sections],
-    Accepted = [Mid || {Mid, #sdp_media{port = P}} <- Built, P =/= 0, Mid =/= undefined],
-    Offered = case webrtc_sdp_media:groups(<<"BUNDLE">>, Offer) of
-        [G | _] -> G;
-        [] -> []
-    end,
-    Bundle = [M || M <- Offered, lists:member(M, Accepted)],
-    Tag = case Bundle of [T | _] -> T; [] -> hd(Accepted ++ [undefined]) end,
-    Media = [maybe_candidates(Mid, Tag, Sec, J) || {Mid, Sec} <- Built],
-    Session = session(Bundle, J),
-    Session#sdp{media = Media}.
+    %% First pass: which sections are accepted. Every offered BUNDLE
+    %% group keeps its accepted sections together, the first one as the
+    %% tag; an unbundled section keeps its own transport (RFC 9143 §7.3).
+    Probe = #{creds => {J#jsep.ice_ufrag, J#jsep.ice_pwd}, tag => false, cands => {[], false}},
+    Accepted = [Mid || {Mid, #sdp_media{port = P}} <- [answer_section(I, M, Offer, Setup, Probe, J) || {I, M} <- Sections],
+                       P =/= 0, Mid =/= undefined],
+    Groups = lists:filtermap(
+        fun({_, Ms, Bundled}) ->
+            case [M || M <- Ms, lists:member(M, Accepted)] of
+                [] -> false;
+                [First | _] = A -> {true, {First, A, Bundled}}
+            end
+        end,
+        webrtc_jsep_transport:groups(Offer)
+    ),
+    J1 = ensure_creds(Groups, J),
+    Media = [element(2, answer_section(I, M, Offer, Setup, ctx(webrtc_sdp_media:mid(M), Groups, J1), J1)) || {I, M} <- Sections],
+    Session = session(webrtc_jsep_transport:bundles(Groups), J1),
+    {Session#sdp{media = Media}, J1}.
 
 %% RFC 8842 §5.3: answer actpass with active.
 answer_setup(Offer) ->
@@ -141,15 +191,15 @@ answer_setup(Offer) ->
         _ -> active
     end.
 
-answer_section(I, #sdp_media{port = 0} = M, _Offer, _Setup, _J) ->
+answer_section(I, #sdp_media{port = 0} = M, _Offer, _Setup, _Ctx, _J) ->
     Mid = webrtc_sdp_media:mid(M),
     {Mid, rejected_section(M#sdp_media.media, M#sdp_media.proto, M#sdp_media.fmts, Mid, I)};
-answer_section(I, #sdp_media{media = Kind} = M, Offer, Setup, J) ->
+answer_section(I, #sdp_media{media = Kind} = M, Offer, Setup, Ctx, J) ->
     Mid = webrtc_sdp_media:mid(M),
     Reject = {Mid, rejected_section(Kind, M#sdp_media.proto, M#sdp_media.fmts, Mid, I)},
     case media_kind(Kind) of
         application when Mid =:= J#jsep.data_mid ->
-            {Mid, data_section(Mid, Setup, false, J)};
+            {Mid, data_section(Mid, Setup, Ctx, J)};
         K when K =:= audio; K =:= video ->
             case lists:keyfind(I, #tr.mline, J#jsep.transceivers) of
                 #tr{stopped = false} = T ->
@@ -162,7 +212,7 @@ answer_section(I, #sdp_media{media = Kind} = M, Offer, Setup, J) ->
                     Rids = webrtc_jsep_simulcast:answer_attrs(M, Codecs, Exts),
                     case Codecs of
                         [] -> Reject;
-                        _ -> {Mid, rtp_section(T, Mid, Dir, Codecs, Exts, Setup, false, J, Rids)}
+                        _ -> {Mid, rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids)}
                     end;
                 _ ->
                     Reject
@@ -182,15 +232,12 @@ answer_direction(Offered, Desired) ->
         {false, false} -> inactive
     end.
 
-maybe_candidates(Mid, Mid, Sec, J) -> add_candidates(Sec, J);
-maybe_candidates(_, _, Sec, _J) -> Sec.
-
 %%====================================================================
 %% Sections
 %%====================================================================
 
-session(Bundle, #jsep{} = J) ->
-    Group = [{group, #{semantics => <<"BUNDLE">>, mids => Bundle}} || Bundle =/= []],
+session(Bundles, #jsep{} = J) ->
+    Group = [{group, #{semantics => <<"BUNDLE">>, mids => B}} || B <- Bundles, B =/= []],
     Lite = [{ice_lite, true} || J#jsep.ice_lite],
     #sdp{
         origin = #sdp_origin{
@@ -204,10 +251,10 @@ session(Bundle, #jsep{} = J) ->
         attributes = Group ++ [{extmap_allow_mixed, true}] ++ Lite
     }.
 
-transport_attrs(Setup, J) ->
+transport_attrs(Setup, #{creds := {U, P}}, J) ->
     [
-        {ice_ufrag, J#jsep.ice_ufrag},
-        {ice_pwd, J#jsep.ice_pwd},
+        {ice_ufrag, U},
+        {ice_pwd, P},
         {ice_options, [<<"trickle">>]}
     ] ++
         [{fingerprint, #{hash => H, value => V}} || {H, V} <- J#jsep.fingerprints] ++
@@ -216,7 +263,7 @@ transport_attrs(Setup, J) ->
 %% `Rids' are the a=rid and a=simulcast lines of the section. Layers sent
 %% with rids are identified by the RtpStreamId header extension (RFC
 %% 8852), so their SSRCs are not announced, as browsers do.
-rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Tag, J, Rids) ->
+rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
     Sending = Dir =:= sendrecv orelse Dir =:= sendonly,
     Msid = [{msid, #{stream => T#tr.stream_id, track => T#tr.track_id}} || Sending],
     HasRtx = lists:any(fun(#{name := N}) -> string:lowercase(N) =:= <<"rtx">> end, Codecs),
@@ -228,7 +275,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Tag, J, Rids) ->
         end,
     Attrs =
         [{rtcp, #{port => 9, connection => ?NULL_C}}] ++
-            transport_attrs(Setup, J) ++
+            transport_attrs(Setup, Ctx, J) ++
             [{mid, Mid}] ++
             [{extmap, #{id => Id, direction => undefined, uri => U, attributes => undefined}}
              || #{id := Id, uri := U} <- Exts] ++
@@ -243,10 +290,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Tag, J, Rids) ->
         connections = [?NULL_C],
         attributes = Attrs
     },
-    case Tag of
-        true -> add_candidates(Sec, J);
-        false -> Sec
-    end.
+    add_candidates(Sec, Ctx).
 
 ssrc_attrs(T, HasRtx, J) ->
     Ssrcs = [T#tr.ssrc] ++ [T#tr.rtx_ssrc || HasRtx],
@@ -266,7 +310,7 @@ ssrc_attrs(T, HasRtx, J) ->
             Ssrcs
         ).
 
-data_section(Mid, Setup, Tag, J) ->
+data_section(Mid, Setup, Ctx, J) ->
     Sec = #sdp_media{
         media = <<"application">>,
         port = 9,
@@ -274,17 +318,14 @@ data_section(Mid, Setup, Tag, J) ->
         fmts = [<<"webrtc-datachannel">>],
         connections = [?NULL_C],
         attributes =
-            transport_attrs(Setup, J) ++
+            transport_attrs(Setup, Ctx, J) ++
                 [
                     {mid, Mid},
                     {sctp_port, J#jsep.sctp_port},
                     {max_message_size, J#jsep.max_message_size}
                 ]
     },
-    case Tag of
-        true -> add_candidates(Sec, J);
-        false -> Sec
-    end.
+    add_candidates(Sec, Ctx).
 
 rejected_section(Kind, Proto, Fmts, Mid) ->
     rejected_section(Kind, Proto, Fmts, Mid, 0).
@@ -300,8 +341,10 @@ rejected_section(Kind, Proto, Fmts, Mid, _I) ->
     }.
 
 %% Candidates gathered so far are included when not trickling (RFC 8839
-%% §4.3, RFC 8838 §4).
-add_candidates(#sdp_media{attributes = A} = Sec, #jsep{local_candidates = Cs, local_eoc = Eoc}) ->
+%% §4.3, RFC 8838 §4), in the tag section of their transport.
+add_candidates(#sdp_media{attributes = A} = Sec, #{tag := true, cands := {Cs, Eoc}}) ->
     Sec#sdp_media{
         attributes = A ++ [{candidate, C} || C <- Cs] ++ [{end_of_candidates, true} || Eoc]
-    }.
+    };
+add_candidates(Sec, _Ctx) ->
+    Sec.

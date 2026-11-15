@@ -62,7 +62,7 @@ webrtc_sup (one_for_one)
 
 - `webrtc_pc` owns the signaling state, the local and remote descriptions, the transceivers and the data channel registry. It is the process the application talks to.
 - `webrtc_transport` owns the UDP sockets and every engine of the transport. Media send calls go straight from the application to the transport process, so RTP forwarding does not pass through `webrtc_pc`. The process code is split in three modules over one state: `webrtc_transport` (API, callbacks, timer), `webrtc_transport_net` (sockets, received datagrams, ICE actions) and `webrtc_transport_secure` (DTLS, SRTP, media actions, SCTP).
-- Each transport process handles one ICE component. With BUNDLE (the WebRTC default) that is one per peer connection.
+- Each transport process handles one ICE component. With BUNDLE (the WebRTC default) that is one per peer connection. Without it, or with several BUNDLE groups, `webrtc_pc` starts one transport per group or unbundled m= section and routes media calls to it by mid; the connection state aggregates them all.
 - Peer connections are independent. There is no global registry on the packet path.
 
 Sockets are opened in `{active, N}` mode so the transport process gets a bounded burst of datagrams and re-arms. Outgoing queues are bounded. When the SCTP send buffer is full the API returns `{error, buffer_full}` and the application receives a `buffered_amount_low` event when it can send again. When the media pacer queue is full it drops the oldest video packet and counts it (see below).

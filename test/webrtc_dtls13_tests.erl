@@ -1136,3 +1136,33 @@ early_data_rejected_on_retry_test() ->
     ?assertMatch(#{resumed := true, early_data := rejected}, info(Cs)),
     ?assertMatch(#{resumed := true}, info(Ss)),
     _ = data(Cs, Ss, <<"early hello">>, 1000).
+
+
+%% Erratum 8108: while our KeyUpdate waits for its ACK we write the old
+%% epoch, so a record the peer sent in its next epoch is acknowledged
+%% only once ours is acknowledged too.
+ack_waits_for_our_epoch_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {ok, C1, [{send, Ku}]} = webrtc_dtls:key_update(100, C),
+    %% S acknowledges and updates too; its ACK is held back.
+    {S1, SActs} = webrtc_dtls:handle_packet(Ku, 100, S),
+    [Ack, SKu] = [D || {send, D} <- SActs],
+    ?assertEqual(3, epoch_bits(Ack)),
+    {C2, [{send, CAck}]} = webrtc_dtls:handle_packet(SKu, 110, C1),
+    {S2, []} = webrtc_dtls:handle_packet(CAck, 120, S1),
+    %% S now writes epoch 4 and sends a ticket; C still writes epoch 3.
+    Nst = webrtc_dtls13_msg:encode(new_session_ticket, #{lifetime => 60, age_add => 0, nonce => <<0>>,
+                                                          ticket => <<1, 2, 3>>, max_early_data => 0}),
+    {S3, [SNst]} = post_handshake(new_session_ticket, Nst, 130, S2),
+    ?assertEqual(0, epoch_bits(SNst)),
+    {C3, Held} = webrtc_dtls:handle_packet(SNst, 140, C2),
+    ?assertEqual([], [D || {send, D} <- Held, epoch_bits(D) =:= 3]),
+    %% S's first ACK arrives: C moves to epoch 4 and acknowledges.
+    {C4, Acts} = webrtc_dtls:handle_packet(Ack, 150, C3),
+    [_ | _] = Out = [D || {send, D} <- Acts],
+    ?assert(lists:all(fun(D) -> epoch_bits(D) =:= 0 end, Out)),
+    {S4, _} = lists:foldl(fun(D, {Sv, A}) -> {Sv1, A1} = webrtc_dtls:handle_packet(D, 160, Sv), {Sv1, A ++ A1} end,
+                          {S3, []}, Out),
+    ?assertEqual(connected, S4#dtls.state),
+    ?assertEqual([], S4#dtls.last_flight),
+    _ = data(C4, S4, <<"after both updates">>, 200).

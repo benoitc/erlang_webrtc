@@ -331,18 +331,27 @@ arm_ack(_Now, St) ->
 
 send_ack(#dtls{rcv_recs = []} = St) ->
     St;
-send_ack(#dtls{rcv_recs = Recs, write_epoch = E, mtu = Mtu} = St) ->
+send_ack(#dtls{rcv_recs = Recs0, write_epoch = E, mtu = Mtu} = St) ->
+    %% Erratum 8108: an ACK covers no record of a later epoch than its
+    %% own. Records the peer sent after its KeyUpdate wait until ours is
+    %% acknowledged too (webrtc_dtls13_epoch:key_update_acked/1).
+    {Recs, Later} = lists:partition(fun({RE, _}) -> RE =< E end, Recs0),
     N = max(1, (Mtu - webrtc_dtls13_record:overhead() - 2) div 16),
-    Body = webrtc_dtls13_record:encode_ack(lists:sublist(Recs, N)),
-    case encode(ack, E, Body, St) of
-        {ok, Rec, _, St1} ->
-            St2 = push({send, Rec}, St1),
-            case St2#dtls.handshake_done of
-                true -> St2#dtls{rcv_recs = []};
-                false -> St2
-            end;
-        {error, _} ->
-            St
+    case Recs of
+        [] ->
+            St;
+        _ ->
+            Body = webrtc_dtls13_record:encode_ack(lists:sublist(Recs, N)),
+            case encode(ack, E, Body, St) of
+                {ok, Rec, _, St1} ->
+                    St2 = push({send, Rec}, St1),
+                    case St2#dtls.handshake_done of
+                        true -> St2#dtls{rcv_recs = Later};
+                        false -> St2
+                    end;
+                {error, _} ->
+                    St
+            end
     end.
 
 %% @doc Retransmission and ACK timers.

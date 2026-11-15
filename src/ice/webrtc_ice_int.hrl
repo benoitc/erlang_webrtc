@@ -114,7 +114,7 @@
     turn = #{} :: #{{term(), {inet:ip_address(), inet:port_number()}} => map()},
     %% Relay jobs waiting for their stream connection (TURN over TCP or
     %% TLS): {stream, N} => {HostId, Job, ClientOpts}.
-    streams = #{} :: #{{stream, pos_integer()} => {pos_integer(), tuple(), map()}},
+    streams = #{} :: #{{stream | udp, pos_integer()} => {pos_integer(), tuple(), map()}},
     next_stream = 1 :: pos_integer(),
     %% ICE-TCP connections (RFC 6544): {tcp, N} => #{local, remote,
     %% state, pair}.

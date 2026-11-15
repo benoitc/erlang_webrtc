@@ -95,6 +95,12 @@ ice_action({send, {Kind, _} = Ref, _Dest, Bin}, St) when Kind =:= stream; Kind =
 ice_action({connect, Ref, Params}, St) ->
     connect(Ref, Params),
     St;
+ice_action({open_udp, Ref, #{local := IP}}, St) ->
+    %% A TURN allocation retried from a new local port (RFC 8656 §7.4).
+    case open_socket({IP, 0}) of
+        {ok, {Sock, _}} -> ice(fun(Now, I) -> webrtc_ice_agent:udp_socket_up(Ref, Sock, Now, I) end, St);
+        {error, R} -> ice(fun(Now, I) -> webrtc_ice_agent:udp_socket_down(Ref, R, Now, I) end, St)
+    end;
 ice_action({close_stream, Ref}, St) ->
     close_stream(Ref, St);
 ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->

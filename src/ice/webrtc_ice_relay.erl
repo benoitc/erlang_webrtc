@@ -26,7 +26,9 @@
     turn_timeout/2,
     permit/3,
     bind_channel/3,
-    close/2
+    close/2,
+    udp_socket_up/4,
+    udp_socket_down/4
 ]).
 
 %% @doc Start an allocation for the gathering job `Job'.
@@ -152,19 +154,30 @@ turn_event({Sock, Server} = Key, {allocated, #{relayed := {RIP, RPort}, mapped :
         error ->
             {S, [], []}
     end;
-turn_event(Key, {allocate_failed, Reason}, _Now, S) ->
+turn_event(Key, {allocate_failed, Reason}, Now, S) ->
     case maps:take(Key, S#ice.turn) of
-        {#{job := {relay, HostId, #{address := Server}, Idx} = Job}, Turn} ->
-            S1 = S#ice{turn = Turn, gather_pending = lists:delete(Job, S#ice.gather_pending)},
-            %% A server out of resources can still give a server-reflexive
-            %% candidate (RFC 8445 §5.1.1.2).
-            Queue =
-                case Reason of
-                    {error, C} when C =:= 486; C =:= 508 -> [{srflx, HostId, Server, Idx}];
-                    _ -> []
-                end,
-            {S2, A} = webrtc_ice_gather:maybe_complete(S1#ice{gather_queue = S1#ice.gather_queue ++ Queue}),
-            {S2, A ++ [{event, {turn_error, Server, Reason}}], []};
+        {#{job := {relay, HostId, #{address := Server} = Cfg, Idx} = Job, transport := Tr}, Turn} ->
+            case retry(Reason, Server, Cfg, Tr) of
+                {alternate, Alt} ->
+                    %% RFC 8656 §7.4: the same job against the alternate.
+                    Tried = [Server | maps:get(tried, Cfg, [])],
+                    Next = {relay, HostId, Cfg#{address => Alt, tried => Tried}, Idx},
+                    S1 = S#ice{turn = Turn, gather_pending = lists:delete(Job, S#ice.gather_pending),
+                               gather_queue = [Next | S#ice.gather_queue]},
+                    {S1, [], []};
+                new_socket ->
+                    %% RFC 8656 §7.4: 437 means another allocation holds
+                    %% this 5-tuple; allocate again from a new local port.
+                    #ice_cand{address = IP} = webrtc_ice_checklist:local(HostId, S),
+                    Ref = {udp, S#ice.next_stream},
+                    Next = {relay, HostId, Cfg#{retried => true}, Idx},
+                    S1 = S#ice{turn = Turn, next_stream = S#ice.next_stream + 1,
+                               streams = (S#ice.streams)#{Ref => {HostId, Next, webrtc_ice_gather:relay_opts(Cfg, S)}},
+                               gather_pending = [Next | lists:delete(Job, S#ice.gather_pending)]},
+                    {S1, [{open_udp, Ref, #{local => IP}}], []};
+                no ->
+                    failed_job(Turn, Job, HostId, Server, Idx, Reason, Now, S)
+            end;
         error ->
             {S, [], []}
     end;
@@ -176,6 +189,58 @@ turn_event({Sock, Server}, {data, Peer, Data}, _Now, S) ->
     {S, [], [{{relay, Sock, Server}, Peer, Data}]};
 turn_event(_Key, _Other, _Now, S) ->
     {S, [], []}.
+
+%% What a failed allocation leads to: an alternate server (at most three
+%% redirections, never back to one already tried), a new local port
+%% once after a 437 on UDP, or nothing.
+retry({try_alternate, Alt}, Server, Cfg, _Tr) ->
+    Tried = [Server | maps:get(tried, Cfg, [])],
+    case length(Tried) =< 3 andalso not lists:member(Alt, Tried) of
+        true -> {alternate, Alt};
+        false -> no
+    end;
+retry({error, 437}, _Server, Cfg, udp) ->
+    case maps:get(retried, Cfg, false) of
+        true -> no;
+        false -> new_socket
+    end;
+retry(_Reason, _Server, _Cfg, _Tr) ->
+    no.
+
+failed_job(Turn, Job, HostId, Server, Idx, Reason, _Now, S) ->
+    S1 = S#ice{turn = Turn, gather_pending = lists:delete(Job, S#ice.gather_pending)},
+    %% A server out of resources can still give a server-reflexive
+    %% candidate (RFC 8445 §5.1.1.2).
+    Queue =
+        case Reason of
+            {error, C} when C =:= 486; C =:= 508 -> [{srflx, HostId, Server, Idx}];
+            _ -> []
+        end,
+    {S2, A} = webrtc_ice_gather:maybe_complete(S1#ice{gather_queue = S1#ice.gather_queue ++ Queue}),
+    {S2, A ++ [{event, {turn_error, Server, Reason}}], []}.
+
+%% @doc The owner opened the UDP socket asked with `{open_udp, Ref, _}'
+%% (a retry after 437): allocate through it.
+-spec udp_socket_up({udp, pos_integer()}, term(), integer(), #ice{}) -> {#ice{}, [term()]}.
+udp_socket_up(Ref, Sock, Now, S) ->
+    case maps:take(Ref, S#ice.streams) of
+        {{HostId, {relay, _, #{address := Server}, _} = Job, Opts}, Streams} ->
+            allocate({Sock, Server}, HostId, Job, Opts, Now, S#ice{streams = Streams});
+        error ->
+            {S, []}
+    end.
+
+%% @doc The owner could not open it: the job fails.
+-spec udp_socket_down({udp, pos_integer()}, term(), integer(), #ice{}) -> {#ice{}, [term()]}.
+udp_socket_down(Ref, Reason, _Now, S) ->
+    case maps:take(Ref, S#ice.streams) of
+        {{_HostId, {relay, _, #{address := Server}, _} = Job, _}, Streams} ->
+            S1 = S#ice{streams = Streams, gather_pending = lists:delete(Job, S#ice.gather_pending)},
+            {S2, A} = webrtc_ice_gather:maybe_complete(S1),
+            {S2, A ++ [{event, {turn_error, Server, {socket, Reason}}}]};
+        error ->
+            {S, []}
+    end.
 
 drop_relay(Key, Extra, Now, S) ->
     case maps:take(Key, S#ice.turn) of

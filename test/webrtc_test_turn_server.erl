@@ -26,6 +26,10 @@ new(Opts) ->
         forbidden => maps:get(forbidden, Opts, []),
         lifetime => maps:get(lifetime, Opts, 600),
         reject_allocate => maps:get(reject_allocate, Opts, undefined),
+        alternate => maps:get(alternate, Opts, undefined),
+        %% Sources whose Allocate gets 437, as if another allocation
+        %% held their 5-tuple.
+        mismatch => maps:get(mismatch, Opts, []),
         reject_channel_bind => maps:get(reject_channel_bind, Opts, undefined),
         nonce => nonce(1, Opts),
         nonce_gen => 1,
@@ -180,6 +184,13 @@ method(allocate, Src, M, User, Key, Now, S = #{allocs := As}) ->
             reply(Src, webrtc_stun:error_response(M, 442, []), Key, S);
         map_size(As) >= map_get(max_allocations, S) ->
             reply(Src, webrtc_stun:error_response(M, 486, []), Key, S);
+        is_list(map_get(mismatch, S)), map_get(mismatch, S) =/= [] ->
+            case lists:member(Src, map_get(mismatch, S)) of
+                true -> reply(Src, webrtc_stun:error_response(M, 437, []), Key, S);
+                false -> method(allocate, Src, M, User, Key, Now, S#{mismatch => []})
+            end;
+        map_get(alternate, S) =/= undefined ->
+            reply(Src, webrtc_stun:error_response(M, 300, [{alternate_server, map_get(alternate, S)}]), Key, S);
         map_get(reject_allocate, S) =/= undefined ->
             reply(Src, webrtc_stun:error_response(M, map_get(reject_allocate, S), []), Key, S);
         true ->

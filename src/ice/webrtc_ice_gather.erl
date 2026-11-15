@@ -23,6 +23,7 @@
     next_timeout/1,
     maybe_complete/1,
     add_local/3,
+    relay_opts/2,
     add_srflx/6
 ]).
 
@@ -185,7 +186,7 @@ start_job({srflx, HostId, Server, _Idx} = Job, Now, S) ->
             job_done(Job, S)
     end;
 start_job({relay, HostId, #{address := Server} = Cfg, _Idx} = Job, Now, S) ->
-    Opts = maps:merge(#{server => Server, rto => gather_rto(S)}, maps:with([username, password, software, family, lifetime], Cfg)),
+    Opts = relay_opts(Cfg, S),
     case {webrtc_ice_checklist:local(HostId, S), maps:get(transport, Cfg, udp)} of
         {#ice_cand{socket = Sock}, udp} ->
             webrtc_ice_relay:allocate({Sock, Server}, HostId, Job, Opts, Now, S);
@@ -200,6 +201,11 @@ start_job({relay, HostId, #{address := Server} = Cfg, _Idx} = Job, Now, S) ->
         {undefined, _} ->
             job_done(Job, S)
     end.
+
+%% @doc TURN client options of a relay job.
+-spec relay_opts(map(), #ice{}) -> map().
+relay_opts(#{address := Server} = Cfg, S) ->
+    maps:merge(#{server => Server, rto => gather_rto(S)}, maps:with([username, password, software, family, lifetime], Cfg)).
 
 %% RFC 8445 §14.3: RTO = MAX(500ms, Ta * Num-Of-Cands).
 gather_rto(#ice{ta = Ta, gather_queue = Q, gather_pending = P, min_rto = Min}) ->

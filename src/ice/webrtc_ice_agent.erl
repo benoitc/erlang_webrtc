@@ -52,6 +52,9 @@
 %%     from it (`webrtc_turn_stream:split/1') go to `handle_packet/5'
 %%     with `{stream, N}' as the socket and the server as the source;
 %%     `stream_down/4' when it closes.</li>
+%% <li>`{open_udp, {udp, N}, #{local := IP}}': open a UDP socket on
+%%     `IP' (any port) and report it with `udp_socket_up/4', or
+%%     `udp_socket_down/4'.</li>
 %% <li>`{connect, {tcp, N}, #{transport := ice_tcp, local, remote}}':
 %%     open a TCP connection from address `local' to `remote' for an
 %%     ICE-TCP pair (RFC 6544), then `stream_up/3' or `stream_down/4'.
@@ -105,6 +108,8 @@
     restart/2,
     restart/3,
     stream_up/3,
+    udp_socket_up/4,
+    udp_socket_down/4,
     stream_down/4,
     stream_server/2,
     tcp_listeners/3,
@@ -522,6 +527,20 @@ stream_up({tcp, _} = Ref, Now, S) ->
     finish(Now, S1, Acts);
 stream_up(Ref, Now, S) ->
     {S1, Acts} = webrtc_ice_relay:stream_up(Ref, Now, S),
+    finish(Now, S1, Acts).
+
+%% @doc The UDP socket asked with `{open_udp, {udp, N}, #{local := IP}}'
+%% is open (a TURN allocation retried from a new local port after 437,
+%% RFC 8656 §7.4). Datagrams it receives go to `handle_packet/5' as for
+%% the other sockets.
+-spec udp_socket_up({udp, pos_integer()}, term(), integer(), agent()) -> {agent(), [action()]}.
+udp_socket_up(Ref, Sock, Now, S) ->
+    {S1, Acts} = webrtc_ice_relay:udp_socket_up(Ref, Sock, Now, S),
+    finish(Now, S1, Acts).
+
+-spec udp_socket_down({udp, pos_integer()}, term(), integer(), agent()) -> {agent(), [action()]}.
+udp_socket_down(Ref, Reason, Now, S) ->
+    {S1, Acts} = webrtc_ice_relay:udp_socket_down(Ref, Reason, Now, S),
     finish(Now, S1, Acts).
 
 %% @doc A stream connection to a TURN server failed or closed.

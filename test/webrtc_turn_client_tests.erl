@@ -369,3 +369,9 @@ challenge_with_cookie_without_algorithms_test() ->
     %% RFC 8489 §9.2.5: no retry.
     ?assertMatch({_, [{event, {allocate_failed, {unsupported, missing_password_algorithms}}}]},
                  ?TC:handle_packet(Err, 10, C1)).
+
+%% RFC 8656 §7.4: 300 with ALTERNATE-SERVER is reported for a retry.
+try_alternate_test() ->
+    Alt = {{198, 51, 100, 3}, 3478},
+    W = do(world(#{alternate => Alt}), fun(C) -> ?TC:allocate(0, C) end),
+    ?assertMatch([{_, {allocate_failed, {try_alternate, Alt}}}], maps:get(events, W)).

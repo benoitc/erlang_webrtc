@@ -18,8 +18,8 @@ This page lists the client-side TURN requirements implemented by `webrtc_turn_cl
 | TURN-10 | RFC 8489 9.2.5 | Responses to authenticated requests discarded unless integrity verifies (401 and 438 excepted); unprotected 400 discarded | webrtc_turn_auth | webrtc_turn_client_tests:unauthenticated_success_discarded_test | Unit tested |
 | TURN-11 | 7.3 | Relayed address, mapped address and the lifetime granted by the server kept | webrtc_turn_client | webrtc_turn_client_tests:allocate_md5_test | Unit tested |
 | TURN-12 | 7.4 | 403, 440, 441, 442, 486, 508 fail the allocation and are reported; no automatic retry | webrtc_turn_client | webrtc_turn_client_tests:allocate_errors_test_ | Unit tested |
-| TURN-13 | 7.4 | 300 Try Alternate | | | Not implemented: reported as `{error, 300}` |
-| TURN-14 | 7.4 | 437 on Allocate: retry from another client address | | | Not implemented: reported, the owner may allocate from another socket |
+| TURN-13 | 7.4 | 300 Try Alternate: the allocation is retried against the ALTERNATE-SERVER with the same credentials, at most three redirections and never back to a server already tried | webrtc_turn_client, webrtc_ice_relay | webrtc_turn_client_tests:try_alternate_test, webrtc_ice_agent_tests:turn_try_alternate_test, turn_alternate_loop_test | Unit tested |
+| TURN-14 | 7.4 | 437 on Allocate over UDP: the agent asks its owner for a new local port (`{open_udp, Ref, #{local := IP}}`) and allocates from it, once per server | webrtc_ice_relay, webrtc_ice_agent, webrtc_transport_net | webrtc_ice_agent_tests:turn_allocation_mismatch_test | Unit tested |
 | TURN-15 | 7.4 | Allocate timeout reported | webrtc_turn_client | webrtc_turn_client_tests:allocate_timeout_test | Unit tested |
 | TURN-16 | 8 | Refresh one minute before expiry (half the lifetime when shorter than two minutes) | webrtc_turn_client | webrtc_turn_client_tests:refresh_test, short_lifetime_refresh_test | Unit tested |
 | TURN-17 | 8.3 | 437 to a Refresh: allocation lost; to a deletion: success | webrtc_turn_client | webrtc_turn_client_tests:unauthenticated_success_discarded_test, deallocate_test | Unit tested |

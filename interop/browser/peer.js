@@ -30,7 +30,6 @@ const launchOpts = {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--allow-loopback-in-peer-connection',
-      '--autoplay-policy=no-user-gesture-required',
       ...(mdns ? [] : ['--disable-features=WebRtcHideLocalIpsWithMdns']),
     ],
   },
@@ -94,7 +93,8 @@ const pageScript = () => {
       window.emit({ event: 'track', kind: e.track.kind, mid: e.transceiver.mid, ssrc: 0, codec: '' });
       if (e.track.kind === 'audio') {
         // Chromium updates synchronization sources (and so the RFC 6464
-        // audio level) as received audio plays out.
+        // audio level) as received audio plays out; a muted element may
+        // autoplay without a user gesture.
         const a = document.createElement('audio');
         a.srcObject = new MediaStream([e.track]);
         a.muted = true;

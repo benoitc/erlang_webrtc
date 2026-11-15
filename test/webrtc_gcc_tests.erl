@@ -286,3 +286,36 @@ rr_only_peer_test() ->
     G4 = lists:foldl(fun(T, G) -> webrtc_gcc:sent(250, T, G) end, G3, lists:seq(2501, 4000)),
     {_, G5} = webrtc_gcc:loss_report(0, 4000, G4),
     ?assert(webrtc_gcc:target(G5) >= 1900000).
+
+%% Probing (webrtc_cc_probe): on a 2 Mbps link the estimate reaches 70%
+%% of it within a second, against several seconds for the ramp alone,
+%% and never probes the link into lasting congestion.
+probing_startup_test_() ->
+    {timeout, 60, fun() ->
+        Run = fun(Flow) ->
+            #{samples := S} = sim(#{link => bottleneck(2000000), flows => [Flow], duration_ms => 10000}),
+            S
+        end,
+        With = Run(#{}),
+        Without = Run(#{probing => false}),
+        TWith = webrtc_cc_sim:reached(With, 1, 1400000),
+        TWithout = webrtc_cc_sim:reached(Without, 1, 1400000),
+        ?debugFmt("70% of 2 Mbps: ~p ms with probing, ~p ms without", [TWith, TWithout]),
+        ?assert(is_integer(TWith) andalso TWith =< 1500),
+        ?assert(TWithout =:= never orelse TWithout > 2 * TWith),
+        ?assert(webrtc_cc_sim:average(With, 1, 5000, 10000) =< 1.05 * 2000000),
+        ?assert(avg_queue(With, 5000, 10000) < 100)
+    end}.
+
+%% A link slower than the probes: the result is what got through, not
+%% the probed rate.
+probing_slow_link_test_() ->
+    {timeout, 60, fun() ->
+        #{samples := S} = sim(#{link => bottleneck(500000), duration_ms => 10000}),
+        Avg = webrtc_cc_sim:average(S, 1, 3000, 10000),
+        ?debugFmt("500 kbps link: peak ~p, average ~p, queue ~.1f ms",
+                  [lists:max([T || {_, [T], _} <- S]), round(Avg), avg_queue(S, 3000, 10000)]),
+        ?assert(Avg =< 1.05 * 500000),
+        ?assert(Avg >= 0.6 * 500000),
+        ?assert(avg_queue(S, 3000, 10000) < 100)
+    end}.

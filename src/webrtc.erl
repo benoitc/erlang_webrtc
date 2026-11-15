@@ -137,7 +137,7 @@ new_peer_connection() ->
 %% <li>`max_message_size': data channel limit announced in SDP.</li>
 %% <li>`congestion_control': initial options of the estimator, pacer and
 %%     circuit breakers (`start_bitrate', `min_bitrate', `max_bitrate',
-%%     `pacing', `pacing_factor', `rtcp_timeout',
+%%     `pacing', `probing', `pacing_factor', `rtcp_timeout',
 %%     `circuit_breaker_hold', ...), see `webrtc_cc'.</li>
 %% <li>`ice_tcp': also gather TCP host candidates (RFC 6544), default
 %%     `false': a passive one listening next to every UDP host address

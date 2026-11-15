@@ -218,7 +218,7 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 | R8836-2 | RFC 8836 §2 (1c, 1d) | React quickly to a capacity reduction | webrtc_gcc | sim capacity_drop_test_, webrtc_cc_SUITE:estimate_follows_capacity_drop | Simulated and E2E tested: 2 Mbps to 500 kbps, the target is below 600 kbps within 2 s and the queue drains within 4 s |
 | R8836-3 | RFC 8836 §2 (2) | Fair to other instances of itself | webrtc_gcc | sim fairness_test_ | Simulated: two flows on 2 Mbps, the second starting 5 s later, share within a factor of 1.3 after a minute (test bound 1.5), using 0.94 of the link together |
 | R8836-4 | RFC 8836 §2 (3) | Do not starve competing TCP flows, avoid being starved | | | Not tested: the simulator has no TCP cross traffic |
-| R8836-5 | RFC 8836 §2 (4) | Adapt quickly at the start of a flow | webrtc_gcc_aimd | sim converges_10m_test_ | Partial: until the first decrease the multiplicative increase uses `startup_gain` (1.5 per second; RFC 8836 §2 (4a) allows a faster startup); no bandwidth probing, so reaching 10 Mbps from 300 kbps takes about 9 s |
+| R8836-5 | RFC 8836 §2 (4) | Adapt quickly at the start of a flow | webrtc_cc_probe, webrtc_gcc_aimd | sim probing_startup_test_, probing_slow_link_test_, webrtc_cc_SUITE:probing_fills_link_at_start | Simulated and E2E tested: probe clusters at 3 and 6 times the start bitrate, then at twice each good result, take a 2 Mbps link to 70% in 200 ms against 4 s without probing; on a 500 kbps link the result stays at what got through |
 | R8836-6 | RFC 8836 §2 (5) | Stable when streams pause or are rate limited | webrtc_gcc_aimd | aimd_increase_test | Unit tested: the estimate does not grow beyond 1.5 R_hat + 10 kbps |
 | R8836-7 | RFC 8836 §2 (6) | One estimate for all streams of the transport | webrtc_cc | webrtc_media_cc_tests:transport_wide_sequence_test | Implemented: one estimate per BUNDLE transport; the split between streams is left to the application |
 | R8836-8 | RFC 8836 §2 (8) | Feedback over RTCP with AVPF | webrtc_media | webrtc_media_cc_tests:feedback_round_trip_test | Unit tested |
@@ -226,6 +226,16 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 | R8836-10 | RFC 8836 §2 (10) | React to a lack of feedback | webrtc_gcc | feedback_timeout_test | Unit tested: 20% cut per `feedback_timeout` (1.5 s) while sending without feedback |
 | R8836-11 | RFC 8836 §2 (11) | Stable with AQM | | | Not tested (drop-tail only) |
 | NADA-1 | RFC 8698 | NADA congestion control | | | Not implemented |
+
+## Bandwidth probing
+
+| ID | Source | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| PROBE-1 | libwebrtc ProbeController | With transport-wide feedback, the first video packet starts clusters at 3 and 6 times the start bitrate, each at least 15 ms and 5 packets, paced at its rate | webrtc_cc_probe | webrtc_cc_probe_tests:initial_clusters_test | Unit tested |
+| PROBE-2 | libwebrtc ProbeBitrateEstimator | Result from the cluster's feedback: at least 80% received, send and receive intervals within 1 s, the smaller of the send and receive rates, 95% of the receive rate when below 90% of the send rate | webrtc_cc_probe | estimate_test, lost_probe_test, no_feedback_test | Unit tested |
+| PROBE-3 | libwebrtc ProbeController | A result of at least 70% of the probed rate probes again at twice it, up to `max_bitrate` | webrtc_cc_probe | estimate_test | Unit tested |
+| PROBE-4 | libwebrtc DelayBasedBwe | The delay-based estimate takes a probe result unless over-use is detected | webrtc_gcc | sim probing_startup_test_ | Simulated |
+| PROBE-5 | RFC 3550 §5.1, RFC 4588 | Probes are padding-only packets with transport-wide sequence numbers, on the RTX stream when negotiated, else on the media stream; received padding-only packets are not delivered to the application | webrtc_media_out, webrtc_media_in | webrtc_cc_SUITE:probing_fills_link_at_start | E2E tested |
 
 ## Pacing
 
@@ -277,7 +287,7 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 ## Known limitations
 
 - Congestion control clocks are integer milliseconds: arrival times in transport-wide feedback are multiples of 1 ms although the format carries 250 us.
-- There is no bandwidth probing (padding or RTX probes); the start-up ramp relies on the faster multiplicative increase before the first decrease.
+- Probing happens at the start only: no periodic probing in application limited periods (libwebrtc's ALR probing) and no probing after a capacity drop recovers.
 
 - `webrtc_rtp:encode/1` does not check that the payload type avoids 64..95 (MUX-2); the SDP layer must enforce it.
 - The RTCP and AVPF scheduling state machines (RTCP-20, AVPF-13, RSIZE-3) are not implemented; `webrtc_rtcp_interval` provides the pure computations they need.

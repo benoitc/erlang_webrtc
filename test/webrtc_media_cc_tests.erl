@@ -23,6 +23,9 @@ wire(Sdp) ->
 %% Audio + video negotiated both ways with the default extensions
 %% (transport-wide-cc has id 3). Returns {A, B, Material}.
 pair() ->
+    pair(#{}).
+
+pair(MediaOpts) ->
     {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
     {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),
     {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, jsep()),
@@ -37,7 +40,7 @@ pair() ->
     #{media := MB} = webrtc_jsep:negotiated(B4),
     Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(?PROFILE)),
     Mk = fun(Media, Role) ->
-        webrtc_media:set_srtp(?PROFILE, Material, Role, 0, webrtc_media:configure(Media, webrtc_media:new(#{})))
+        webrtc_media:set_srtp(?PROFILE, Material, Role, 0, webrtc_media:configure(Media, webrtc_media:new(MediaOpts)))
     end,
     {Mk(MA, server), Mk(MB, client), Material}.
 
@@ -106,7 +109,8 @@ feedback_round_trip_test() ->
 %% Once feedback flows, video goes through the pacer: a burst of large
 %% packets leaves over time, not at once, and pacing can be turned off.
 pacing_test() ->
-    {A0, B0, _} = pair(),
+    %% Probe padding would count among the packets sent.
+    {A0, B0, _} = pair(#{cc => #{probing => false}}),
     {A1a, _, _, Now} = exchange(A0, B0),
     %% Regular RTCP already due goes out first.
     {A1, _} = webrtc_media:handle_timeout(Now, A1a),

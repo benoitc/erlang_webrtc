@@ -58,7 +58,10 @@
 default_codecs(audio) ->
     [
         codec(111, <<"opus">>, 48000, 2, [{<<"minptime">>, <<"10">>}, {<<"useinbandfec">>, <<"1">>}], [
-            ?FB(<<"transport-cc">>)
+            ?FB(<<"transport-cc">>),
+            %% RFC 8888 congestion control feedback, for peers without
+            %% transport-cc.
+            ?FB(<<"ack">>, <<"ccfb">>)
         ]),
         codec(0, <<"PCMU">>, 8000, 1, [], []),
         codec(8, <<"PCMA">>, 8000, 1, [], []),
@@ -68,6 +71,7 @@ default_codecs(video) ->
     Fb = [
         ?FB(<<"goog-remb">>),
         ?FB(<<"transport-cc">>),
+        ?FB(<<"ack">>, <<"ccfb">>),
         ?FB(<<"ccm">>, <<"fir">>),
         ?FB(<<"nack">>),
         ?FB(<<"nack">>, <<"pli">>),

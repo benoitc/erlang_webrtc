@@ -26,7 +26,7 @@ negotiated(Tag0, Ice0, Local, Remote, J) ->
      || #tr{mline = L, stopped = false} = T <- J#jsep.transceivers,
         L =/= undefined,
         section(L, Local) =/= undefined,
-        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), J)],
+        M <- [media_params(T, section(T#tr.mline, Local), section(T#tr.mline, Remote), {Local, Remote, J})],
         M =/= undefined
     ],
     Data =
@@ -123,11 +123,11 @@ transport_params(Key, Mids, Groups, Remote, J) ->
         }
     }.
 
-media_params(_T, _L, undefined, _J) ->
+media_params(_T, _L, undefined, _Ctx) ->
     undefined;
-media_params(_T, _L, #sdp_media{port = 0}, _J) ->
+media_params(_T, _L, #sdp_media{port = 0}, _Ctx) ->
     undefined;
-media_params(T, L, R, J) ->
+media_params(T, L, R, {Local, Remote, J}) ->
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
     LocalExts = webrtc_jsep_caps:extension_map(webrtc_sdp_media:attrs(extmap, L)),
@@ -150,7 +150,10 @@ media_params(T, L, R, J) ->
         cname => undefined,
         remote_ssrcs => remote_ssrcs(R),
         rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true},
-        pause => pause(LocalCodecs, RemoteCodecs)
+        pause => pause(LocalCodecs, RemoteCodecs),
+        %% RFC 9335: both sides receive encrypted CSRCs and extensions.
+        cryptex => webrtc_sdp_media:find_attr(cryptex, L, Local) =:= {ok, true} andalso
+            webrtc_sdp_media:find_attr(cryptex, R, Remote) =:= {ok, true}
     }.
 
 %% RTP stream pause and resume (RFC 7728 §9): both descriptions have a

@@ -38,7 +38,7 @@ offer(_Opts, J0) ->
     Order = [Mid || {_, Mid, _} <- Slots],
     Groups = webrtc_jsep_transport:offer(J1#jsep.groups, Active, Order, J1#jsep.bundle),
     J2 = ensure_creds(Groups, J1),
-    Media = [offer_section(Slot, Setup, ctx(Mid, Groups, J2), J2) || {_, Mid, _} = Slot <- Slots],
+    Media = [offer_section(Slot, Setup, (ctx(Mid, Groups, J2))#{cryptex => J2#jsep.cryptex}, J2) || {_, Mid, _} = Slot <- Slots],
     Session = session(webrtc_jsep_transport:bundles(Groups), J2),
     {Session#sdp{media = Media}, J2}.
 
@@ -177,9 +177,29 @@ answer(_Opts, #jsep{pending_remote = Offer} = J) ->
         webrtc_jsep_transport:groups(Offer)
     ),
     J1 = ensure_creds(Groups, J),
-    Media = [element(2, answer_section(I, M, Offer, Setup, ctx(webrtc_sdp_media:mid(M), Groups, J1), J1)) || {I, M} <- Sections],
+    Cryptex = cryptex_mids(Groups, Offer, J1),
+    Media = [
+        element(2, answer_section(I, M, Offer, Setup, (ctx(Mid, Groups, J1))#{cryptex => lists:member(Mid, Cryptex)}, J1))
+     || {I, M} <- Sections, Mid <- [webrtc_sdp_media:mid(M)]
+    ],
     Session = session(webrtc_jsep_transport:bundles(Groups), J1),
     {Session#sdp{media = Media}, J1}.
+
+%% RFC 9335 §6.1: cryptex is answered for the RTP sections of a
+%% transport when the offer has it on all of them.
+cryptex_mids(_Groups, _Offer, #jsep{cryptex = false}) ->
+    [];
+cryptex_mids(Groups, #sdp{media = Media} = Offer, _J) ->
+    Rtp = maps:from_list([
+        {webrtc_sdp_media:mid(M), webrtc_sdp_media:find_attr(cryptex, M, Offer) =:= {ok, true}}
+     || M <- Media, media_kind(M#sdp_media.media) =/= application
+    ]),
+    lists:append([
+        RtpMs
+     || {_, Ms, _} <- Groups,
+        RtpMs <- [[M || M <- Ms, is_map_key(M, Rtp)]],
+        lists:all(fun(M) -> maps:get(M, Rtp) end, RtpMs)
+    ]).
 
 %% RFC 8842 §5.3: answer actpass with active.
 answer_setup(Offer) ->
@@ -280,7 +300,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
             [{extmap, #{id => Id, direction => undefined, uri => U, attributes => undefined}}
              || #{id := Id, uri := U} <- Exts] ++
             [{direction, Dir}] ++ Msid ++
-            [{rtcp_mux, true}, {rtcp_rsize, true}] ++
+            [{rtcp_mux, true}, {rtcp_rsize, true}] ++ [{cryptex, true} || maps:get(cryptex, Ctx, false)] ++
             webrtc_sdp_media:codec_attributes(Codecs) ++ Ssrcs ++ Rids,
     Sec = #sdp_media{
         media = atom_to_binary(T#tr.kind),

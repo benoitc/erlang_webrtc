@@ -55,7 +55,8 @@
         | end_of_candidates
         | rtcp_mux
         | rtcp_mux_only
-        | rtcp_rsize,
+        | rtcp_rsize
+        | cryptex,
         true
     }
     %% any other attribute, value `undefined' when there is no colon
@@ -77,6 +78,7 @@ flag(<<"end-of-candidates">>) -> end_of_candidates;
 flag(<<"rtcp-mux">>) -> rtcp_mux;
 flag(<<"rtcp-mux-only">>) -> rtcp_mux_only;
 flag(<<"rtcp-rsize">>) -> rtcp_rsize;
+flag(<<"cryptex">>) -> cryptex;
 flag(_) -> undefined.
 
 direction(<<"sendrecv">>) -> sendrecv;

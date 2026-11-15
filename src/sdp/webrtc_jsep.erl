@@ -84,7 +84,8 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         caps = Caps,
         sctp_port = maps:get(sctp_port, Opts, 5000),
         max_message_size = maps:get(max_message_size, Opts, 262144),
-        bundle = maps:get(bundle, Opts, true)
+        bundle = maps:get(bundle, Opts, true),
+        cryptex = maps:get(cryptex, Opts, true)
     }.
 
 %% @doc Add a transceiver (RTCPeerConnection.addTransceiver). Returns a

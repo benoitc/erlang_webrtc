@@ -82,6 +82,9 @@
     pending_fb = [] :: list(),
     %% Every section negotiated rtcp-rsize (RFC 5506).
     reduced_size = false :: boolean(),
+    %% Every section negotiated cryptex (RFC 9335): what we send has its
+    %% CSRCs and header extensions encrypted.
+    cryptex = false :: boolean(),
     %% RTP packets sent at the last regular report (we_sent, §6.3).
     rtp_sent_mark = 0 :: non_neg_integer(),
     %% First source to report next when they do not all fit.

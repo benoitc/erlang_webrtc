@@ -118,7 +118,13 @@ configure(Sections, #media{} = M) ->
         },
         M#media.cc
     ),
+    Cryptex = Sections =/= [] andalso lists:all(fun(S) -> maps:get(cryptex, S, false) end, Sections),
     M#media{
+        cryptex = Cryptex,
+        out = case M#media.out of
+                  undefined -> undefined;
+                  Out -> webrtc_srtp:set_cryptex(Cryptex, Out)
+              end,
         senders = Senders,
         twcc_ids = TwccIds,
         cc = Cc,
@@ -136,7 +142,7 @@ configure(Sections, #media{} = M) ->
 %% @doc Install the SRTP contexts from the DTLS-SRTP handshake.
 -spec set_srtp(webrtc_srtp:profile(), binary(), client | server, integer(), state()) -> state().
 set_srtp(Profile, Material, Role, Now, M) ->
-    {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{}),
+    {Out, In} = webrtc_srtp:dtls_contexts(Profile, Material, Role, #{cryptex => M#media.cryptex}),
     Rtcp = webrtc_rtcp_sched:new(Now, (M#media.rtcp_opts)#{session_bandwidth => session_bandwidth(M)}),
     M#media{out = Out, in = In, rtcp = Rtcp}.
 

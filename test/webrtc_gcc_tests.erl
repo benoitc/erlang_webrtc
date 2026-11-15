@@ -126,6 +126,14 @@ loss_decrease_test() ->
     %% 10 of 40 lost: 25%, target x 0.875.
     ?assertEqual(875000, webrtc_gcc:target(G1)).
 
+%% The same with the negative times of the BEAM's monotonic clock: every
+%% packet of the first feedback counts.
+loss_decrease_negative_clock_test() ->
+    T0 = -576460751000,
+    G0 = webrtc_gcc:new(#{start_bitrate => 1000000}),
+    {_, G1} = webrtc_gcc:feedback(results(T0, 40, [3, 7, 11, 15, 19, 23, 27, 31, 35, 39]), T0 + 400, G0),
+    ?assertEqual(875000, webrtc_gcc:target(G1)).
+
 moderate_loss_holds_test() ->
     G0 = webrtc_gcc:new(#{start_bitrate => 1000000}),
     {_, G1} = webrtc_gcc:feedback(results(0, 20, []), 200, G0),

@@ -90,7 +90,7 @@
     last_loss_eval :: undefined | integer(),
     last_loss_ratio = 0.0 :: float(),
     %% Send time (us) from which packets count for the loss ratio.
-    loss_from = 0 :: integer(),
+    loss_from = undefined :: undefined | integer(),
     remb :: undefined | pos_integer(),
     rtt = 100 :: pos_integer(),
     rtt_from_rr = false :: boolean(),
@@ -148,8 +148,13 @@ feedback(Results, Now, G0) ->
             [] -> G1;
             _ -> delay_based(Received, Now, G1)
         end,
-    From = G2#gcc.loss_from,
-    Counted = [A || {S, A, _} <- Results, S >= From],
+    %% Send times come from the monotonic clock, which may be negative:
+    %% until a decrease restarts the count, every packet counts.
+    Counted =
+        case G2#gcc.loss_from of
+            undefined -> [A || {_, A, _} <- Results];
+            From -> [A || {S, A, _} <- Results, S >= From]
+        end,
     Lost = length([lost || lost <- Counted]),
     G3 = loss_counts(length(Counted) - Lost, Lost, Now, G2),
     update_target(G3).

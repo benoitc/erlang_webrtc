@@ -14,7 +14,8 @@
     estimate_tracks_bottleneck/1,
     estimate_follows_capacity_drop/1,
     estimate_grows_without_bottleneck/1,
-    pacing_can_be_disabled/1
+    pacing_can_be_disabled/1,
+    probing_fills_link_at_start/1
 ]).
 
 -define(S, webrtc_test_signal).
@@ -26,7 +27,8 @@ all() ->
         estimate_tracks_bottleneck,
         estimate_follows_capacity_drop,
         estimate_grows_without_bottleneck,
-        pacing_can_be_disabled
+        pacing_can_be_disabled,
+        probing_fills_link_at_start
     ].
 
 init_per_suite(Config) ->
@@ -171,6 +173,22 @@ estimate_grows_without_bottleneck(Config) ->
     {Est, Got} = stream(A, B, 10000, fun(_) -> ok end),
     ct:log("estimates ~p, received ~p", [Est, Got]),
     ?assert(lists:max([X || {_, X} <- Est]) >= 1500000),
+    close(A, B).
+
+%% Probe clusters at the start: over a 2 Mbps bottleneck the estimate
+%% reaches 70% of it within 1.5 s instead of several seconds, and the
+%% probe results do not push it past the link.
+probing_fills_link_at_start(Config) ->
+    {A, B} = pair(Config, #{rate => 2000000, queue_ms => 300}),
+    {Est, _} = stream(A, B, 6000, fun(_) -> ok end),
+    Cc = stats_target(A),
+    ct:log("estimates ~p~nprobing ~p", [Est, maps:get(probing, Cc)]),
+    ?assertMatch(#{probing := #{started := true, results := [_ | _]}}, Cc),
+    case [T || {T, Bps} <- Est, Bps >= 1400000] of
+        [First | _] -> ?assert(First =< 1500);
+        [] -> ct:fail({never_reached, Est})
+    end,
+    ?assert(lists:all(fun(X) -> X =< 2600000 end, window(Est, 3000, 6000))),
     close(A, B).
 
 %% With pacing off every packet leaves at once and nothing is queued.

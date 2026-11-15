@@ -122,10 +122,10 @@ wire_size(#rtp{payload = P, csrcs = Cs}) -> 12 + 4 * length(Cs) + byte_size(P) +
 egress(Items, Now, M0) ->
     {Sends, M} = lists:foldl(
         fun({Key, Pkt0, Rtx}, {Acc, M1}) ->
-            {Twcc, Mid} =
+            {Twcc, Mid, Kind} =
                 case maps:find(Key, M1#media.senders) of
-                    {ok, #snd{twcc_ext = Id, mid = Mi}} -> {Id, Mi};
-                    error -> {undefined, Key}
+                    {ok, #snd{twcc_ext = Id, mid = Mi, kind = K}} -> {Id, Mi, K};
+                    error -> {undefined, Key, undefined}
                 end,
             case webrtc_cc:halted(Mid, M1#media.cc) of
                 {true, _} ->
@@ -143,7 +143,8 @@ egress(Items, Now, M0) ->
                         {ok, Srtp, Out} ->
                             %% Circuit breakers work per transceiver: all
                             %% simulcast layers of a mid share the flow.
-                            Cc = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
+                            Cc0 = webrtc_cc:sent(Mid, byte_size(Srtp), Now, M1#media.cc),
+                            Cc = case Kind of video -> webrtc_cc:video_sent(Now, Cc0); _ -> Cc0 end,
                             M2 = keep_wire(Key, Pkt, Srtp, Rtx, Now, M1#media{out = Out, cc = Cc}),
                             {[{send, Srtp} | Acc], sent_stats(Key, Pkt, Rtx, M2)};
                         {error, _} ->
@@ -254,8 +255,51 @@ tmin(A, B) -> min(A, B).
 
 cc_timeouts(Now, M) ->
     {Items, Fb, Events, Cc} = webrtc_cc:handle_timeout(Now, M#media.cc),
-    {Sends, M1} = egress(Items, Now, M#media{cc = Cc}),
-    {Fb, Sends ++ [{event, E} || E <- Events], M1}.
+    {Probes, Paced} = lists:partition(fun(I) -> element(1, I) =:= probe end, Items),
+    {Sends, M1} = egress(Paced, Now, M#media{cc = Cc}),
+    {ProbeSends, M2} = probes(Probes, Now, M1),
+    {Fb, Sends ++ ProbeSends ++ [{event, E} || E <- Events], M2}.
+
+%% Probe clusters (webrtc_cc_probe) are padding-only packets of a video
+%% sender with transport-wide sequence numbers: on its RTX stream when
+%% RTX is negotiated, as libwebrtc does, on the media stream otherwise.
+probes([], _Now, M) ->
+    {[], M};
+probes(Probes, Now, M) ->
+    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined] of
+        [] ->
+            {[], M};
+        Senders ->
+            S = hd([X || X = #snd{rtx = R} <- Senders, map_size(R) > 0] ++ Senders),
+            lists:foldl(fun(P, {Acc, MAcc}) -> {Out, M1} = probe(P, S#snd.mid, skey(S), Now, MAcc), {Acc ++ Out, M1} end,
+                        {[], M}, Probes)
+    end.
+
+probe({probe, Cluster, Size}, Mid, Key, Now, M) ->
+    S = maps:get(Key, M#media.senders),
+    Pad = max(1, min(255, Size - 32)),
+    {Pkt, S1} =
+        case maps:values(S#snd.rtx) of
+            [RtxPt | _] ->
+                {#rtp{ssrc = S#snd.rtx_ssrc, pt = RtxPt, seq = S#snd.rtx_seq, ts = S#snd.last_ts,
+                      ext = rtx_ext(S, mid_ext(S)), payload = <<>>, padding = Pad},
+                 S#snd{rtx_seq = (S#snd.rtx_seq + 1) band 16#FFFF}};
+            [] ->
+                [#{pt := Pt} | _] = S#snd.codecs,
+                Next = (S#snd.seq + 1) band 16#FFFF,
+                {#rtp{ssrc = S#snd.ssrc, pt = Pt, seq = S#snd.seq, ts = S#snd.last_ts, ext = mid_ext(S),
+                      payload = <<>>, padding = Pad},
+                 S#snd{seq = Next, cycles = S#snd.cycles + case Next of 0 -> 1; _ -> 0 end}}
+        end,
+    M1 = M#media{senders = (M#media.senders)#{Key := S1}},
+    Wire = add_twcc(S#snd.twcc_ext, webrtc_cc:twcc_seq(M1#media.cc), Pkt),
+    case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Wire), M1#media.out) of
+        {ok, Srtp, Out} ->
+            Cc = webrtc_cc:sent_probe(Mid, byte_size(Srtp), Now, Cluster, M1#media.cc),
+            {[{send, Srtp}], count(probe_sent, M1#media{out = Out, cc = Cc})};
+        {error, _} ->
+            {[], count(srtp_failed, M1)}
+    end.
 
 nack_timeouts(Now, M) ->
     maps:fold(

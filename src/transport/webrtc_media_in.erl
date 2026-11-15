@@ -150,6 +150,10 @@ mid_from_ext(Elems, M) when is_list(Elems) ->
 mid_from_ext(_, _) ->
     undefined.
 
+%% Padding-only packets (the sender probing the path) carry nothing to
+%% deliver; their transport-wide arrival was already recorded.
+rtx_in(_Mid, _Primary, #rtp{payload = <<>>, padding = P}, _Now, M) when P > 0 ->
+    {webrtc_media_out:count(padding_received, M), []};
 rtx_in(Mid, Primary, Pkt, Now, M) ->
     Sec = maps:get(Mid, M#media.recv),
     Apt = [
@@ -192,7 +196,14 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
             undefined -> {rtp, Mid, Pkt};
             Rid -> {rtp, Mid, Rid, Pkt}
         end,
-    {webrtc_media_out:count(rtp_received, M2), PauseEvents ++ [{event, Event} | Out]}.
+    case Pkt of
+        #rtp{payload = <<>>, padding = P} when P > 0 ->
+            %% Padding only: it counts for the stream, not for the
+            %% application.
+            {webrtc_media_out:count(padding_received, M2), PauseEvents ++ Out};
+        _ ->
+            {webrtc_media_out:count(rtp_received, M2), PauseEvents ++ [{event, Event} | Out]}
+    end.
 
 new_receiver(Mid, Ssrc, Pt, M) ->
     Sec = maps:get(Mid, M#media.recv, #{}),

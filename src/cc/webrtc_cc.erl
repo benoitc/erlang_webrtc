@@ -201,13 +201,20 @@ twcc_seq(#cc{twcc_tx = Tx}) -> webrtc_twcc_sender:next_seq(Tx).
 %% @doc A packet of stream `Key' left with `Size' bytes on the wire.
 -spec sent(term(), non_neg_integer(), integer(), state()) -> state().
 sent(Key, Size, Now, Cc) ->
-    Tx =
+    %% Media leaving while a probe cluster is sent is part of it.
+    {Tx, Probe} =
         case Cc#cc.twcc_tx of
-            undefined -> undefined;
-            T -> webrtc_twcc_sender:sent(Size, Now, T)
+            undefined ->
+                {undefined, Cc#cc.probe};
+            T ->
+                case webrtc_cc_probe:media(Now, Size, Cc#cc.probe) of
+                    {undefined, P} -> {webrtc_twcc_sender:sent(Size, Now, T), P};
+                    {Id, P} -> {webrtc_twcc_sender:sent(Size, Now, {probe, Id}, T), P}
+                end
         end,
     Cc#cc{
         twcc_tx = Tx,
+        probe = Probe,
         media_sent = webrtc_cc_rate:add(Now, Size, Cc#cc.media_sent),
         gcc = webrtc_gcc:sent(Size, Now, Cc#cc.gcc),
         cb = webrtc_circuit_breaker:sent(Key, Size, Now, Cc#cc.cb)

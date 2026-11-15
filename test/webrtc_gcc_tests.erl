@@ -355,3 +355,22 @@ probing_after_drop_test_() ->
         ?assert(Low =< 900000),
         ?assert(After >= 1.6 * Low)
     end}.
+
+%% Media sent during a probe cluster is part of it: on a 3 Mbps link
+%% still carrying 700 kbps of video, the probe after a dip measures the
+%% link, not the share left to padding (about half of it before).
+probing_with_media_in_flight_test_() ->
+    {timeout, 120, fun() ->
+        Sim = webrtc_cc_sim:run(#{
+            link => #{capacity => 3000000, delay_ms => 25, queue_ms => 300},
+            flows => [#{}],
+            events => [{8000, {capacity, 800000}}, {9000, {capacity, 3000000}}],
+            duration_ms => 10000
+        }),
+        #{samples := S, flows := #{1 := #{cc := Cc}}} = Sim,
+        At = webrtc_cc_sim:min_after(S, 1, 9500, 10000),
+        #{probing := #{results := Rs}} = webrtc_cc:stats(Cc),
+        ?debugFmt("after the dip: ~p, probe results ~p", [At, Rs]),
+        ?assert(At >= 2000000),
+        ?assert(lists:all(fun({_, R}) -> R =:= failed orelse R =< 1.1 * 3000000 end, Rs))
+    end}.

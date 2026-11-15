@@ -48,7 +48,8 @@
     info/1,
     key_update/2,
     rotate_connection_id/2,
-    request_client_auth/2
+    request_client_auth/2,
+    record_overhead/1
 ]).
 
 %% Used by webrtc_dtls_hs, webrtc_dtls_reasm and the DTLS 1.3 modules.
@@ -368,6 +369,17 @@ request_client_auth(_Now, #dtls{state = connected}) ->
     {error, not_supported};
 request_client_auth(_Now, _St) ->
     {error, not_connected}.
+
+%% @doc Bytes a protected application data record adds to its content,
+%% for the negotiated version, suite and the peer's connection ID.
+-spec record_overhead(state()) -> pos_integer().
+record_overhead(#dtls{version = dtls13, peer_cid = Cid}) ->
+    webrtc_dtls13_record:overhead(Cid);
+record_overhead(#dtls{version = dtls12, write_epoch = E, write_ciphers = WC, peer_cid = Cid}) when is_map_key(E, WC) ->
+    webrtc_dtls_record:overhead(maps:get(E, WC), Cid);
+record_overhead(_St) ->
+    %% DTLS 1.2 with AES-GCM: header, explicit nonce, tag.
+    37.
 
 %% @doc DTLS 1.3 with connection IDs: send our next records with a
 %% fresh CID of the peer, so a new path cannot be linked to the old one

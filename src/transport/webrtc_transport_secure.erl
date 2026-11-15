@@ -120,9 +120,20 @@ start_dtls_if_ready(#st{dtls = D} = St) ->
 %% take a fresh one, so the new path cannot be linked to the old one by
 %% its CID (RFC 9146 §8, RFC 9147 §9).
 path_changed(Old, New, #st{dtls = D} = St) when Old =/= undefined, Old =/= New, D =/= undefined ->
-    case webrtc_dtls:rotate_connection_id(webrtc_transport:now_ms(), D) of
-        {ok, D1, A} -> dtls_actions(A, St#st{dtls = D1});
-        {error, _} -> St
+    Now = webrtc_transport:now_ms(),
+    St1 =
+        case webrtc_dtls:rotate_connection_id(Now, D) of
+            {ok, D1, A} -> dtls_actions(A, St#st{dtls = D1});
+            {error, _} -> St
+        end,
+    %% SCTP: base path MTU and fresh congestion state on the new path
+    %% (RFC 8261 §6.1).
+    case St1#st.dcep of
+        undefined ->
+            St1;
+        Dc ->
+            {Dc1, DActs} = webrtc_dcep:path_changed(Now, Dc),
+            dcep_actions(DActs, St1#st{dcep = Dc1})
     end;
 path_changed(_Old, _New, St) ->
     St.
@@ -231,6 +242,7 @@ media_actions(Acts, St) ->
 %% RFC 8841: SCTP runs over the DTLS association once it is up.
 start_sctp(#st{data = Data, dtls_role = Role} = St) ->
     LocalMax = maps:get(local_max_message_size, Data, 262144),
+    Overhead = webrtc_dtls:record_overhead(St#st.dtls),
     D0 = webrtc_dcep:new(#{
         role => Role,
         max_message_size => maps:get(remote_max_message_size, Data, 65536),
@@ -241,10 +253,12 @@ start_sctp(#st{data = Data, dtls_role = Role} = St) ->
             %% (RFC 8841 §6); the window holds at least two of them.
             max_message_size => LocalMax,
             receive_buffer => max(1048576, 2 * LocalMax),
-            %% 1200 byte datagrams minus the DTLS record overhead (13 byte
-            %% header, 8 byte explicit nonce, 16 byte tag), so SCTP
-            %% packets never need IP fragmentation (RFC 8261 §5).
-            mtu => 1200 - 37,
+            %% 1200 byte datagrams minus the DTLS record overhead of the
+            %% negotiated version and suite are safe on any path (RFC 8261
+            %% §5); PLPMTUD probes up to what fits a 1500 byte IPv6
+            %% packet (40 byte IP and 8 byte UDP headers, RFC 8899).
+            mtu => 1200 - Overhead,
+            max_mtu => 1500 - 48 - Overhead,
             %% DTLS protects every packet: CRC32c may be skipped with
             %% peers that accept it (RFC 9653 §5.1).
             zero_checksum => true

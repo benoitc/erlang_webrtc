@@ -47,7 +47,8 @@
     role/1,
     info/1,
     key_update/2,
-    rotate_connection_id/2
+    rotate_connection_id/2,
+    request_client_auth/2
 ]).
 
 %% Used by webrtc_dtls_hs, webrtc_dtls_reasm and the DTLS 1.3 modules.
@@ -70,7 +71,9 @@
     | {closed, term()}
     | {failed, term()}
     %% DTLS 1.3 0-RTT: the server did not take our early data; resend it.
-    | early_data_rejected.
+    | early_data_rejected
+    %% DTLS 1.3 server: the client answered request_client_auth/2.
+    | {peer_authenticated, binary()}.
 
 -define(DEFAULT_SRTP, [16#0007, 16#0008, 16#0001, 16#0002]).
 
@@ -92,6 +95,9 @@
 %% <li>`suites': DTLS 1.3 and DTLS 1.2 cipher suite ids in preference
 %%     order (default: all supported). DTLS 1.3 is only offered when
 %%     the list has a DTLS 1.3 suite.</li>
+%% <li>`post_handshake_auth' (DTLS 1.3 client, default false): offer
+%%     post-handshake authentication, so the server may ask for our
+%%     certificate again (`request_client_auth/2').</li>
 %% <li>`mtu' (default 1200), `use_cookie' (server, default true; a
 %%     HelloVerifyRequest in DTLS 1.2, a HelloRetryRequest with a
 %%     stateless cookie in DTLS 1.3), `address_validated' (server,
@@ -146,6 +152,7 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         require_ems = maps:get(require_ems, Opts, true),
         use_cookie = maps:get(use_cookie, Opts, true),
         addr_valid = maps:get(address_validated, Opts, false),
+        pha = maps:get(post_handshake_auth, Opts, false),
         resumption = maps:get(resumption, Opts, false),
         early_data = maps:get(early_data, Opts, false),
         ticket_lifetime = maps:get(ticket_lifetime, Opts, 7200),
@@ -338,6 +345,28 @@ key_update(_Now, #dtls{version = dtls13, state = connected}) ->
 key_update(_Now, #dtls{state = connected}) ->
     {error, not_supported};
 key_update(_Now, _St) ->
+    {error, not_connected}.
+
+%% @doc DTLS 1.3 server: ask the client for its certificate again
+%% (RFC 8446 §4.6.2), when its ClientHello offered post-handshake
+%% authentication. `{peer_authenticated, Der}' follows once its answer
+%% verifies; a certificate that does not match the remote fingerprints
+%% fails the association.
+-spec request_client_auth(integer(), state()) ->
+    {ok, state(), [action()]} | {error, not_offered | pending | not_connected | not_supported}.
+request_client_auth(Now, #dtls{version = dtls13, role = server, state = connected, last_flight = [], building = []} = St) ->
+    case webrtc_dtls13_pha:request(St) of
+        {ok, St1} ->
+            {St2, A} = run(Now, St1, fun(S) -> S end),
+            {ok, St2, A};
+        {error, _} = E ->
+            E
+    end;
+request_client_auth(_Now, #dtls{version = dtls13, role = server, state = connected}) ->
+    {error, pending};
+request_client_auth(_Now, #dtls{state = connected}) ->
+    {error, not_supported};
+request_client_auth(_Now, _St) ->
     {error, not_connected}.
 
 %% @doc DTLS 1.3 with connection IDs: send our next records with a

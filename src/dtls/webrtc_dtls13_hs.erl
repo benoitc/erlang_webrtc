@@ -79,6 +79,7 @@ client_hello_parts(#dtls{kx = {Group, Pub, _}, versions = Vs, suites13 = S13, co
             webrtc_dtls13_msg:key_share_ext([{webrtc_dtls_crypto:group_id(Group), Pub}])
         ] ++ [webrtc_dtls13_msg:cookie_ext(Cookie) || Cookie =/= undefined]
           ++ [webrtc_dtls13_msg:connection_id_ext(Cid) || is_binary(Cid), lists:member(dtls13, Vs)]
+          ++ webrtc_dtls13_pha:client_ext(St)
           ++ psk_exts(St),
     {S13, Exts};
 client_hello_parts(_) ->
@@ -427,6 +428,8 @@ client(S, new_session_ticket, M, _Full, _Now, St) when S =:= wait_ack; S =:= con
     St1 = maybe_final(St),
     store_ticket(M, St1),
     St1#dtls{ack_now = true};
+client(S, certificate_request, M, Full, _Now, St) when S =:= wait_ack; S =:= connected ->
+    webrtc_dtls13_pha:client_request(M, Full, maybe_final(St));
 client(S, key_update, Req, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
     webrtc_dtls13_epoch:peer_key_update(Req, maybe_final(St));
 client(_State, Type, _M, _Full, _Now, St) ->

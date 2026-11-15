@@ -102,6 +102,11 @@
     %% the end of the handshake validates the client's address, a server
     %% sends at most three times what it received; the rest waits.
     addr_valid = false :: boolean(),
+    %% Post-handshake authentication (webrtc_dtls13_pha): the client
+    %% offers it, or the server saw it offered; the server's request in
+    %% progress.
+    pha = false :: boolean(),
+    pha_state :: undefined | {wait_cert | wait_cv | wait_finished, binary(), [binary()]},
     amp_in = 0 :: non_neg_integer(),
     amp_out = 0 :: non_neg_integer(),
     amp_held = [] :: [binary()],

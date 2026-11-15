@@ -1241,3 +1241,55 @@ ack_waits_for_our_epoch_test() ->
     ?assertEqual(connected, S4#dtls.state),
     ?assertEqual([], S4#dtls.last_flight),
     _ = data(C4, S4, <<"after both updates">>, 200).
+
+%% Rotation keeps working: the peer retires the CIDs we moved away from
+%% (once our records carry the new one), so its set of four always has
+%% room for the spares we ask for. Every rotation gives a CID not used
+%% before, and the peer never holds more than four.
+many_rotations_test() ->
+    {C0, S0} = cid_pair(),
+    {_, _, Used} = lists:foldl(
+        fun(I, {C, S, Seen}) ->
+            {ok, S1, A} = webrtc_dtls:rotate_connection_id(100 * I, S),
+            {S2, C1} = pump(S1, C, [D || {send, D} <- A], 100 * I),
+            {S3, C2, D1} = data(S2, C1, <<"rotation">>, 100 * I + 50),
+            Cid = record_cid(D1, 4),
+            ?assertNot(lists:member(Cid, Seen)),
+            ?assert(length(C2#dtls.cids) =< 4),
+            ?assert(webrtc_dtls13_cid:known(Cid, C2)),
+            {C2, S3, [Cid | Seen]}
+        end,
+        {C0, S0, [<<"cccc">>]},
+        lists:seq(1, 10)
+    ),
+    ?assertEqual(11, length(Used)).
+
+%% The peer retires a CID once our records carry another; a late record
+%% with the old one is still accepted until its room is needed.
+retired_cid_still_accepted_test() ->
+    {C, S} = cid_pair(),
+    {S1, [Req]} = post_handshake(request_connection_id, <<1>>, 100, S),
+    {S2, C1} = pump(S1, C, [Req], 100),
+    {ok, Late, [{send, Old}]} = webrtc_dtls:send(<<"late">>, S2),
+    %% Using its only spare it also asks for more.
+    {ok, S3, _} = webrtc_dtls:rotate_connection_id(200, Late),
+    {_, C2, _} = data(S3, C1, <<"new">>, 300),
+    ?assertEqual([<<"cccc">>], C2#dtls.cid_retired),
+    {_, [{event, {data, <<"late">>}}]} = webrtc_dtls:handle_packet(Old, 310, C2).
+
+%% CID messages are retransmitted like any flight: the request and the
+%% answer both lost once, the rotation still happens.
+lost_cid_messages_test() ->
+    {C, S} = cid_pair(),
+    {ok, S1, [{send, _Lost}]} = webrtc_dtls:rotate_connection_id(100, S),
+    At = webrtc_dtls:next_timeout(S1),
+    ?assert(is_integer(At)),
+    {S2, [{send, Req}]} = webrtc_dtls:handle_timeout(At, S1),
+    {C1, CActs} = webrtc_dtls:handle_packet(Req, At, C),
+    %% The ACK and the NewConnectionId are lost.
+    ?assertMatch([_ | _], [D || {send, D} <- CActs]),
+    At2 = webrtc_dtls:next_timeout(C1),
+    {C2, Again} = webrtc_dtls:handle_timeout(At2, C1),
+    {S3, _} = pump(C2, S2, [D || {send, D} <- Again], At2),
+    ?assertNot(S3#dtls.rotate),
+    ?assertNotEqual(<<"cccc">>, S3#dtls.peer_cid).

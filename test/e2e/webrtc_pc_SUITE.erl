@@ -416,9 +416,11 @@ dtls_connection_id(_Config) ->
     webrtc:close(A),
     webrtc:close(B).
 
-%% RFC 9147 §9, RFC 9146 §8: after an ICE restart A's records carry
-%% another of B's connection IDs (one B gave as a spare), so the new
-%% path cannot be linked to the old one by the CID, and data still flows.
+%% RFC 9147 §9, RFC 9146 §8: after each ICE restart A's records carry a
+%% CID of B's not seen before (a spare B gave), so the new path cannot
+%% be linked to the old one by the CID, and data still flows. Five
+%% restarts use more CIDs than B holds at once: B retires those A moved
+%% away from to make room.
 connection_id_rotation(_Config) ->
     Self = self(),
     Tap = {fun(_Dest, Bin, S) ->
@@ -435,17 +437,26 @@ connection_id_rotation(_Config) ->
     Id = channel_id(A, <<"cid">>),
     ok = webrtc:send_data(A, Id, text, <<"before">>),
     _ = message(B, <<"before">>),
-    [Before | _] = cids([]),
-    ok = webrtc:restart_ice(A),
-    _ = ?S:negotiate(A, B),
-    relay_for(A, B, 2000),
-    flush_cids(),
-    ok = webrtc:send_data(A, Id, text, <<"after">>),
-    _ = message(B, <<"after">>),
-    After = cids([]),
-    ct:log("before ~p, after ~p", [Before, After]),
-    ?assertMatch([_ | _], After),
-    ?assertNot(lists:member(Before, After)),
+    [First] = cids([]),
+    Used = lists:foldl(
+        fun(I, Seen) ->
+            ok = webrtc:restart_ice(A),
+            _ = ?S:negotiate(A, B),
+            relay_for(A, B, 1500),
+            flush_cids(),
+            Msg = <<"after restart ", (integer_to_binary(I))/binary>>,
+            ok = webrtc:send_data(A, Id, text, Msg),
+            _ = message(B, Msg),
+            [New] = cids([]),
+            ct:log("restart ~p: ~p", [I, New]),
+            ?assertNot(lists:member(New, Seen)),
+            [New | Seen]
+        end,
+        [First],
+        lists:seq(1, 5)
+    ),
+    ?assertEqual(6, length(Used)),
+    #{transport := #{dtls := #{connection_id := true}}} = webrtc:get_stats(B),
     webrtc:close(A),
     webrtc:close(B).
 

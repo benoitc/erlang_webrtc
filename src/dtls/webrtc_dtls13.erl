@@ -141,7 +141,7 @@ decrypt(E, R, Now, #dtls{read_keys = RK, replay = Rp} = St) ->
             case webrtc_dtls_record:replay_check(Seq, W) of
                 ok ->
                     St1 = St#dtls{replay = Rp#{E => webrtc_dtls_record:replay_update(Seq, W)}},
-                    content(Type, Content, E, Seq, Now, St1);
+                    content(Type, Content, E, Seq, Now, webrtc_dtls13_cid:seen(maps:get(cid, R, <<>>), St1));
                 replay ->
                     St
             end;

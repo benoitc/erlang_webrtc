@@ -5,7 +5,11 @@
 %%     so records still parse with one length, at most 4. A record
 %%     carrying another CID is dropped.</li>
 %% <li>A RequestConnectionId is answered with spare CIDs added to that
-%%     set, as many as asked for and fit.</li>
+%%     set, as many as asked for and fit. Once the peer's authenticated
+%%     records carry another of our CIDs, the one they carried before is
+%%     retired: it is still accepted (records sent before the switch may
+%%     arrive late) until a request needs its room, so the peer can keep
+%%     rotating.</li>
 %% <li>Spare CIDs from the peer are kept (at most 8). `rotate/1' moves
 %%     our records to the next one, so a new path cannot be linked to
 %%     the old one by its CID (RFC 9146 §8); without one it asks for
@@ -18,7 +22,7 @@
 
 -include("webrtc_dtls.hrl").
 
--export([known/2, received/3, rotate/1, flight_done/1]).
+-export([known/2, seen/2, received/3, rotate/1, flight_done/1]).
 
 -define(MAX_OWN, 4).
 -define(MAX_SPARES, 8).
@@ -28,6 +32,17 @@
 -spec known(binary(), #dtls{}) -> boolean().
 known(<<>>, _St) -> true;
 known(Cid, #dtls{cids = Cids}) -> lists:member(Cid, Cids).
+
+%% @doc An authenticated record of the peer carried `Cid'.
+-spec seen(binary(), #dtls{}) -> #dtls{}.
+seen(<<>>, St) ->
+    St;
+seen(Cid, #dtls{cid_in_use = Cid} = St) ->
+    St;
+seen(Cid, #dtls{cid_in_use = undefined} = St) ->
+    St#dtls{cid_in_use = Cid};
+seen(Cid, #dtls{cid_in_use = Old, cid_retired = R} = St) ->
+    St#dtls{cid_in_use = Cid, cid_retired = [C || C <- R, C =/= Cid] ++ [Old]}.
 
 %% @doc NewConnectionId or RequestConnectionId from the peer (CIDs
 %% negotiated). Both are acknowledged (§5.7).
@@ -42,8 +57,8 @@ received(new_connection_id, {Cids, spare}, #dtls{rotate = Wanted} = St0) ->
     end;
 received(new_connection_id, {[], _}, St) ->
     St#dtls{ack_now = true};
-received(request_connection_id, N, #dtls{cids = Own} = St) ->
-    Room = case Own of [C | _] when byte_size(C) > 0 -> ?MAX_OWN - length(Own); _ -> 0 end,
+received(request_connection_id, N, #dtls{cids = Own, cid_retired = R} = St) ->
+    Room = case Own of [C | _] when byte_size(C) > 0 -> ?MAX_OWN - length(Own -- R); _ -> 0 end,
     case min(N, Room) of
         0 -> St#dtls{ack_now = true};
         K -> send({spares, K}, St#dtls{ack_now = true})
@@ -81,10 +96,14 @@ queue({request, N}, St) ->
     {_, St1} = webrtc_dtls:queue_handshake(request_connection_id, webrtc_dtls13_msg:encode(request_connection_id, N),
                                            false, St),
     St1;
-queue({spares, K}, #dtls{cids = [C | _] = Own} = St) ->
-    New = fresh(K, byte_size(C), Own),
+queue({spares, K}, #dtls{cids = [C | _] = Own0, cid_retired = R0} = St) ->
+    %% Retired CIDs make room, the oldest first.
+    Drop = lists:sublist(R0, max(0, length(Own0) + K - ?MAX_OWN)),
+    Own = Own0 -- Drop,
+    New = fresh(K, byte_size(C), Own0),
     Body = webrtc_dtls13_msg:encode(new_connection_id, {New, spare}),
-    {_, St1} = webrtc_dtls:queue_handshake(new_connection_id, Body, false, St#dtls{cids = Own ++ New}),
+    {_, St1} = webrtc_dtls:queue_handshake(new_connection_id, Body, false,
+                                           St#dtls{cids = Own ++ New, cid_retired = R0 -- Drop}),
     St1.
 
 fresh(0, _Len, _Own) ->

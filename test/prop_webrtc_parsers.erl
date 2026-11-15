@@ -43,21 +43,64 @@ prop_decoders_never_raise() ->
             %% DNS headers: a response with one answer, a query with one question
             <<0, 0, 16#84, 0, 0, 0, 0, 1, 0, 0, 0, 0>>, <<0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0>>
         ])},
-        begin
-            Input = <<Prefix/binary, Bin/binary>>,
-            lists:all(
-                fun({Name, F}) ->
-                    try
-                        _ = F(Input),
-                        true
-                    catch
-                        C:R -> io:format("~p raised ~p:~p on ~p~n", [Name, C, R, Input]), false
-                    end
-                end,
-                ?DECODERS
-            )
-        end
+        no_raise(<<Prefix/binary, Bin/binary>>)
     ).
+
+no_raise(Input) ->
+    lists:all(
+        fun({Name, F}) ->
+            try
+                _ = F(Input),
+                true
+            catch
+                C:R -> io:format("~p raised ~p:~p on ~p~n", [Name, C, R, Input]), false
+            end
+        end,
+        ?DECODERS
+    ).
+
+%% libwebrtc's corpora (webrtc_corpus_tests) as seeds: one to four
+%% mutations of a real message reach code that random bytes do not.
+prop_corpus_mutations() ->
+    Seeds = list_to_tuple([B || {_, _, B} <- webrtc_corpus_tests:files(), byte_size(B) > 0, byte_size(B) =< 8192]),
+    ?FORALL(
+        {I, J, Ms},
+        {range(1, tuple_size(Seeds)), range(1, tuple_size(Seeds)), resize(4, non_empty(list(mutation())))},
+        no_raise(lists:foldl(fun(M, B) -> mutate(M, B, element(J, Seeds)) end, element(I, Seeds), Ms))
+    ).
+
+mutation() ->
+    oneof([
+        {flip, nat(), range(0, 7)},
+        {insert, nat(), byte()},
+        {delete, nat()},
+        {truncate, nat()},
+        {splice, nat(), nat()},
+        {len16, nat(), range(0, 65535)}
+    ]).
+
+mutate(_, <<>>, _) ->
+    <<>>;
+mutate({flip, P, Bit}, B, _) ->
+    {H, <<X, T/binary>>} = split_binary(B, P rem byte_size(B)),
+    <<H/binary, (X bxor (1 bsl Bit)), T/binary>>;
+mutate({insert, P, X}, B, _) ->
+    {H, T} = split_binary(B, P rem (byte_size(B) + 1)),
+    <<H/binary, X, T/binary>>;
+mutate({delete, P}, B, _) ->
+    {H, <<_, T/binary>>} = split_binary(B, P rem byte_size(B)),
+    <<H/binary, T/binary>>;
+mutate({truncate, P}, B, _) ->
+    binary:part(B, 0, P rem byte_size(B));
+mutate({splice, P, Q}, B, Other) ->
+    {H, _} = split_binary(B, P rem (byte_size(B) + 1)),
+    {_, T} = split_binary(Other, Q rem (byte_size(Other) + 1)),
+    <<H/binary, T/binary>>;
+mutate({len16, P, V}, B, _) when byte_size(B) >= 2 ->
+    {H, <<_:16, T/binary>>} = split_binary(B, P rem (byte_size(B) - 1)),
+    <<H/binary, V:16, T/binary>>;
+mutate({len16, _, _}, B, _) ->
+    B.
 
 %% Encoded mDNS responses decode to the same records, names lower-cased.
 prop_mdns_roundtrip() ->

@@ -11,12 +11,12 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([relay_only_datachannel/1, relay_only_media/1, wrong_credentials_no_relay/1, one_side_relayed/1,
-         relayed_spoofing_dropped/1]).
+         relayed_spoofing_dropped/1, relayed_over_tcp/1, relayed_over_tls/1, untrusted_tls_no_relay/1]).
 
 -define(S, webrtc_test_signal).
 
 all() -> [relay_only_datachannel, relay_only_media, wrong_credentials_no_relay, one_side_relayed,
-          relayed_spoofing_dropped].
+          relayed_spoofing_dropped, relayed_over_tcp, relayed_over_tls, untrusted_tls_no_relay].
 
 init_per_suite(Config) ->
     Bin = filename:join([root(), "interop", "turn", "bin", "turn-server"]),
@@ -28,28 +28,42 @@ init_per_suite(Config) ->
             %% init_per_suite runs in a short-lived process; the server
             %% exits when its stdin closes, so a holder owns the port.
             Self = self(),
-            Holder = spawn(fun() -> hold(Bin, Self) end),
+            Ca = filename:join(?config(priv_dir, Config), "turn-ca.pem"),
+            Holder = spawn(fun() -> hold(Bin, Ca, Self) end),
             receive
-                {turn_ready, Holder, Addr} ->
-                    [Host, P] = string:split(Addr, ":", trailing),
-                    {ok, IP} = inet:parse_address(binary_to_list(Host)),
-                    [{turn_holder, Holder}, {turn, {IP, binary_to_integer(P)}} | Config]
+                {turn_ready, Holder, Addrs} ->
+                    {ok, Pem} = file:read_file(Ca),
+                    [{'Certificate', Der, _}] = public_key:pem_decode(Pem),
+                    [{turn_holder, Holder}, {turn, addr(maps:get(udp, Addrs))}, {turn_tcp, addr(maps:get(tcp, Addrs))},
+                     {turn_tls, addr(maps:get(tls, Addrs))}, {turn_ca, Der} | Config]
             after 10000 ->
                 exit(Holder, kill),
                 {skip, "TURN server did not start"}
             end
     end.
 
-hold(Bin, Parent) ->
+hold(Bin, Ca, Parent) ->
     Port = open_port({spawn_executable, Bin},
-                     [{args, ["-listen", "127.0.0.1:0", "-user", "alice=wonderland"]},
+                     [{args, ["-listen", "127.0.0.1:0", "-user", "alice=wonderland",
+                              "-tcp", "127.0.0.1:0", "-tls", "127.0.0.1:0", "-tls-ca", Ca]},
                       {line, 256}, binary, use_stdio, exit_status]),
-    receive
-        {Port, {data, {eol, <<"listening ", Addr/binary>>}}} -> Parent ! {turn_ready, self(), Addr}
-    end,
+    Parent ! {turn_ready, self(), listening(Port, #{})},
     receive
         stop -> port_close(Port)
     end.
+
+%% The stream listeners come first, the UDP one last.
+listening(Port, Acc) ->
+    receive
+        {Port, {data, {eol, <<"listening-tcp ", A/binary>>}}} -> listening(Port, Acc#{tcp => A});
+        {Port, {data, {eol, <<"listening-tls ", A/binary>>}}} -> listening(Port, Acc#{tls => A});
+        {Port, {data, {eol, <<"listening ", A/binary>>}}} -> Acc#{udp => A}
+    end.
+
+addr(A) ->
+    [Host, P] = string:split(A, ":", trailing),
+    {ok, IP} = inet:parse_address(binary_to_list(Host)),
+    {IP, binary_to_integer(P)}.
 
 end_per_suite(Config) ->
     case ?config(turn_holder, Config) of
@@ -95,6 +109,52 @@ connect(A, B) ->
     end.
 
 %% Data may flow before nomination (RFC 8445 §12.1): wait for it.
+%% RFC 8656 §3.1: TURN over TCP and TLS. A reaches the server over the
+%% stream only (no UDP leaves A at all), so the data channel must go
+%% through the relay.
+relayed_over_tcp(Config) ->
+    stream_relay(Config, tcp, ?config(turn_tcp, Config), []).
+
+relayed_over_tls(Config) ->
+    stream_relay(Config, tls, ?config(turn_tls, Config), [{cacerts, [?config(turn_ca, Config)]}]).
+
+stream_relay(_Config, Transport, Addr, Tls) ->
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        turn_servers => [#{address => Addr, username => <<"alice">>, password => <<"wonderland">>,
+                           transport => Transport, tls_options => Tls}],
+        outbound_filter => webrtc_impair:filter(#{only_to => []})
+    }),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    ok = webrtc:create_data_channel(A, <<"s">>, #{}),
+    connect(A, B),
+    {ok, {datachannel_open, Id, _, _, _}} =
+        ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 15000),
+    ok = webrtc:send_data(A, Id, text, <<"over ", (atom_to_binary(Transport))/binary>>),
+    {ok, _} = ?S:wait(B, fun({channel_message, _, text, <<"over ", _/binary>>}) -> true; (_) -> false end, 15000),
+    ?assertMatch([{relay, _}], selected_types(A)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% A certificate that does not verify gives no relayed candidate, and
+%% the failure is reported.
+untrusted_tls_no_relay(Config) ->
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        turn_servers => [#{address => ?config(turn_tls, Config), username => <<"alice">>, password => <<"wonderland">>,
+                           transport => tls, tls_options => [{cacerts, []}]}]
+    }),
+    ok = webrtc:create_data_channel(A, <<"s">>, #{}),
+    {ok, Offer} = webrtc:create_offer(A, #{}),
+    ok = webrtc:set_local_description(A, offer, Offer),
+    {ok, _} = ?S:wait(A, fun({ice_gathering_state, complete}) -> true; (_) -> false end, 15000),
+    ?assertEqual([], [C || {webrtc, P, {ice_candidate, C, _}} <- flush_all(), P =:= A, is_binary(C),
+                           binary:match(C, <<"typ relay">>) =/= nomatch]),
+    webrtc:close(A).
+
+flush_all() ->
+    receive M -> [M | flush_all()] after 0 -> [] end.
+
 selected_types(Pc) ->
     [{L#ice_cand.type, R#ice_cand.type} || {L, R} <- selected(Pc, 50)].
 

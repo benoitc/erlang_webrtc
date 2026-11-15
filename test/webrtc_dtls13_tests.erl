@@ -1293,3 +1293,13 @@ lost_cid_messages_test() ->
     {S3, _} = pump(C2, S2, [D || {send, D} <- Again], At2),
     ?assertNot(S3#dtls.rotate),
     ?assertNotEqual(<<"cccc">>, S3#dtls.peer_cid).
+
+%% Records carrying a long CID still fit the MTU: handshake fragments and
+%% ACKs leave room for it.
+mtu_with_cid_test() ->
+    Cid = binary:copy(<<"c">>, 32),
+    {C, S} = pair(#{connection_id => Cid, mtu => 300}, #{connection_id => Cid, mtu => 300}),
+    #{ev := #{c := CE}} = W = run(C, S),
+    ?assertMatch([_], connected(CE)),
+    Sizes = [byte_size(D) || {_, D, _} <- webrtc_dtls_sim:sent(W, c) ++ webrtc_dtls_sim:sent(W, s)],
+    ?assert(lists:all(fun(N) -> N =< 300 end, Sizes)).

@@ -344,7 +344,7 @@ send_ack(#dtls{rcv_recs = Recs0, write_epoch = E, mtu = Mtu} = St) ->
     %% own. Records the peer sent after its KeyUpdate wait until ours is
     %% acknowledged too (webrtc_dtls13_epoch:key_update_acked/1).
     {Recs, Later} = lists:partition(fun({RE, _}) -> RE =< E end, Recs0),
-    N = max(1, (Mtu - webrtc_dtls13_record:overhead() - 2) div 16),
+    N = max(1, (Mtu - webrtc_dtls13_record:overhead(St#dtls.peer_cid) - 2) div 16),
     case Recs of
         [] ->
             St;
@@ -452,7 +452,7 @@ transmit(Items, St0) ->
     {St, webrtc_dtls12:pack(lists:append(lists:reverse(Recs)), St#dtls.mtu)}.
 
 item_records({handshake, E, Type, MS, Body} = Item, St) ->
-    Max = max(1, St#dtls.mtu - header(E) - 12),
+    Max = max(1, St#dtls.mtu - header(E, St) - 12),
     Chunks = lists:append([chunks(Off, End, Max) || {Off, End} <- unacked(Item, St#dtls.acked)]),
     T = webrtc_dtls_msg:type_code(Type),
     L = byte_size(Body),
@@ -475,8 +475,9 @@ chunks(Off, End, Max) ->
     N = min(Max, End - Off),
     [{Off, N} | chunks(Off + N, End, Max)].
 
-header(0) -> 13;
-header(_) -> webrtc_dtls13_record:overhead().
+%% Protected records carry the peer's CID (RFC 9147 §9).
+header(0, _St) -> 13;
+header(_, #dtls{peer_cid = Cid}) -> webrtc_dtls13_record:overhead(Cid).
 
 push(Action, #dtls{out = Out} = St) ->
     St#dtls{out = [Action | Out]}.

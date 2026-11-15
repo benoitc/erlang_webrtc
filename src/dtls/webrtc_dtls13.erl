@@ -394,13 +394,17 @@ timeout(Now, St0) ->
                         end,
                     emit({failed, Reason}, stop(St1#dtls{state = failed}));
                 false ->
-                    %% The backed-off value stays until a flight goes
-                    %% through without retransmission (§5.8.2).
+                    %% After the handshake the backed-off value stays
+                    %% until a flight goes through without retransmission
+                    %% (§5.8.2). Handshake flights start from the RTT
+                    %% based value: under heavy loss a carried back-off
+                    %% held the whole handshake back.
                     Interval = min(St1#dtls.rtx_interval * 2, St1#dtls.rtx_max_interval),
                     Count = St1#dtls.rtx_count + 1,
                     {St2, Dgrams} = transmit(St1#dtls.last_flight, St1#dtls{rtx_count = Count}),
                     St3 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St2, Dgrams),
-                    St3#dtls{rtx_interval = Interval, rtx_base = Interval, rtx_at = Now + Interval}
+                    Base = case St1#dtls.handshake_done of true -> Interval; false -> St1#dtls.rtx_base end,
+                    St3#dtls{rtx_interval = Interval, rtx_base = Base, rtx_at = Now + Interval}
             end;
         _ ->
             St1

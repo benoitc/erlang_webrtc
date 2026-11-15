@@ -27,6 +27,7 @@
     type_preference/1,
     priority/3,
     local_preference/2,
+    tcp_local_preference/2,
     local_preferences/1,
     foundation/4,
     pair_priority/2,
@@ -73,6 +74,16 @@ priority(Type, LocalPref, Component) when
     LocalPref >= 0, LocalPref =< 65535, Component >= 1, Component =< 256
 ->
     (type_preference(Type) bsl 24) + (LocalPref bsl 8) + (256 - Component).
+
+%% @doc RFC 6544 §4.2: local preference of a TCP candidate,
+%% `2^13 * direction-pref + other-pref', with the direction preference of
+%% host candidates (active 6, passive 4, simultaneous-open 2) and the
+%% other preference 0..8191 from the host rank. It stays below the local
+%% preference of UDP host candidates, so UDP paths are preferred.
+-spec tcp_local_preference(active | passive | so, non_neg_integer()) -> 0..65535.
+tcp_local_preference(TcpType, Rank) ->
+    Dir = case TcpType of active -> 6; passive -> 4; so -> 2 end,
+    (Dir bsl 13) + max(0, 8191 - Rank).
 
 %% @doc Local preference for the host candidate of rank `Rank' (0 is
 %% the most preferred) and the server of index `ServerIdx' (0 for the
@@ -188,9 +199,18 @@ can_pair(#ice_cand{} = L, #ice_cand{} = R) ->
     not (L#ice_cand.type =:= relay andalso lists:keymember(?ICE_EXT_MDNS, 1, R#ice_cand.extensions)) andalso
         L#ice_cand.component =:= R#ice_cand.component andalso
         L#ice_cand.transport =:= R#ice_cand.transport andalso
+        tcp_types_pair(L#ice_cand.transport, L#ice_cand.tcptype, R#ice_cand.tcptype) andalso
         family(L#ice_cand.address) =:= family(R#ice_cand.address) andalso
         (family(L#ice_cand.address) =:= ipv4 orelse
             is_link_local(L#ice_cand.address) =:= is_link_local(R#ice_cand.address)).
+
+%% RFC 6544 §6.2: an active candidate connects to a passive one;
+%% simultaneous-open candidates pair with each other.
+tcp_types_pair(udp, _, _) -> true;
+tcp_types_pair(tcp, active, passive) -> true;
+tcp_types_pair(tcp, passive, active) -> true;
+tcp_types_pair(tcp, so, so) -> true;
+tcp_types_pair(tcp, _, _) -> false.
 
 %%====================================================================
 %% SDP candidate-attribute (RFC 8839 §5.1)

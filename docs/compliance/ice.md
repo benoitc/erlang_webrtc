@@ -80,6 +80,22 @@ This page lists the ICE requirements tracked by the stack: the agent itself (RFC
 | PAC-2 | 4 | Controlling agent waits before nominating | webrtc_ice_session | webrtc_ice_agent_tests:nomination_best_waits_test | Unit tested; the wait is `nomination_timeout` after the first valid pair, not the PAC timer |
 | PAC-3 | 5 | With trickle ICE, failure also waits for end-of-candidates, with a timer (`eoc_timeout`, PAC by default) as fallback | webrtc_ice_session | webrtc_ice_net_tests:no_eoc_waits_test, webrtc_ice_agent_tests:check_timeout_test | Unit tested |
 
+## RFC 6544 (ICE-TCP)
+
+Enabled with the `ice_tcp` peer connection option. The agent stays sans-IO: the transport listens and accepts, opens the connections the agent asks for and frames packets with RFC 4571.
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| TCP-1 | 4.1, 4.5 | Passive host candidate on a TCP listener next to every UDP host address; active host candidate with port 9 | webrtc_ice_tcp, webrtc_transport_net | webrtc_ice_tcp_tests:candidates_test | Unit tested |
+| TCP-2 | 4.2 | Local preference 2^13 * direction preference (active 6, passive 4) + other preference, below UDP host candidates | webrtc_ice_candidate | webrtc_ice_tcp_tests:candidates_test | Unit tested |
+| TCP-3 | 6.2 | Active pairs with remote passive, passive with remote active, UDP with UDP | webrtc_ice_candidate | webrtc_ice_tcp_tests:connectivity_test | Unit tested |
+| TCP-4 | 7.1 | An active pair opens its connection before its check; a passive pair waits for the peer's connection and answers on it; a connection that cannot be opened fails its pair | webrtc_ice_tcp | webrtc_ice_tcp_tests:connectivity_test, refused_connection_test | Unit tested |
+| TCP-5 | 7.1 | Checks not retransmitted over TCP; a transaction fails after 39.5 s | webrtc_ice_conncheck | webrtc_ice_tcp_tests:connectivity_test | Unit tested |
+| TCP-6 | 7.2 | A peer-reflexive candidate learned on a passive candidate is TCP active; the valid pair of an active candidate keeps it (its mapped port differs) | webrtc_ice_responder, webrtc_ice_conncheck | webrtc_ice_tcp_tests:connectivity_test | Unit tested |
+| TCP-7 | 7.2, RFC 4571 | Packets on the connection framed with a 16-bit length; DTLS, SRTP and SCTP over it only from the validated connection | webrtc_transport_net, webrtc_ice_session | webrtc_pc_SUITE:ice_tcp_only, webrtc_pc_interop_SUITE chromium_tcp, firefox_tcp | Interoperability tested |
+| TCP-8 | | Inbound connections bounded (32); pairs of authenticated checks kept past the pair limit (up to twice `max_pairs`) | webrtc_ice_tcp, webrtc_ice_checklist | webrtc_pc_interop_SUITE chromium_tcp | Interoperability tested |
+| TCP-9 | 4.1 | Simultaneous-open (`so`) candidates | | | Not implemented: browsers do not gather them |
+
 ## RFC 8838
 
 | ID | Section | Requirement | Module | Test | Status |
@@ -121,7 +137,7 @@ This page lists the ICE requirements tracked by the stack: the agent itself (RFC
 | SDP-1 | 5.1 | candidate-attribute: foundation of 1 to 32 ice-chars, component 1 to 256, transport, priority 1 to 2^31-1, address, port, `typ`, `raddr`/`rport`, extension pairs kept | webrtc_ice_candidate | webrtc_ice_candidate_tests:sdp_roundtrip_test_, sdp_parse_test_, prop_webrtc_ice:prop_sdp_roundtrip | Unit tested |
 | SDP-2 | 5.1 | Related address of a server-reflexive candidate is its base, of a relayed candidate the mapped address | webrtc_ice_gather, webrtc_ice_relay | webrtc_ice_net_tests:srflx_candidate_test | Unit tested |
 | SDP-3 | 5.1 | FQDN connection addresses: looked up AAAA then A, one address chosen (IPv6 when the transport has an IPv6 socket), the candidate ignored when nothing resolves | webrtc_mdns_client, webrtc_mdns | webrtc_mdns_client_tests:fqdn_family_choice_test, webrtc_mdns_SUITE:fqdn_candidates | E2E tested. The agent itself still takes IP literals only (`{error, {fqdn, Name}}`); the transport resolves names before handing candidates to it |
-| SDP-4 | 5.1 | TCP candidates (`tcptype`) | webrtc_ice_candidate | webrtc_ice_candidate_tests:sdp_roundtrip_test_ | Non-compliant / known limitation: parsed and encoded, never paired (UDP only) |
+| SDP-4 | 5.1 | TCP candidates (`tcptype`) | webrtc_ice_candidate | webrtc_ice_candidate_tests:sdp_roundtrip_test_, webrtc_ice_tcp_tests | Unit tested; used by ICE-TCP, see the RFC 6544 table |
 | SDP-5 | 5.4 | ice-ufrag 4 to 256 and ice-pwd 22 to 256 ice-chars, checked on input | webrtc_ice_candidate, webrtc_ice_agent | webrtc_ice_candidate_tests:credentials_test_, webrtc_ice_net_tests:restart_requires_new_credentials_test | Unit tested |
 | SDP-6 | 5.5, 5.6 | `a=ice-lite`, `a=ice-options`, `a=ice-pacing` | | | Not implemented here: SDP layer; the agent takes `lite`, `remote_lite` and `ta` options |
 

@@ -125,6 +125,11 @@ new_peer_connection() ->
 %%     circuit breakers (`start_bitrate', `min_bitrate', `max_bitrate',
 %%     `pacing', `pacing_factor', `rtcp_timeout',
 %%     `circuit_breaker_hold', ...), see `webrtc_cc'.</li>
+%% <li>`ice_tcp': also gather TCP host candidates (RFC 6544), default
+%%     `false': a passive one listening next to every UDP host address
+%%     and an active one, both below the UDP candidates in priority.
+%%     They connect peers whose UDP is blocked; DTLS, SRTP and SCTP then
+%%     run over the TCP connection.</li>
 %% <li>`rtcp_report_interval': the shortest interval between regular
 %%     RTCP reports in ms (the local T_rr_interval of RFC 4585 §3.5.3,
 %%     default 1000, 0 for the RFC 3550 interval alone). Feedback is not

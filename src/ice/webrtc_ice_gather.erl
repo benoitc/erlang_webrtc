@@ -314,6 +314,8 @@ via(#ice_cand{socket = Sock}, _S) -> Sock.
 
 %% @doc Local base candidate receiving on `Via'.
 -spec base_by_via(via(), #ice{}) -> {ok, pos_integer()} | error.
+base_by_via({tcp, _} = Ref, S) ->
+    webrtc_ice_tcp:base_of(Ref, S);
 base_by_via({relay, Sock, Server}, #ice{local = L}) ->
     first([Id || Id := #ice_cand{type = relay, socket = So, server = Sv} <- L, So =:= Sock, Sv =:= Server]);
 base_by_via(Sock, #ice{local = L}) ->
@@ -324,6 +326,9 @@ first([]) -> error.
 
 %% @doc Send `Bin' to `To' from the path `Via'.
 -spec route(via(), webrtc_ice_candidate:address(), binary(), integer(), #ice{}) -> {#ice{}, [term()]}.
+route(none, _To, _Bin, _Now, S) ->
+    %% A TCP pair without a connection has no path.
+    {S, []};
 route({relay, Sock, Server}, To, Bin, Now, S) ->
     webrtc_ice_relay:send({Sock, Server}, To, Bin, Now, S);
 route(Sock, To, Bin, _Now, S) ->

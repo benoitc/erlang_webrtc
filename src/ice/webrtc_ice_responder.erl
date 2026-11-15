@@ -114,7 +114,7 @@ accepted(prev, Via, From, _Prio, _UseCand, _RU, Now, #ice{prev = Prev} = S) ->
     Pairs = maps:map(
         fun(_, {#pair{} = P, #ice_cand{} = RC}) ->
             case webrtc_ice_candidate:transport_address(RC) =:= From andalso
-                     webrtc_ice_gather:via(webrtc_ice_checklist:pair_local(P, S), S) =:= Via of
+                     webrtc_ice_tcp:pair_via(P, RC, S) =:= Via of
                 true when S#ice.lite -> {lite_consent(P, Now, S), RC};
                 true -> {P#pair{requests_received = P#pair.requests_received + 1}, RC};
                 false -> {P, RC}
@@ -169,8 +169,8 @@ replay_early(Now, #ice{early = Early, remote_ufrag = RU} = S) ->
 
 %% RFC 8445 §7.3.1.3 to §7.3.1.5 and §7.3.2.
 learned(LId, From, Prio, UseCand, Now, S) ->
-    #ice_cand{component = Comp} = webrtc_ice_checklist:local(LId, S),
-    case webrtc_ice_checklist:find_remote(Comp, From, S) of
+    #ice_cand{component = Comp, transport = Tr} = webrtc_ice_checklist:local(LId, S),
+    case webrtc_ice_checklist:find_remote(Comp, From, Tr, S) of
         error when map_size(S#ice.remote) >= S#ice.max_remote ->
             %% Answered, but no more state for new sources.
             {S, []};
@@ -185,9 +185,18 @@ learned(LId, From, Prio, UseCand, Comp, Found, Now, S) ->
                 {Id, S};
             error ->
                 {IP, Port} = From,
+                %% Learned on a TCP passive candidate: the peer connected
+                %% from an active one (RFC 6544 §7.2).
+                {Transport, TcpType} =
+                    case webrtc_ice_checklist:local(LId, S) of
+                        #ice_cand{transport = tcp} -> {tcp, active};
+                        _ -> {udp, undefined}
+                    end,
                 Cand = #ice_cand{
                     foundation = <<"prflx", (integer_to_binary(S#ice.next_id))/binary>>,
                     component = Comp,
+                    transport = Transport,
+                    tcptype = TcpType,
                     priority = Prio,
                     address = IP,
                     port = Port,

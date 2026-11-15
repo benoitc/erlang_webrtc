@@ -35,7 +35,7 @@ Known gaps that matter for a full WebRTC deployment:
 
 | Gap | Effect | Page |
 |---|---|---|
-| DTLS 1.3 extras: PSK and resumption, 3x amplification limit without cookies, RTT based timers | Not needed by WebRTC peers seen so far; see DTLS-57 to DTLS-59 | [dtls](compliance/dtls.md) |
+| DTLS 1.3 extras: 3x amplification limit without cookies, RTT based timers, post-handshake authentication | Not needed by WebRTC peers seen so far; see DTLS-57 to DTLS-59 | [dtls](compliance/dtls.md) |
 | RFC 8888 feedback as estimator input, ECN circuit breaker, probing after the start | Peers that only send RFC 8888 feedback give no estimate; probing does not repeat once the start is over | [rtp](compliance/rtp.md) |
 | Public address detection for hidden candidates | With `mdns_host_candidates` every host address is hidden, public ones too | [ice](compliance/ice.md) |
 | SCTP PMTUD | Fixed 1200 byte datagrams | [sctp](compliance/sctp.md) |

@@ -209,6 +209,10 @@ transport_states(Pc) ->
 
 transport_state(#{ice := Ice, dtls := Dtls} = T) ->
     #{ice => maps:without([pairs, local, remote], Ice), dtls => Dtls, dropped => maps:get(dropped, T, #{}),
+      dropped_last => maps:get(dropped_last, T, undefined),
+      received => maps:get(received, T, #{}),
+      selected => [{L, R} || #{selected := true, local := L, remote := R} <- maps:get(pairs, Ice, [])],
+      valid_pairs => [{L, R} || #{state := succeeded, local := L, remote := R} <- maps:get(pairs, Ice, [])],
       pairs => [{St, maps:get(responses_received, P, 0)} || #{state := St} = P <- maps:get(pairs, Ice, [])]};
 transport_state(Other) ->
     Other.

@@ -115,6 +115,28 @@ const pageScript = () => {
             window.emit({ event: 'rtp', kind: s.kind, count: n, bytes: s.bytesReceived || 0 });
           }
         });
+        // Each transport as the browser sees it, for failure reports:
+        // DTLS and ICE state per transceiver (Firefox has no transport
+        // stats) and the nominated candidate pairs.
+        const cands = {};
+        stats.forEach((s) => { if (s.type === 'local-candidate' || s.type === 'remote-candidate') cands[s.id] = s; });
+        const addr = (id) => id && cands[id] ? cands[id].address + ':' + cands[id].port : '';
+        const pairs = [];
+        stats.forEach((s) => {
+          if (s.type === 'candidate-pair' && (s.nominated || s.selected)) {
+            pairs.push((s.transportId || '') + ' ' + s.state + ' ' + addr(s.localCandidateId) + '>' + addr(s.remoteCandidateId));
+          }
+        });
+        const dtls = pc.getTransceivers().map((t) => {
+          const d = t.sender && t.sender.transport;
+          return (t.mid || '-') + ':' + (d ? d.state + '/' + (d.iceTransport ? d.iceTransport.state : '') : 'none');
+        });
+        if (pc.sctp && pc.sctp.transport) dtls.push('sctp:' + pc.sctp.transport.state + '/' + (pc.sctp.transport.iceTransport ? pc.sctp.transport.iceTransport.state : ''));
+        const v = dtls.join(' ') + ' | ' + pairs.sort().join(', ');
+        if (last.transports !== v) {
+          last.transports = v;
+          window.emit({ event: 'transport', state: v });
+        }
         // The RFC 6464 audio level of received packets, as the browser
         // read it (after RFC 6904 decryption when negotiated).
         for (const r of pc.getReceivers()) {

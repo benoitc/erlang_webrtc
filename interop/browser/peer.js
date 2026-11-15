@@ -80,7 +80,7 @@ const pageScript = () => {
     window.watch(window.pc.createDataChannel(spec.label, init));
   };
   window.init = async (c) => {
-    const pc = new RTCPeerConnection({ bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' });
+    const pc = new RTCPeerConnection({ bundlePolicy: c.bundle_policy || 'max-bundle', rtcpMuxPolicy: 'require' });
     window.pc = pc;
     pc.onicecandidate = (e) => window.emit({ event: 'local_candidate',
       candidate: e.candidate ? e.candidate.candidate : '',

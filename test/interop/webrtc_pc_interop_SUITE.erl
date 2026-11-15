@@ -27,7 +27,8 @@
     peer_offers_mdns_candidates/1,
     erlang_offers_mdns_candidates/1,
     erlang_offers_ice_tcp/1,
-    peer_offers_ice_tcp/1
+    peer_offers_ice_tcp/1,
+    erlang_offers_unbundled/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -46,7 +47,8 @@ cases() ->
         peer_ice_restart,
         erlang_ice_lite,
         peer_sends_simulcast,
-        erlang_sends_simulcast
+        erlang_sends_simulcast,
+        erlang_offers_unbundled
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -175,9 +177,10 @@ forward_peer(Pc, P0, Theirs) ->
                      end, 50) of
         {ok, P1, #{<<"event">> := <<"local_candidate">>, <<"candidate">> := C} = Ev} ->
             put(peer_candidates, [C || C =/= <<>>] ++ peer_candidates()),
+            Mid = maps:get(<<"mid">>, Ev, undefined),
             ok = case C of
-                     <<>> -> webrtc:add_ice_candidate(Pc, end_of_candidates);
-                     _ -> webrtc:add_ice_candidate(Pc, C)
+                     <<>> -> webrtc:add_ice_candidate(Pc, end_of_candidates, Mid);
+                     _ -> webrtc:add_ice_candidate(Pc, C, Mid)
                  end,
             {consume(P1, Ev), Theirs};
         {ok, P1, #{<<"event">> := <<"connection_state">>, <<"state">> := S} = Ev} ->
@@ -303,6 +306,33 @@ erlang_sends_media(Config) ->
             ok
     end,
     put(peer, P2).
+
+%% Without BUNDLE (RFC 9143) audio, video and data each get their own
+%% ICE and DTLS transport, and all of them carry their traffic.
+erlang_offers_unbundled(Config) ->
+    case ?config(peer, Config) of
+        pion -> {skip, "Pion has one ICE transport per peer connection"};
+        aiortc -> {skip, "aiortc 1.16 answers an unbundled offer with a BUNDLE group (RFC 9143 7.3)"};
+        _ -> erlang_offers_unbundled1(Config)
+    end.
+
+erlang_offers_unbundled1(Config) ->
+    {Pc, P0} = start(Config, #{bundle => false}),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{}),
+    ok = webrtc:create_data_channel(Pc, <<"solo">>, #{}),
+    %% max-bundle (the adapter's default) refuses offers without BUNDLE.
+    P1 = erlang_offer(Pc, P0, #{media => [<<"audio">>, <<"video">>], bundle_policy => <<"balanced">>}),
+    {Id, _} = channel_open(Pc, <<"solo">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"solo">>}),
+    ok = webrtc:send_data(Pc, Id, text, <<"ping">>),
+    {ok, P3, _} = ?P:wait_event(P2, <<"message">>, #{<<"data">> => <<"ping">>}),
+    Opus = <<16#F8, 16#FF, 16#FE>>,
+    [ok = webrtc:send_rtp(Pc, <<"0">>, Opus, #{timestamp => N * 960}) || N <- lists:seq(1, 50)],
+    {ok, P4, _} = ?P:wait_event(P3, <<"rtp">>, #{<<"kind">> => <<"audio">>}),
+    #{transports := Ts} = webrtc:get_stats(Pc),
+    ?assertEqual(2, map_size(Ts)),
+    put(peer, P4).
 
 %% The peer sends media from its own encoders; Erlang receives it,
 %% forwards every packet back, and decoding peers report decoded frames.

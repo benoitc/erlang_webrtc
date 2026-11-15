@@ -15,8 +15,10 @@
 %% <li>a question whose answer the querier already lists with at least
 %%     half its TTL left is not answered (known-answer suppression, §7.1).</li>
 %% </ul>
-%% Only A and AAAA (or ANY) questions for a name of the right family are
-%% answered; there is no negative (NSEC) answer.
+%% A and AAAA (or ANY) questions for a name of the right family are
+%% answered with the address; a question for the other family gets an
+%% NSEC record saying the name has only the address it has (§6.1), so
+%% the querier does not wait for an answer that will not come.
 -module(webrtc_mdns_responder).
 
 -export([new/1, register/2, names/1, handle_query/5, announcement/2, goodbye/1]).
@@ -80,9 +82,13 @@ handle_query({_, SrcPort} = Src, MdnsPort, Bin, Now, R) ->
 answers(#{name := Name, type := T, class := C}, Known, #rs{names = N}) when C =:= 1; C =:= 255 ->
     case maps:find(Name, N) of
         {ok, IP} ->
-            case type_matches(T, IP) andalso not known(Name, IP, Known) of
-                true -> [{Name, IP}];
-                false -> []
+            case {type_matches(T, IP), other_family(T, IP)} of
+                {true, _} ->
+                    [{Name, IP} || not known(Name, IP, Known)];
+                {false, true} ->
+                    [{Name, {nsec, [family(IP)]}}];
+                {false, false} ->
+                    []
             end;
         error ->
             []
@@ -94,6 +100,13 @@ type_matches(any, _) -> true;
 type_matches(a, IP) -> tuple_size(IP) =:= 4;
 type_matches(aaaa, IP) -> tuple_size(IP) =:= 8;
 type_matches(_, _) -> false.
+
+other_family(a, IP) -> tuple_size(IP) =:= 8;
+other_family(aaaa, IP) -> tuple_size(IP) =:= 4;
+other_family(_, _) -> false.
+
+family(IP) when tuple_size(IP) =:= 4 -> a;
+family(_) -> aaaa.
 
 known(Name, IP, Known) ->
     lists:any(fun(#{name := N, data := D, ttl := T}) -> N =:= Name andalso D =:= IP andalso T >= ?TTL div 2 end, Known).

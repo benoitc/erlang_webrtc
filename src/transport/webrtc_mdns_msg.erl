@@ -68,12 +68,14 @@ encode_query(Id, Questions) ->
 
 %% @doc An authoritative response (QR and AA set) repeating `Questions'
 %% (needed for legacy unicast replies, RFC 6762 §6.7) with A or AAAA
-%% answers `[{Name, IP, TTL, CacheFlush}]' and additional records.
+%% answers `[{Name, IP, TTL, CacheFlush}]' and additional records. An
+%% answer `{Name, {nsec, Types}, TTL, CacheFlush}' is the NSEC record
+%% saying `Name' has only `Types' (RFC 6762 §6.1).
 -spec encode_response(
     0..65535,
     [{binary(), rr_type()}],
-    [{binary(), inet:ip_address(), non_neg_integer(), boolean()}],
-    [{binary(), inet:ip_address(), non_neg_integer(), boolean()}]
+    [{binary(), inet:ip_address() | {nsec, [rr_type()]}, non_neg_integer(), boolean()}],
+    [{binary(), inet:ip_address() | {nsec, [rr_type()]}, non_neg_integer(), boolean()}]
 ) -> binary().
 encode_response(Id, Questions, Answers, Additional) ->
     Qs = [[enc_name(N), <<(type_code(T)):16, ?CLASS_IN:16>>] || {N, T} <- Questions],
@@ -81,6 +83,14 @@ encode_response(Id, Questions, Answers, Additional) ->
         (length(Additional)):16>>,
     iolist_to_binary([Header, Qs, [enc_addr_rr(R) || R <- Answers], [enc_addr_rr(R) || R <- Additional]]).
 
+enc_addr_rr({Name, {nsec, Types}, TTL, Flush}) ->
+    %% RFC 6762 §6.1: the next domain name is the record's own name,
+    %% then one bitmap window (RFC 4034 §4.1.2) for types below 256.
+    Codes = [type_code(T) || T <- Types],
+    Len = lists:max(Codes) div 8 + 1,
+    Bitmap = << <<(case lists:member(B, Codes) of true -> 1; false -> 0 end):1>> || B <- lists:seq(0, Len * 8 - 1) >>,
+    Rdata = iolist_to_binary([enc_name(Name), <<0, Len>>, Bitmap]),
+    [enc_name(Name), <<47:16, (rrclass(Flush)):16, TTL:32, (byte_size(Rdata)):16>>, Rdata];
 enc_addr_rr({Name, {_, _, _, _} = IP, TTL, Flush}) ->
     [enc_name(Name), <<1:16, (rrclass(Flush)):16, TTL:32, 4:16>>, enc_ip(IP)];
 enc_addr_rr({Name, {_, _, _, _, _, _, _, _} = IP, TTL, Flush}) ->

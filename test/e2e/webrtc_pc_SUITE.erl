@@ -19,6 +19,8 @@
     renegotiation_adds_video/1,
     ice_restart/1,
     ice_auto_restart/1,
+    ice_auto_restart_signaling/1,
+    ice_auto_restart_glare/1,
     ice_auto_restart_off/1,
     connection_id_rotation/1,
     fingerprint_mismatch_fails/1,
@@ -58,6 +60,8 @@ all() ->
         renegotiation_adds_video,
         ice_restart,
         ice_auto_restart,
+        ice_auto_restart_signaling,
+        ice_auto_restart_glare,
         ice_auto_restart_off,
         connection_id_rotation,
         fingerprint_mismatch_fails,
@@ -652,6 +656,73 @@ ice_auto_restart(_Config) ->
     After = selected_address(A),
     ct:log("selected after: ~p", [After]),
     ?assertNotEqual(tuple_size(Before), tuple_size(After)),
+    ok = webrtc:send_data(A, Id, text, <<"after the restart">>),
+    _ = message(B, <<"after the restart">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% With `signaling' the peers run the restart offer and answer by
+%% themselves: the application only carries the descriptions and the
+%% candidates.
+ice_auto_restart_signaling(_Config) ->
+    Block = atomics:new(1, []),
+    Filter = {fun({IP, _}, Bin, S) ->
+                   case atomics:get(Block, 1) of
+                       F when F =/= 0, tuple_size(IP) =:= F -> {[], S};
+                       _ -> {[{0, Bin}], S}
+                   end
+              end, undefined},
+    Peers = ets:new(peers, [public]),
+    To = fun(Who) -> fun(Type, Sdp) -> [{_, P}] = ets:lookup(Peers, Who), webrtc:set_remote_description(P, Type, Sdp) end end,
+    Addrs = [{{127, 0, 0, 1}, 0}, {{0, 0, 0, 0, 0, 0, 0, 1}, 0}],
+    {ok, A} = webrtc:new_peer_connection(#{addresses => Addrs, outbound_filter => Filter, ice_restart_delay => 500,
+                                           signaling => To(b)}),
+    {ok, B} = webrtc:new_peer_connection(#{addresses => Addrs, ice_restart_delay => 500, signaling => To(a)}),
+    true = ets:insert(Peers, [{a, A}, {b, B}]),
+    ok = webrtc:create_data_channel(A, <<"keep">>, #{}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"keep">>),
+    Before = selected_address(A),
+    atomics:put(Block, 1, tuple_size(Before)),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {ice_restart, disconnected} end, 20000),
+    ok = ?S:wait_connected([A, B], 15000),
+    ?assertEqual(stable, webrtc:signaling_state(A)),
+    ?assertEqual(stable, webrtc:signaling_state(B)),
+    After = selected_address(A),
+    ?assertNotEqual(tuple_size(Before), tuple_size(After)),
+    ok = webrtc:send_data(A, Id, text, <<"after the restart">>),
+    _ = message(B, <<"after the restart">>),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% Both peers restart at the same time (the controlled one has a
+%% shorter delay): the controlled peer rolls its offer back and answers.
+ice_auto_restart_glare(_Config) ->
+    Block = atomics:new(1, []),
+    Filter = fun() -> {fun({IP, _}, Bin, S) ->
+                           case atomics:get(Block, 1) of
+                               F when F =/= 0, tuple_size(IP) =:= F -> {[], S};
+                               _ -> {[{0, Bin}], S}
+                           end
+                       end, undefined} end,
+    Peers = ets:new(peers, [public]),
+    To = fun(Who) -> fun(Type, Sdp) -> [{_, P}] = ets:lookup(Peers, Who), webrtc:set_remote_description(P, Type, Sdp) end end,
+    Addrs = [{{127, 0, 0, 1}, 0}, {{0, 0, 0, 0, 0, 0, 0, 1}, 0}],
+    {ok, A} = webrtc:new_peer_connection(#{addresses => Addrs, outbound_filter => Filter(), ice_restart_delay => 600,
+                                           signaling => To(b)}),
+    {ok, B} = webrtc:new_peer_connection(#{addresses => Addrs, outbound_filter => Filter(), ice_restart_delay => 200,
+                                           signaling => To(a)}),
+    true = ets:insert(Peers, [{a, A}, {b, B}]),
+    ok = webrtc:create_data_channel(A, <<"keep">>, #{}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"keep">>),
+    Before = selected_address(A),
+    atomics:put(Block, 1, tuple_size(Before)),
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {ice_restart, disconnected} end, 20000),
+    ok = ?S:wait_connected([A, B], 15000),
+    {ok, _} = ?S:wait(B, fun(E) -> element(1, E) =:= ice_restart end, 0),
+    ?assertEqual(stable, webrtc:signaling_state(A)),
+    ?assertEqual(stable, webrtc:signaling_state(B)),
     ok = webrtc:send_data(A, Id, text, <<"after the restart">>),
     _ = message(B, <<"after the restart">>),
     webrtc:close(A),

@@ -48,7 +48,9 @@
     %% allows no second nomination, so recovery is a restart): the
     %% pending timer and the restarts made since ICE last connected.
     restart_timer :: undefined | reference(),
-    auto_restarts = 0 :: non_neg_integer()
+    auto_restarts = 0 :: non_neg_integer(),
+    %% Helper process calling the `signaling' function.
+    signaler :: undefined | pid()
 }).
 
 -define(MAX_EARLY_CANDIDATES, 64).
@@ -74,7 +76,11 @@ init(#{owner := App} = Opts) ->
         ice_lite => maps:get(ice_lite, Opts, false),
         max_message_size => maps:get(max_message_size, Opts, 262144)
     })),
-    {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep}}.
+    Signaler = case maps:get(signaling, Opts, undefined) of
+        F when is_function(F, 2) -> spawn_link(fun() -> signaler(F) end);
+        _ -> undefined
+    end,
+    {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler}}.
 
 handle_call({add_transceiver, Kind, TOpts}, _From, St) ->
     case webrtc_jsep:add_transceiver(Kind, TOpts, St#st.jsep) of
@@ -109,46 +115,13 @@ handle_call({create_data_channel, Label, COpts}, _From, St) ->
             {reply, Reply, St1#st{pending_channels = St1#st.pending_channels ++ [{Label, COpts}]}}
     end;
 handle_call({create_offer, Opts}, _From, St) ->
-    J0 = St#st.jsep,
-    J1 = webrtc_jsep:set_local_candidates(St#st.local_candidates, St#st.gathering =:= complete, J0),
-    case webrtc_jsep:create_offer(Opts, J1) of
-        {ok, Sdp, J2} -> {reply, {ok, webrtc_sdp:encode(Sdp)}, St#st{jsep = J2}};
-        {error, _} = E -> {reply, E, St}
-    end;
+    reply_sdp(create(offer, Opts, St), St);
 handle_call({create_answer, Opts}, _From, St) ->
-    J1 = webrtc_jsep:set_local_candidates(St#st.local_candidates, St#st.gathering =:= complete, St#st.jsep),
-    case webrtc_jsep:create_answer(Opts, J1) of
-        {ok, Sdp, J2} -> {reply, {ok, webrtc_sdp:encode(Sdp)}, St#st{jsep = J2}};
-        {error, _} = E -> {reply, E, St}
-    end;
+    reply_sdp(create(answer, Opts, St), St);
 handle_call({set_local_description, Type, Sdp}, _From, St) ->
-    case parse(Type, Sdp) of
-        {ok, Parsed} ->
-            case webrtc_jsep:set_local_description(Type, Parsed, St#st.jsep) of
-                {ok, J} ->
-                    St1 = signaling_changed(St#st{jsep = J}),
-                    St2 = sync_ice(local, Type, ensure_transport(Type, St1)),
-                    {reply, ok, after_negotiation(St2)};
-                {error, _} = E ->
-                    {reply, E, St}
-            end;
-        {error, _} = E ->
-            {reply, E, St}
-    end;
+    reply_set(set_local(Type, Sdp, St), St);
 handle_call({set_remote_description, Type, Sdp}, _From, St) ->
-    case parse(Type, Sdp) of
-        {ok, Parsed} ->
-            case webrtc_jsep:set_remote_description(Type, Parsed, St#st.jsep) of
-                {ok, J} ->
-                    St1 = signaling_changed(St#st{jsep = J}),
-                    St2 = sync_ice(remote, Type, St1),
-                    {reply, ok, after_negotiation(St2)};
-                {error, _} = E ->
-                    {reply, E, St}
-            end;
-        {error, _} = E ->
-            {reply, E, St}
-    end;
+    reply_set(set_remote(Type, Sdp, St), St);
 handle_call({add_ice_candidate, Cand, Mid}, From, St) ->
     case extra_of_mid(Mid, St) of
         {ok, #{pid := T}} when Cand =:= end_of_candidates -> {reply, webrtc_transport:end_of_candidates(T), St};
@@ -226,7 +199,8 @@ handle_info({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
         [_ | _] = Bad when not Busy, St#st.auto_restarts < ?MAX_AUTO_RESTARTS ->
             Reason = case lists:member(failed, Bad) of true -> consent_lost; false -> disconnected end,
             notify({ice_restart, Reason}, St),
-            {noreply, update_connection(restart_now(St#st{auto_restarts = St#st.auto_restarts + 1}))};
+            St1 = restart_ice_creds(St#st{auto_restarts = St#st.auto_restarts + 1}),
+            {noreply, update_connection(auto_offer(St1))};
         _ ->
             {noreply, update_connection(St)}
     end;
@@ -236,6 +210,11 @@ handle_info(_Other, St) ->
 %% New ICE credentials for every transport; the application sends the
 %% offer (negotiation_needed).
 restart_now(St) ->
+    St1 = restart_ice_creds(St),
+    notify(negotiation_needed, St1),
+    St1.
+
+restart_ice_creds(St) ->
     U = ice_string(8),
     P = ice_string(24),
     J = webrtc_jsep:restart_ice(U, P, St#st.jsep),
@@ -244,7 +223,6 @@ restart_now(St) ->
         T -> ok = webrtc_transport:restart_ice(T, U, P)
     end,
     St1 = restart_extra(St#st{jsep = J}),
-    notify(negotiation_needed, St1),
     St1#st{local_candidates = [], gathering = new, local_restart = true}.
 
 %% ICE states of every transport that call for a restart.
@@ -321,6 +299,139 @@ parse(_Type, _) ->
 
 encode_opt(undefined) -> undefined;
 encode_opt(Sdp) -> webrtc_sdp:encode(Sdp).
+
+reply_sdp({ok, Sdp, St1}, _St) -> {reply, {ok, Sdp}, St1};
+reply_sdp({error, _} = E, St) -> {reply, E, St}.
+
+reply_set({ok, St1}, _St) -> {reply, ok, St1};
+reply_set({error, _} = E, St) -> {reply, E, St}.
+
+create(Type, Opts, St) ->
+    J1 = webrtc_jsep:set_local_candidates(St#st.local_candidates, St#st.gathering =:= complete, St#st.jsep),
+    Made = case Type of
+        offer -> webrtc_jsep:create_offer(Opts, J1);
+        answer -> webrtc_jsep:create_answer(Opts, J1)
+    end,
+    case Made of
+        {ok, Sdp, J2} -> {ok, webrtc_sdp:encode(Sdp), St#st{jsep = J2}};
+        {error, _} = E -> E
+    end.
+
+set_local(Type, Sdp, St) ->
+    case parse(Type, Sdp) of
+        {ok, Parsed} ->
+            case webrtc_jsep:set_local_description(Type, Parsed, St#st.jsep) of
+                {ok, J} ->
+                    St1 = signaling_changed(St#st{jsep = J}),
+                    {ok, after_negotiation(sync_ice(local, Type, ensure_transport(Type, St1)))};
+                {error, _} = E ->
+                    E
+            end;
+        {error, _} = E ->
+            E
+    end.
+
+set_remote(offer, Sdp, St0) ->
+    case parse(offer, Sdp) of
+        {ok, Parsed} ->
+            St = yield_restart(St0),
+            case webrtc_jsep:set_remote_description(offer, Parsed, St#st.jsep) of
+                {ok, J} ->
+                    St1 = signaling_changed(St#st{jsep = J}),
+                    {ok, auto_answer(after_negotiation(sync_ice(remote, offer, St1)))};
+                {error, _} = E ->
+                    E
+            end;
+        {error, _} = E ->
+            E
+    end;
+set_remote(Type, Sdp, St) ->
+    case parse(Type, Sdp) of
+        {ok, Parsed} ->
+            case webrtc_jsep:set_remote_description(Type, Parsed, St#st.jsep) of
+                {ok, J} ->
+                    St1 = signaling_changed(St#st{jsep = J}),
+                    {ok, after_negotiation(sync_ice(remote, Type, St1))};
+                {error, _} = E ->
+                    E
+            end;
+        {error, _} = E ->
+            E
+    end.
+
+%% Option `signaling': the connection runs the offer and answer of ICE
+%% restarts by itself and hands each description to the function,
+%% called in order from a helper process (it may call back into either
+%% peer connection).
+signaling(#st{signaler = undefined}) -> false;
+signaling(_) -> true.
+
+signal(Type, Sdp, #st{signaler = S}) ->
+    S ! {description, Type, Sdp},
+    ok.
+
+signaler(Fun) ->
+    receive
+        {description, Type, Sdp} ->
+            try Fun(Type, Sdp) catch _:_ -> ok end,
+            signaler(Fun);
+        {notify, To, Msg} ->
+            To ! Msg,
+            signaler(Fun)
+    end.
+
+%% Our automatic restart: offer it ourselves when nothing else is
+%% under negotiation, otherwise leave it to the application.
+auto_offer(St) ->
+    case signaling(St) andalso webrtc_jsep:signaling_state(St#st.jsep) =:= stable of
+        true ->
+            case create(offer, #{}, St) of
+                {ok, Sdp, St1} ->
+                    case set_local(offer, Sdp, St1) of
+                        {ok, St2} -> ok = signal(offer, Sdp, St2), St2;
+                        {error, _} -> notify(negotiation_needed, St), St
+                    end;
+                {error, _} ->
+                    notify(negotiation_needed, St),
+                    St
+            end;
+        false ->
+            notify(negotiation_needed, St),
+            St
+    end.
+
+%% A remote ICE restart offer is answered at once (RFC 9429 §5.3.1).
+auto_answer(St) ->
+    case signaling(St) andalso webrtc_jsep:signaling_state(St#st.jsep) =:= have_remote_offer
+             andalso restart_pending(St) of
+        true ->
+            case create(answer, #{}, St) of
+                {ok, Sdp, St1} ->
+                    case set_local(answer, Sdp, St1) of
+                        {ok, St2} -> ok = signal(answer, Sdp, St2), St2;
+                        {error, _} -> St
+                    end;
+                {error, _} ->
+                    St
+            end;
+        false ->
+            St
+    end.
+
+%% Glare between two automatic restarts: the controlled side is the
+%% polite peer and rolls its own offer back (RFC 9429 §4.1.8.2).
+yield_restart(#st{local_restart = true, ice_role = controlled} = St) ->
+    case signaling(St) andalso webrtc_jsep:signaling_state(St#st.jsep) =:= have_local_offer of
+        true ->
+            case set_local(rollback, undefined, St) of
+                {ok, St1} -> St1;
+                {error, _} -> St
+            end;
+        false ->
+            St
+    end;
+yield_restart(St) ->
+    St.
 
 reply_jsep({ok, J}, St) ->
     notify(negotiation_needed, St),
@@ -817,6 +928,11 @@ extra_event(K, Event, St) ->
             St
     end.
 
+%% With `signaling', candidates go through the helper so the peer
+%% never gets one before the description it belongs to.
+notify({ice_candidate, _, _} = Event, #st{app = App, signaler = S}) when is_pid(S) ->
+    S ! {notify, App, {webrtc, self(), Event}},
+    ok;
 notify(Event, #st{app = App}) ->
     App ! {webrtc, self(), Event},
     ok.

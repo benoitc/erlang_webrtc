@@ -7,7 +7,8 @@
 %% `sha256' (offer PASSWORD-ALGORITHMS), `stale_nonce' (number of
 %% authenticated requests after which the nonce goes stale once),
 %% `max_allocations', `forbidden' (peer IPs refused with 403),
-%% `lifetime' (default 600 s), `reject_allocate' (error code).
+%% `lifetime' (default 600 s), `reject_allocate' and
+%% `reject_channel_bind' (error codes).
 -module(webrtc_test_turn_server).
 
 -include("webrtc_stun.hrl").
@@ -25,6 +26,7 @@ new(Opts) ->
         forbidden => maps:get(forbidden, Opts, []),
         lifetime => maps:get(lifetime, Opts, 600),
         reject_allocate => maps:get(reject_allocate, Opts, undefined),
+        reject_channel_bind => maps:get(reject_channel_bind, Opts, undefined),
         nonce => nonce(1, Opts),
         nonce_gen => 1,
         auth_count => 0,
@@ -220,6 +222,8 @@ alloc_method(create_permission, Src, M, #{perms := P} = A, Key, Now, S = #{alloc
         false ->
             reply(Src, webrtc_stun:error_response(M, 403, []), Key, S)
     end;
+alloc_method(channel_bind, Src, M, _A, Key, _Now, S = #{reject_channel_bind := Code}) when Code =/= undefined ->
+    reply(Src, webrtc_stun:error_response(M, Code, []), Key, S);
 alloc_method(channel_bind, Src, M, #{chans := Ch, perms := P} = A, Key, Now, S = #{allocs := As}) ->
     case {webrtc_stun:get(channel_number, M), webrtc_stun:get(xor_peer_address, M)} of
         {{ok, N}, {ok, {IP, _} = Peer}} ->

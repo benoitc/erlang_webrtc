@@ -192,7 +192,8 @@ dtls_action({event, {failed, R}}, St) ->
 finish(Reason, St0) ->
     St1 = end_association(Reason, St0),
     {Ice, Acts} = webrtc_ice_agent:close(webrtc_transport:now_ms(), St1#st.ice),
-    St2 = webrtc_transport_net:ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    St2 = webrtc_transport_net:ice_actions([A || A <- Acts, element(1, A) =:= send orelse element(1, A) =:= close_stream],
+                                           St1#st{ice = Ice}),
     St2#st{finished = true}.
 
 setup_srtp(#{srtp_profile := undefined}, St) ->

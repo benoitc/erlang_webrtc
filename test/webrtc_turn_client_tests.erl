@@ -47,7 +47,10 @@ to_server(From, To, Bin, W = #{server := S, now := Now}) ->
     lists:foldl(
         fun
             ({send, _, ?CLIENT, B}, WA) ->
-                do(WA, fun(C) -> ?TC:handle_packet(B, maps:get(now, WA), C) end);
+                case (maps:get(drop_in, WA, fun(_) -> false end))(B) of
+                    true -> WA;
+                    false -> do(WA, fun(C) -> ?TC:handle_packet(B, maps:get(now, WA), C) end)
+                end;
             ({send, Relay, Peer, B}, WA = #{peers := Ps}) ->
                 WA#{peers => Ps ++ [{Relay, Peer, B}]}
         end,
@@ -260,6 +263,34 @@ channel_test() ->
     %% A second peer gets the next channel number.
     W4 = do(W3, fun(C) -> ?TC:bind_channel({{192, 0, 2, 60}, 1}, 30, C) end),
     ?assertEqual({ok, 16#4001}, ?TC:channel({{192, 0, 2, 60}, 1}, maps:get(client, W4))).
+
+%% RFC 8656 §12: a ChannelBind whose response is lost may be installed
+%% on the server; its number does not go to another peer, and the same
+%% peer gets it back.
+lost_channel_bind_test() ->
+    Peer2 = {{192, 0, 2, 60}, 1},
+    IsResponse = fun(B) ->
+        case webrtc_stun:decode(B) of
+            {ok, #stun{class = success, method = channel_bind}} -> true;
+            _ -> false
+        end
+    end,
+    W0 = (allocated(#{}))#{drop_in => IsResponse},
+    W1 = advance(do(W0, fun(C) -> ?TC:bind_channel(?PEER, 0, C) end), 40000),
+    ?assertMatch([{channel, ?PEER, timeout}], events(W1) -- events(W0)),
+    W2 = W1#{drop_in => fun(_) -> false end},
+    W3 = do(W2, fun(C) -> ?TC:bind_channel(Peer2, 40000, C) end),
+    ?assertEqual([{channel, Peer2, {ok, 16#4001}}], events(W3) -- events(W2)),
+    W4 = do(W3, fun(C) -> ?TC:bind_channel(?PEER, 40001, C) end),
+    ?assertEqual([{channel, ?PEER, {ok, 16#4000}}], events(W4) -- events(W3)).
+
+%% RFC 8656 §12.3: a 400 to ChannelBind means the bindings are out of
+%% sync: the allocation is deleted and reported lost.
+channel_out_of_sync_test() ->
+    W0 = allocated(#{reject_channel_bind => 400}),
+    W1 = do(W0, fun(C) -> ?TC:bind_channel(?PEER, 10, C) end),
+    ?assertEqual([{allocation_lost, channel_out_of_sync}, closed], events(W1) -- events(W0)),
+    ?assertEqual(closed, ?TC:state(maps:get(client, W1))).
 
 channel_refresh_test() ->
     W = do(allocated(#{}), fun(C) -> ?TC:bind_channel(?PEER, 0, C) end),

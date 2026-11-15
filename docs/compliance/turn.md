@@ -1,6 +1,6 @@
 # TURN client (RFC 8656)
 
-This page lists the client-side TURN requirements implemented by `webrtc_turn_client` (UDP to the server) and its use by the ICE agent for relayed candidates. Read it before relying on a relay feature. There is no TURN server in the stack; tests run against the test-only server `test/webrtc_test_turn_server.erl`.
+This page lists the client-side TURN requirements implemented by `webrtc_turn_client` (UDP, TCP or TLS to the server) and its use by the ICE agent for relayed candidates. Read it before relying on a relay feature. There is no TURN server in the stack; tests run against the test-only server `test/webrtc_test_turn_server.erl`.
 
 ## Client
 
@@ -32,19 +32,20 @@ This page lists the client-side TURN requirements implemented by `webrtc_turn_cl
 | TURN-24 | 11.6 | ICMP attribute in Data indications | | | Not implemented: such indications are ignored |
 | TURN-25 | 12 | Channel numbers 0x4000 to 0x4FFF, one per peer | webrtc_turn_client | webrtc_turn_client_tests:channel_test | Unit tested |
 | TURN-26 | 12.1, 12.3 | ChannelBind installs the channel and refreshes the permission; rebound every 540 s (lifetime 600 s) | webrtc_turn_client | webrtc_turn_client_tests:channel_test, channel_refresh_test | Unit tested |
-| TURN-27 | 12 | 5 minutes before reusing a channel number or peer after expiry | | | Non-compliant / known limitation: bindings never expire while the allocation lives; a number whose ChannelBind failed can be reused at once |
-| TURN-28 | 12.3 | ChannelBind failure out of sync (400): delete the allocation | | | Non-compliant / known limitation: the binding is dropped and data keeps using Send indications |
+| TURN-27 | 12 | 5 minutes before reusing a channel number or peer after expiry | webrtc_turn_client | webrtc_turn_client_tests:lost_channel_bind_test | Unit tested: bindings in use are refreshed and never expire while the allocation lives; a number whose ChannelBind failed (possibly installed on the server) and its peer are kept apart for 15 minutes (lifetime plus 5), the same peer getting the number back |
+| TURN-28 | 12.3 | ChannelBind failure out of sync (400): delete the allocation | webrtc_turn_client | webrtc_turn_client_tests:channel_out_of_sync_test | Unit tested: the allocation is deleted (Refresh with LIFETIME 0) and reported as `{allocation_lost, channel_out_of_sync}`; the ICE agent removes the relayed candidate |
 | TURN-29 | 12.4, 12.5 | ChannelData framing, padded to 4 bytes over UDP; Send indications until the binding is confirmed | webrtc_turn_channel, webrtc_turn_client | webrtc_turn_client_tests:channel_test, channel_codec_test_ | Unit tested |
 | TURN-30 | 12.6 | ChannelData discarded on reserved numbers, short datagrams, unbound channels or without permission | webrtc_turn_channel, webrtc_turn_client | webrtc_turn_client_tests:channel_codec_test_, channel_data_unknown_channel_test | Unit tested |
 | TURN-31 | 21 | Truncated or bit-flipped server messages never crash the client | webrtc_turn_client | webrtc_turn_client_tests:malformed_input_test | Unit tested |
-| TURN-32 | 3.1 | TCP, TLS-over-TCP and DTLS-over-UDP to the server | | | Not implemented: UDP only |
+| TURN-32 | 3.1 | TCP and TLS-over-TCP to the server (`transport` of `turn_servers`): STUN and ChannelData framed on the stream, ChannelData padded to 4 bytes, bytes out of step close the connection; no request retransmission on the stream (RFC 8489 §6.2.2, 39.5 s timeout); TLS server certificate verified against the system CA store and the host name or IP address | webrtc_turn_stream, webrtc_ice_relay, webrtc_transport_net | webrtc_turn_stream_tests, webrtc_ice_agent_tests:stream_turn_test, stream_turn_connect_failure_test, webrtc_turn_interop_SUITE:relayed_over_tcp, relayed_over_tls, untrusted_tls_no_relay | Interoperability tested (pion/turn) |
+| TURN-36 | 3.1 | DTLS-over-UDP to the server | | | Not implemented: not used by browsers |
 | TURN-33 | 7.1 | ADDITIONAL-ADDRESS-FAMILY, EVEN-PORT, RESERVATION-TOKEN, DONT-FRAGMENT | | | Not implemented (optional) |
 | TURN-34 | 4 | Server discovery through DNS | | | Not implemented: the owner gives IP addresses |
 | TURN-35 | RFC 8489 9.2.2 | OpaqueString processing of the realm and password | | | Non-compliant / known limitation: used as given, see STUN-16 |
 
 ## ICE integration
 
-The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and allocates from every host candidate whose family matches the server. A relayed candidate is reached through the path `{relay, Socket, ServerAddr}`: checks, consent requests and data sent from it are wrapped by the client and sent to the server over the host socket; datagrams from the server are unwrapped and fed back to the check processing, or emitted as `{data, Via, Peer, Data}` when they are not STUN.
+The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and allocates from every host candidate whose family matches the server. For a server reached over TCP or TLS the agent asks its owner to open a connection from the host address (`{connect, {stream, N}, Params}`), which then plays the role of the host socket; the owner reports it with `stream_up/3` and `stream_down/4`. A relayed candidate is reached through the path `{relay, Socket, ServerAddr}`: checks, consent requests and data sent from it are wrapped by the client and sent to the server over the host socket; datagrams from the server are unwrapped and fed back to the check processing, or emitted as `{data, Via, Peer, Data}` when they are not STUN.
 
 | ID | Section | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
@@ -54,6 +55,8 @@ The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and a
 | TURN-I4 | | Channel bound to the peer of a selected relayed pair | webrtc_ice_relay | webrtc_ice_net_tests:symmetric_needs_relay_test | Unit tested |
 | TURN-I5 | | Lost allocation removes the relayed candidate and its pairs (`{local_candidate_removed, C}`, `{turn_error, Server, Reason}`) | webrtc_ice_relay | webrtc_ice_net_tests:turn_allocation_lost_test | Unit tested |
 | TURN-I6 | | Allocations deleted when the agent closes | webrtc_ice_relay | webrtc_ice_net_tests:close_deletes_allocations_test | Unit tested |
+| TURN-I7 | RFC 8445 5.1.2.1 | A relay reached over TCP or TLS has a lower local preference than one reached over UDP, and its own foundation | webrtc_ice_relay | webrtc_ice_agent_tests:stream_turn_test | Unit tested |
+| TURN-I8 | | A stream that fails to open ends its gathering job; one that closes loses the allocation and its candidate (`{turn_error, Server, {stream, Reason}}`, `{allocation_lost, {stream, Reason}}`) | webrtc_ice_relay | webrtc_ice_agent_tests:stream_turn_test, stream_turn_connect_failure_test | Unit tested |
 
 ## Notes
 

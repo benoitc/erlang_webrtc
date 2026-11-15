@@ -43,7 +43,16 @@
 %%
 %% <ul>
 %% <li>`{send, Socket, {IP, Port}, Bin}': send a datagram on the
-%%     owner's socket.</li>
+%%     owner's socket. `Socket' may be a stream connection
+%%     `{stream, N}' to a TURN server (below): write `Bin' on it.</li>
+%% <li>`{connect, {stream, N}, #{server, transport, local, hostname,
+%%     tls_options}}': open a TCP (`transport' `tcp') or TLS (`tls')
+%%     connection to a TURN server from address `local', then call
+%%     `stream_up/3', or `stream_down/4' when it fails. Messages read
+%%     from it (`webrtc_turn_stream:split/1') go to `handle_packet/5'
+%%     with `{stream, N}' as the socket and the server as the source;
+%%     `stream_down/4' when it closes.</li>
+%% <li>`{close_stream, {stream, N}}': close that connection.</li>
 %% <li>`{event, Event}'.</li>
 %% </ul>
 %%
@@ -89,6 +98,9 @@
     is_valid_remote/3,
     restart/2,
     restart/3,
+    stream_up/3,
+    stream_down/4,
+    stream_server/2,
     close/2
 ]).
 -export([
@@ -186,6 +198,8 @@ new(Opts) ->
         true -> ok;
         false -> error({badarg, too_many_servers})
     end,
+    _ = [error({badarg, {turn_transport, Tr}}) || #{transport := Tr} <- S1#ice.turn_servers,
+                                                not lists:member(Tr, [udp, tcp, tls])],
     S1#ice{tx = webrtc_stun_tx:new(#{rto => S1#ice.min_rto, min_rto => S1#ice.min_rto,
                                     rc => S1#ice.rc, rm => S1#ice.rm, max_rto => S1#ice.max_rto})}.
 
@@ -491,6 +505,32 @@ restart(Opts, Now, S) ->
 %% @doc Close the agent: TURN allocations are deleted, nothing is sent
 %% afterwards.
 -spec close(integer(), agent()) -> {agent(), [action()]}.
+%% @doc A stream connection to a TURN server asked with `{connect, ...}'
+%% is up.
+-spec stream_up({stream, pos_integer()}, integer(), agent()) -> {agent(), [action()]}.
+stream_up(Ref, Now, S) ->
+    {S1, Acts} = webrtc_ice_relay:stream_up(Ref, Now, S),
+    finish(Now, S1, Acts).
+
+%% @doc A stream connection to a TURN server failed or closed.
+-spec stream_down({stream, pos_integer()}, term(), integer(), agent()) -> {agent(), [action()]}.
+stream_down(Ref, Reason, Now, S) ->
+    {S1, Acts} = webrtc_ice_relay:stream_down(Ref, Reason, Now, S),
+    finish(Now, S1, Acts).
+
+%% @doc The TURN server a stream connection leads to.
+-spec stream_server({stream, pos_integer()}, agent()) -> webrtc_ice_candidate:address() | undefined.
+stream_server(Ref, #ice{turn = T, streams = P}) ->
+    case [Server || {R, Server} <- maps:keys(T), R =:= Ref] of
+        [Server | _] ->
+            Server;
+        [] ->
+            case P of
+                #{Ref := {_, {relay, _, #{address := Server}, _}, _}} -> Server;
+                #{} -> undefined
+            end
+    end.
+
 close(_Now, #ice{state = closed} = S) ->
     {S, []};
 close(Now, S) ->

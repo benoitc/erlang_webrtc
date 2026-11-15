@@ -638,3 +638,88 @@ remote_candidate_cap_test() ->
     ?assertEqual(5, length(Pairs)),
     {A3, _} = ?AG:add_remote_candidate(remote(1), 20, A1),
     ?assertEqual(5, length(?AG:remote_candidates(A3))).
+
+%%--------------------------------------------------------------------
+%% TURN over a stream transport (RFC 8656 §3.1)
+%%--------------------------------------------------------------------
+
+-define(TURN_U, {{198, 51, 100, 7}, 3478}).
+-define(TURN_T, {{198, 51, 100, 8}, 3478}).
+
+%% Route the agent's actions to the two test TURN servers (one over UDP,
+%% one over the stream) until nothing is left; returns the agent, the
+%% servers, the events and the other actions.
+pump(Acts, Now, A, Srv, Evs, Other) ->
+    lists:foldl(
+        fun
+            ({send, Sock, Dest, Bin}, {A0, S0, E0, O0}) ->
+                {Key, Via} = case Sock of {stream, _} -> {t, Sock}; _ -> {u, Sock} end,
+                {S1, Out} = webrtc_test_turn_server:handle(?L, Dest, Bin, Now, maps:get(Key, S0)),
+                lists:foldl(
+                    fun({send, _, To, B}, {AA, SA, EA, OA}) when To =:= ?L ->
+                            {AA1, Acts1} = ?AG:handle_packet(Via, Dest, B, Now, AA),
+                            pump(Acts1, Now, AA1, SA, EA, OA);
+                       (_, Acc) ->
+                            Acc
+                    end,
+                    {A0, S0#{Key => S1}, E0, O0},
+                    Out
+                );
+            ({event, E}, {A0, S0, E0, O0}) ->
+                {A0, S0, E0 ++ [E], O0};
+            (Act, {A0, S0, E0, O0}) ->
+                {A0, S0, E0, O0 ++ [Act]}
+        end,
+        {A, Srv, Evs, Other},
+        Acts
+    ).
+
+%% Run timers until the agent asks for nothing more before `Until'.
+settle(Now, Until, A, Srv, Evs, Other) ->
+    case ?AG:next_timeout(A) of
+        T when T =< Until ->
+            {A1, Acts} = ?AG:handle_timeout(max(Now, T), A),
+            {A2, Srv2, Evs2, Other2} = pump(Acts, max(Now, T), A1, Srv, Evs, Other),
+            settle(max(Now, T), Until, A2, Srv2, Evs2, Other2);
+        _ ->
+            {A, Srv, Evs, Other}
+    end.
+
+stream_turn_test() ->
+    Cfg = #{username => <<"user">>, password => <<"pass">>},
+    A0 = ?AG:new(#{ufrag => ?U, pwd => ?P, role => controlled, seed => {1, 2, 3},
+                   turn_servers => [Cfg#{address => ?TURN_U}, Cfg#{address => ?TURN_T, transport => tcp}]}),
+    Srv = #{u => webrtc_test_turn_server:new(#{address => ?TURN_U}), t => webrtc_test_turn_server:new(#{address => ?TURN_T})},
+    {A1, Acts} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, Srv2, Evs, Other} = settle(0, 1000, element(1, pump(Acts, 0, A1, Srv, [], [])), Srv, [], []),
+    %% The stream job asks for a TCP connection from the host address.
+    [{connect, Ref, #{server := ?TURN_T, transport := tcp, local := LocalIP}}] = Other,
+    ?assertEqual(element(1, ?L), LocalIP),
+    ?assertEqual(1, length([C || {local_candidate, #ice_cand{type = relay} = C} <- Evs])),
+    ?assertEqual(gathering, ?AG:gathering_state(A2)),
+    %% Once connected, the allocation goes over the stream.
+    {A3, Acts3} = ?AG:stream_up(Ref, 1000, A2),
+    {A4, _, Evs4, _} = pump(Acts3, 1000, A3, Srv2, Evs, []),
+    [U, T] = [C || {local_candidate, #ice_cand{type = relay} = C} <- Evs4],
+    ?assertEqual({relay, Ref, ?TURN_T}, webrtc_ice_gather:via(T, undefined)),
+    %% Reached over TCP, it comes after the relay reached over UDP.
+    ?assert(T#ice_cand.priority < U#ice_cand.priority),
+    ?assertEqual(complete, ?AG:gathering_state(A4)),
+    %% The stream closing loses the allocation and its candidate.
+    {_, Acts5} = ?AG:stream_down(Ref, closed, 2000, A4),
+    ?assertMatch([_], [C || {event, {local_candidate_removed, #ice_cand{type = relay} = C}} <- Acts5, C =:= T]),
+    ?assertMatch([{event, {turn_error, ?TURN_T, {allocation_lost, {stream, closed}}}}],
+                 [E || {event, {turn_error, _, _}} = E <- Acts5]).
+
+%% A connection that cannot be opened ends the job; gathering completes.
+stream_turn_connect_failure_test() ->
+    A0 = ?AG:new(#{ufrag => ?U, pwd => ?P, role => controlled, seed => {1, 2, 3},
+                   turn_servers => [#{address => ?TURN_T, transport => tls, username => <<"u">>, password => <<"p">>}]}),
+    {A1, Acts} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, _, _, Other} = settle(0, 1000, element(1, pump(Acts, 0, A1, #{}, [], [])), #{}, [], []),
+    [{connect, Ref, #{transport := tls}}] = Other ++ [X || {connect, _, _} = X <- Acts],
+    {A3, Acts3} = ?AG:stream_down(Ref, econnrefused, 1000, A2),
+    ?assertMatch([{event, {turn_error, ?TURN_T, {stream, econnrefused}}}], [E || {event, {turn_error, _, _}} = E <- Acts3]),
+    ?assertEqual(complete, ?AG:gathering_state(A3)),
+    {_, Close} = ?AG:close(2000, A3),
+    ?assertEqual([], [X || {close_stream, _} = X <- Close]).

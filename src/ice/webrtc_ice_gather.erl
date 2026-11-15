@@ -185,11 +185,19 @@ start_job({srflx, HostId, Server, _Idx} = Job, Now, S) ->
             job_done(Job, S)
     end;
 start_job({relay, HostId, #{address := Server} = Cfg, _Idx} = Job, Now, S) ->
-    case webrtc_ice_checklist:local(HostId, S) of
-        #ice_cand{socket = Sock} ->
-            Opts = maps:merge(#{server => Server, rto => gather_rto(S)}, maps:without([address], Cfg)),
+    Opts = maps:merge(#{server => Server, rto => gather_rto(S)}, maps:with([username, password, software, family, lifetime], Cfg)),
+    case {webrtc_ice_checklist:local(HostId, S), maps:get(transport, Cfg, udp)} of
+        {#ice_cand{socket = Sock}, udp} ->
             webrtc_ice_relay:allocate({Sock, Server}, HostId, Job, Opts, Now, S);
-        undefined ->
+        {#ice_cand{address = IP}, Transport} ->
+            %% TURN over TCP or TLS: the owner opens the connection from
+            %% the host address and reports it with stream_up/3.
+            Ref = {stream, S#ice.next_stream},
+            Connect = #{server => Server, transport => Transport, local => IP,
+                        hostname => maps:get(hostname, Cfg, undefined), tls_options => maps:get(tls_options, Cfg, [])},
+            {S#ice{streams = (S#ice.streams)#{Ref => {HostId, Job, Opts}}, next_stream = S#ice.next_stream + 1},
+             [{connect, Ref, Connect}]};
+        {undefined, _} ->
             job_done(Job, S)
     end.
 

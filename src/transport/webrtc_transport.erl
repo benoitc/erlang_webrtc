@@ -219,6 +219,16 @@ handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
 handle_info({delayed_send, Sock, Dest, Bin}, St) ->
     webrtc_transport_net:udp_send(Sock, Dest, Bin),
     {noreply, St};
+handle_info({turn_stream, Ref, Result}, St) ->
+    {noreply, arm(webrtc_transport_net:stream_opened(Ref, Result, St))};
+handle_info({Tag, Sock, Data}, St) when Tag =:= tcp; Tag =:= ssl ->
+    {noreply, arm(webrtc_transport_net:stream_data(Sock, Data, St))};
+handle_info({Tag, Sock}, St) when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+    {noreply, arm(webrtc_transport_net:stream_closed(Sock, closed, St))};
+handle_info({Tag, Sock, Reason}, St) when Tag =:= tcp_error; Tag =:= ssl_error ->
+    {noreply, arm(webrtc_transport_net:stream_closed(Sock, Reason, St))};
+handle_info({Tag, Sock}, St) when Tag =:= tcp_passive; Tag =:= ssl_passive ->
+    {noreply, webrtc_transport_net:stream_passive(Sock, St)};
 handle_info({udp_passive, Sock}, St) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
     {noreply, St};
@@ -254,7 +264,9 @@ terminate(_Reason, St0) ->
             D -> webrtc_transport_secure:transmit_dtls(element(2, webrtc_dtls:close(D)), St0)
         end,
     {Ice, Acts} = webrtc_ice_agent:close(now_ms(), St1#st.ice),
-    _ = webrtc_transport_net:ice_actions([A || {send, _, _, _} = A <- Acts], St1#st{ice = Ice}),
+    St2 = webrtc_transport_net:ice_actions([A || A <- Acts, element(1, A) =:= send orelse element(1, A) =:= close_stream],
+                                           St1#st{ice = Ice}),
+    _ = webrtc_transport_net:close_streams(St2),
     _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
     ok.
 

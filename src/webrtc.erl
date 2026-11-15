@@ -13,6 +13,9 @@
 %% <li>`{ice_connection_state, State}'</li>
 %% <li>`{connection_state, new | connecting | connected | disconnected
 %%     | failed | closed}'</li>
+%% <li>`{ice_restart, disconnected | consent_lost}': the connection
+%%     restarted ICE by itself (`ice_auto_restart'); a
+%%     `negotiation_needed' follows, so send the new offer.</li>
 %% <li>`{track, Mid, audio | video}': the remote side sends media on
 %%     this transceiver.</li>
 %% <li>`{rtp, Mid, #rtp{}}': an RTP packet (see `webrtc_rtp.hrl').</li>
@@ -130,6 +133,16 @@ new_peer_connection() ->
 %%     `[{cacerts, [Der]}]'.</li>
 %% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
 %%     address).</li>
+%% <li>`ice_auto_restart': restart ICE when the selected path stops
+%%     working, since RFC 8445 §8.1.1 allows no second nomination in an
+%%     ICE session. `disconnected' (default) restarts after
+%%     `ice_restart_delay' ms (default 2000) of consent trouble,
+%%     `failed' only once consent is lost (30 s), `false' never. The
+%%     controlling side restarts first, the controlled side after three
+%%     times the delay if no restart offer came. Up to 3 restarts per
+%%     incident; meanwhile the connection is reported `disconnected'
+%%     rather than `failed'. DTLS and data channels survive the restart
+%%     (RFC 8842).</li>
 %% <li>`addresses': local `[{IP, Port}]' to bind, default every
 %%     interface; `loopback' (boolean) to use only 127.0.0.1.</li>
 %% <li>`certificate': `webrtc_dtls_cert:generate/1' result, default a

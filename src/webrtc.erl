@@ -119,6 +119,10 @@ new_peer_connection() ->
 %%     circuit breakers (`start_bitrate', `min_bitrate', `max_bitrate',
 %%     `pacing', `pacing_factor', `rtcp_timeout',
 %%     `circuit_breaker_hold', ...), see `webrtc_cc'.</li>
+%% <li>`rtcp_report_interval': the shortest interval between regular
+%%     RTCP reports in ms (the local T_rr_interval of RFC 4585 §3.5.3,
+%%     default 1000, 0 for the RFC 3550 interval alone). Feedback is not
+%%     bound by it.</li>
 %% <li>`codecs', `extensions': the codecs and RTP header extensions to
 %%     negotiate, as maps keyed by `audio' and `video' (default
 %%     `webrtc_jsep_caps:default_codecs/1' and

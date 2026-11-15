@@ -43,7 +43,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTCP-17 | 6.3.5 | Participant timeout M * Td, M = 5 | webrtc_rtcp_interval | timeout_test_ | Unit tested |
 | RTCP-18 | 6.3.6 | Timer reconsideration on expiry | webrtc_rtcp_interval | reconsider_test_ | Unit tested |
 | RTCP-19 | 6.3.4 | Reverse reconsideration after BYE | webrtc_rtcp_interval | reverse_reconsider_test_ | Unit tested |
-| RTCP-20 | 6.3 | RTCP scheduler state (members, senders, tp, tn, BYE back-off of 6.3.7) | | | Not implemented (transport process) |
+| RTCP-20 | 6.3, A.7 | RTCP scheduler state: tp, tn, average compound size (lower layers counted), members and senders from the streams, we_sent, RTCP bandwidth 5% of the session (both directions of the send estimate), interval reconsidered at expiry and moved closer when members leave | webrtc_rtcp_sched, webrtc_media | webrtc_rtcp_sched_tests, webrtc_media_tests:many_sources_reported_test | Unit tested; the BYE back-off of §6.3.7 is not needed point to point (we send no BYE flood) |
 | RTCP-21 | 6.4, 6.4.2 | Report blocks for every received source: 31 in the first SR or RR, more in RR packets that follow it, each source once per compound, the compound kept under 1150 bytes before SRTCP; when not all fit, the first source reported rotates and a source's interval statistics only advance when it is reported | webrtc_media_out | webrtc_media_tests:many_sources_reported_test | Unit tested |
 
 ## RFC 8834: RTP usage in WebRTC
@@ -90,7 +90,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | AVPF-10 | 3.5.2 | T_dither_max: 0 point-to-point, l * T_rr with l = 0.5 otherwise | webrtc_rtcp_interval | avpf_helpers_test_ | Unit tested |
 | AVPF-11 | 3.5.3 | T_rr_current_interval = RND * T_rr_interval, RND in [0.5, 1.5) | webrtc_rtcp_interval | avpf_helpers_test_ | Unit tested |
 | AVPF-12 | 3.5.3 | Timeout uses T_rr_interval instead of Tmin when set | webrtc_rtcp_interval | timeout_test_ | Unit tested |
-| AVPF-13 | 3.5.2 | Early feedback scheduling (allow_early, merge into the scheduled packet, suppression) | | | Not implemented (transport process) |
+| AVPF-13 | 3.5.2, 3.5.3 | Feedback point to point (T_dither_max 0): sent at once while the RTCP bandwidth allows (budget of one second of it, at least one datagram), otherwise kept (at most 32 packets) until it does or merged into a regular report that comes first; regular reports no closer than the local T_rr_interval (`rtcp_report_interval`, default 1 s), the first one after the AVPF initial interval | webrtc_rtcp_sched, webrtc_media_out | webrtc_rtcp_sched_tests:feedback_budget_test, report_interval_floor_test, first_report_early_test | Unit tested: feedback over the budget waits for the budget rather than for the next regular report as early mode does, which would make retransmission requests and congestion feedback too late; feedback suppression of multiparty sessions is not implemented |
 
 ## RFC 5104: codec control messages
 
@@ -155,7 +155,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 |---|---|---|---|---|---|
 | RSIZE-1 | 3.4.2, 4.1 | Accept RTCP datagrams that do not start with SR / RR | webrtc_rtcp | compound_validation_test_ | Unit tested |
 | RSIZE-2 | 5 | Compound checks still available for peers that did not negotiate rtcp-rsize | webrtc_rtcp | compound_validation_test_ | Unit tested |
-| RSIZE-3 | 4.1 | Regular reports are always compound; reduced-size only for feedback | | | Not implemented (transport process) |
+| RSIZE-3 | 4.1, 5 | Regular reports are always compound; feedback alone only when rtcp-rsize is negotiated on every section, otherwise in a compound with an RR and the CNAME | webrtc_media_out | webrtc_media_tests:compound_feedback_without_rsize_test, reduced_size_feedback_test | Unit tested |
 
 ## Congestion control feedback
 
@@ -198,7 +198,7 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 | GCC-4 | gcc-02 §5.5 | Hold / Increase / Decrease transition table | webrtc_gcc_aimd | aimd_transitions_test | Unit tested |
 | GCC-5 | gcc-02 §5.5 | Multiplicative increase at most 8% per second far from convergence, additive (half a packet per RTT + 100 ms) near the average of previous decreases (EMA 0.95, three standard deviations), A_hat < 1.5 R_hat | webrtc_gcc_aimd | aimd_increase_test | Unit tested; R_hat is the acknowledged rate over 500 ms of arrivals |
 | GCC-6 | gcc-02 §5.5 | Decrease to beta R_hat, beta = 0.85 | webrtc_gcc_aimd | aimd_decrease_test | Unit tested; never above the current estimate, again only after one RTT unless R_hat fell below half the estimate (libwebrtc) |
-| GCC-7 | gcc-02 §6 | Loss-based controller: below 2% x 1.05, 2% to 10% held, above 10% x (1 - 0.5 p); target = min(delay-based, loss-based) | webrtc_gcc | loss_decrease_test, moderate_loss_holds_test, loss_report_test, sim random_loss_test_ | Unit tested; the ratio is taken over at least 20 packets or one second, only packets sent after the last decrease count, decreases at most once per 300 ms + RTT; RTCP receiver reports are used while no transport-wide feedback arrived |
+| GCC-7 | gcc-02 §6 | Loss-based controller: below 2% x 1.05, 2% to 10% held, above 10% x (1 - 0.5 p); target = min(delay-based, loss-based) | webrtc_gcc | loss_decrease_test, loss_decrease_negative_clock_test, moderate_loss_holds_test, loss_report_test, loss_report_then_feedback_test, sim random_loss_test_, webrtc_cc_SUITE | E2E tested; the ratio is taken over at least 20 packets or one second, every packet counts until a decrease and only packets sent after it count then, decreases at most once per 300 ms + RTT; RTCP receiver reports are used while no transport-wide feedback arrived, and the first transport-wide feedback releases the estimate they seeded |
 | GCC-8 | gcc-02 §5.5 | Bounded memory, deterministic with injected time | webrtc_gcc, webrtc_cc | sim deterministic_test_ | Unit tested |
 | R8836-1 | RFC 8836 §2 (1) | Low delay: queuing delay kept low once converged | webrtc_gcc | sim converges_500k_test_, converges_2m_test_, converges_10m_test_ | Simulated: average target 0.95, 0.94 and 0.91 of the capacity at 500 kbps, 2 Mbps and 10 Mbps, average bottleneck queue 22 to 28 ms |
 | R8836-2 | RFC 8836 §2 (1c, 1d) | React quickly to a capacity reduction | webrtc_gcc | sim capacity_drop_test_, webrtc_cc_SUITE:estimate_follows_capacity_drop | Simulated and E2E tested: 2 Mbps to 500 kbps, the target is below 600 kbps within 2 s and the queue drains within 4 s |

@@ -108,7 +108,8 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 cert = Cert,
                 media = webrtc_media:new(#{
                     cname => maps:get(cname, Opts, <<"webrtc">>),
-                    cc => maps:get(congestion_control, Opts, #{})
+                    cc => maps:get(congestion_control, Opts, #{}),
+                    rtcp => #{report_interval => maps:get(rtcp_report_interval, Opts, 1000)}
                 }),
                 srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),
                 filter = maps:get(outbound_filter, Opts, undefined),

@@ -80,11 +80,20 @@ exchange(A0, B0) ->
         lists:seq(1, 10)
     ),
     B1 = lists:foldl(fun({At, O}, B) -> element(1, deliver(O, B, At)) end, B0, Out),
+    feedback_due(A1, B1, 10, []).
+
+%% Run B's timers (regular reports may come first) until its
+%% transport-wide feedback reaches A, within 100 ms of the last packet;
+%% A's actions of every step are kept.
+feedback_due(A1, B1, Tries, Acc) when Tries > 0 ->
     Due = webrtc_media:next_timeout(B1),
     ?assert(Due =< 135 + 100),
     {B2, Fb} = webrtc_media:handle_timeout(Due, B1),
     {A2, Acts} = deliver(Fb, A1, Due + 25),
-    {A2, B2, Acts, Due + 25}.
+    case [P || {rtcp, _, #rtcp_twcc{} = P} <- events(Acts)] of
+        [] -> feedback_due(A2, B2, Tries - 1, Acc ++ Acts);
+        _ -> {A2, B2, Acc ++ Acts, Due + 25}
+    end.
 
 feedback_round_trip_test() ->
     {A0, B0, _} = pair(),
@@ -98,7 +107,9 @@ feedback_round_trip_test() ->
 %% packets leaves over time, not at once, and pacing can be turned off.
 pacing_test() ->
     {A0, B0, _} = pair(),
-    {A1, _, _, Now} = exchange(A0, B0),
+    {A1a, _, _, Now} = exchange(A0, B0),
+    %% Regular RTCP already due goes out first.
+    {A1, _} = webrtc_media:handle_timeout(Now, A1a),
     ?assertMatch(#{congestion_control := #{pacing := true}}, webrtc_media:stats(A1)),
     {Immediate, A2} = lists:foldl(
         fun(I, {N, A}) ->
@@ -111,10 +122,11 @@ pacing_test() ->
     ?assert(Immediate < 50),
     Next = webrtc_media:next_timeout(A2),
     ?assert(Next > Now),
-    {A3, Later} = webrtc_media:handle_timeout(Next, A2),
-    ?assert(length([S || {send, _} = S <- Later]) >= 1),
+    {A3, Later0} = webrtc_media:handle_timeout(Next, A2),
+    Later = rtp_sends(Later0),
+    ?assert(length(Later) >= 1),
     {Flushed, A4} = webrtc_media:set_congestion_control(#{pacing => false}, Next, A3),
-    ?assertEqual(50, Immediate + length([S || {send, _} = S <- Later]) + length(Flushed)),
+    ?assertEqual(50, Immediate + length(Later) + length(rtp_sends(Flushed))),
     {ok, [_], _} = webrtc_media:send(<<"1">>, <<1:9600>>, #{}, Next, A4).
 
 %% REMB from the peer is an input of the estimate.
@@ -154,3 +166,6 @@ reports_keep_breaker_quiet_test() ->
     ),
     ?assertMatch(#{congestion_control := #{circuit_breakers := #{<<"1">> := #{tripped := []}}}},
                  webrtc_media:stats(A)).
+
+rtp_sends(Acts) ->
+    [S || {send, B} = S <- Acts, webrtc_rtp:classify(B) =:= rtp].

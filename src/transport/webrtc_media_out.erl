@@ -18,6 +18,7 @@
     pick_pt/2,
     reports/3,
     retransmit/4,
+    send_feedback/3,
     send_rtcp/2,
     senders/2,
     tmin/2
@@ -247,7 +248,7 @@ nack_timeouts(Now, M) ->
             (Ssrc, #rcv{nack = N, mid = Mid} = R, {MAcc, AAcc}) ->
                 {N1, Actions} = webrtc_nack:handle_timeout(Now, N),
                 MAcc1 = MAcc#media{receivers = (MAcc#media.receivers)#{Ssrc := R#rcv{nack = N1}}},
-                {Out, MAcc2} = webrtc_media_in:nack_actions(Mid, Ssrc, Actions, MAcc1),
+                {Out, MAcc2} = webrtc_media_in:nack_actions(Mid, Ssrc, Actions, Now, MAcc1),
                 {MAcc2, AAcc ++ Out}
         end,
         {M, []},
@@ -299,7 +300,44 @@ reports(Now, Feedback, M) ->
     Reports =
         [with_blocks(Head, InHead) | Others] ++
             [#rtcp_rr{ssrc = Reporter, reports = Bs} || Bs <- chunks(Extra, 31)],
-    send_rtcp(Reports ++ [Sdes | Feedback], M2).
+    send_regular(Reports ++ [Sdes | Feedback], Now, M2).
+
+%% A regular compound: it resets the report timer.
+send_regular(Pkts, Now, M) ->
+    case send_rtcp(Pkts, M) of
+        {[{send, B}], M1} ->
+            Mark = maps:get(rtp_sent, M1#media.counters, 0),
+            R = webrtc_rtcp_sched:regular_sent(Now, byte_size(B), M1#media.rtcp),
+            {[{send, B}], M1#media{rtcp = R, rtp_sent_mark = Mark}};
+        Other ->
+            Other
+    end.
+
+%% @doc Feedback (NACK, PLI, FIR, transport-wide congestion control) to
+%% send now. Without rtcp-rsize it goes in a compound with an RR and the
+%% CNAME (RFC 4585 §3.1, RFC 5506 §5). It goes out while the RTCP
+%% bandwidth allows and waits otherwise, at most ?MAX_PENDING_FEEDBACK
+%% packets, the oldest dropped (see webrtc_rtcp_sched).
+send_feedback([], _Now, M) ->
+    {[], M};
+send_feedback(_Pkts, _Now, #media{out = undefined} = M) ->
+    {[], M};
+send_feedback(Pkts, Now, #media{rtcp = R} = M) ->
+    Compound =
+        case M#media.reduced_size of
+            true -> Pkts;
+            false -> [#rtcp_rr{ssrc = M#media.rtcp_ssrc}, #rtcp_sdes{chunks = [{M#media.rtcp_ssrc, [{cname, M#media.cname}]}]} | Pkts]
+        end,
+    %% SRTCP adds the index and the tag.
+    Size = byte_size(webrtc_rtcp:encode(Compound)) + 14,
+    case webrtc_rtcp_sched:feedback(Now, Size, R) of
+        {now, R1} ->
+            send_rtcp(Compound, M#media{rtcp = R1});
+        {later, R1} ->
+            Kept = lists:nthtail(max(0, length(M#media.pending_fb) + length(Pkts) - ?MAX_PENDING_FEEDBACK),
+                                 M#media.pending_fb ++ Pkts),
+            {[], count(feedback_delayed, M#media{rtcp = R1, pending_fb = Kept})}
+    end.
 
 with_blocks(#rtcp_sr{} = SR, Bs) -> SR#rtcp_sr{reports = Bs};
 with_blocks(#rtcp_rr{} = RR, Bs) -> RR#rtcp_rr{reports = Bs}.

@@ -32,6 +32,9 @@
 
 -include("webrtc_dtls.hrl").
 
+%% connection_id (RFC 9146 §3).
+-define(EXT_CID, 54).
+
 -export([start_client/1, handle/5, maybe_verify/1, check_fingerprint/1, client_hello_body/1]).
 
 -define(SCSV_RENEGOTIATION, 16#00FF).
@@ -81,7 +84,11 @@ client_hello_body(St) ->
             [{ec_point_formats, [0]} || Offer12] ++
             [{extended_master_secret, true} || Offer12] ++
             [{renegotiation_info, <<>>} || Offer12] ++
-            srtp_ext(St#dtls.srtp_profiles) ++ Exts13,
+            srtp_ext(St#dtls.srtp_profiles) ++ Exts13 ++
+            %% RFC 9146 §3: with DTLS 1.3 offered the extension is already
+            %% among Exts13 (same encoding).
+            [webrtc_dtls13_msg:connection_id_ext(St#dtls.cid)
+             || is_binary(St#dtls.cid), not lists:member(dtls13, St#dtls.versions)],
     Body = webrtc_dtls_msg:encode_body(client_hello, #{
         version => ?DTLS12,
         random => St#dtls.client_random,
@@ -219,11 +226,20 @@ client_server_hello(M, St) ->
             _ ->
                 fail(?ALERT_ILLEGAL_PARAMETER, bad_use_srtp, St)
         end,
-    Known = [supported_groups, ec_point_formats, extended_master_secret, renegotiation_info, use_srtp],
+    %% RFC 9146 §3: the server's CID, for our records to it.
+    PeerCid =
+        case proplists:get_value(?EXT_CID, Exts) of
+            undefined -> undefined;
+            <<L, C:L/binary>> when is_binary(St#dtls.cid) -> C;
+            _ when is_binary(St#dtls.cid) -> fail(?ALERT_DECODE_ERROR, bad_connection_id, St);
+            _ -> fail(?ALERT_ILLEGAL_PARAMETER, {unsolicited_extension, ?EXT_CID}, St)
+        end,
+    Known = [supported_groups, ec_point_formats, extended_master_secret, renegotiation_info, use_srtp, ?EXT_CID],
     %% RFC 5246 §7.4.1.4: the server must not send extensions we did not
     %% offer (supported_groups is not sent by servers but tolerated).
     [fail(?ALERT_ILLEGAL_PARAMETER, {unsolicited_extension, T}, St) || {T, _} <- Exts, not lists:member(T, Known)],
     St#dtls{
+        peer_cid = PeerCid,
         server_random = SR,
         suite = Suite,
         ems = Ems,
@@ -377,16 +393,26 @@ negotiate(#{suites := Suites, compression := Comp, extensions := Exts}, St) ->
             true -> <<(crypto:strong_rand_bytes(24))/binary, (webrtc_dtls13_keys:downgrade12())/binary>>;
             false -> crypto:strong_rand_bytes(32)
         end,
+    %% RFC 9146 §3: when both want connection IDs, ours goes in the
+    %% ServerHello and the client's in our records.
+    PeerCid =
+        case {St#dtls.cid, proplists:get_value(?EXT_CID, Exts)} of
+            {Ours, <<L, C:L/binary>>} when is_binary(Ours) -> C;
+            {Ours, Bad} when is_binary(Ours), Bad =/= undefined -> fail(?ALERT_DECODE_ERROR, bad_connection_id, St);
+            _ -> undefined
+        end,
     Exts1 =
         [{renegotiation_info, <<>>} || Secure] ++
             [{extended_master_secret, true} || Ems] ++
             [{ec_point_formats, [0]} || proplists:is_defined(ec_point_formats, Exts)] ++
-            SrtpExt,
+            SrtpExt ++
+            [webrtc_dtls13_msg:connection_id_ext(St#dtls.cid) || PeerCid =/= undefined],
     SH = webrtc_dtls_msg:encode_body(server_hello, #{
         version => ?DTLS12, random => SR, session_id => <<>>, suite => SuiteId, extensions => Exts1
     }),
     St1 = St#dtls{
-        version = dtls12, server_random = SR, suite = Suite, group = Group, ems = Ems, srtp_profile = Profile
+        version = dtls12, server_random = SR, suite = Suite, group = Group, ems = Ems, srtp_profile = Profile,
+        peer_cid = PeerCid
     },
     {_, St2} = queue_handshake(server_hello, SH, true, St1),
     Cert = webrtc_dtls_msg:encode_body(certificate, [St#dtls.cert_der]),

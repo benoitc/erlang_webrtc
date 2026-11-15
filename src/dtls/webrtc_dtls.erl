@@ -180,7 +180,7 @@ start(_Now, St) ->
 handle_packet(_Bin, _Now, #dtls{state = S} = St) when S =:= failed; S =:= closed ->
     {St, []};
 handle_packet(Bin, Now, #dtls{version = dtls12} = St0) ->
-    run(Now, St0, fun(S) -> webrtc_dtls12:handle_records(webrtc_dtls_record:decode(Bin), Now, S) end);
+    run(Now, St0, fun(S) -> webrtc_dtls12:handle_records(webrtc_dtls_record:decode(Bin, cid_len(S)), Now, S) end);
 handle_packet(Bin, Now, St0) ->
     %% Hello exchange or DTLS 1.3: plaintext and unified header records
     %% may share a datagram (RFC 9147 §4.1).
@@ -304,7 +304,8 @@ info12(St) ->
         group => St#dtls.group,
         srtp_profile => St#dtls.srtp_profile,
         extended_master_secret => St#dtls.ems,
-        verified => St#dtls.verified
+        verified => St#dtls.verified,
+        connection_id => St#dtls.peer_cid =/= undefined
     }.
 
 version_name(dtls13) -> 'dtlsv1.3';

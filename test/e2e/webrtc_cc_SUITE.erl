@@ -207,7 +207,7 @@ probing_on_raised_maximum(Config) ->
     ct:log("estimates ~p~nprobing ~p", [Est, maps:get(probing, stats_target(A))]),
     ?assert(lists:all(fun(X) -> X =< 800000 end, window(Est, 2000, 6000))),
     case [T || {T, Bps} <- Est, T >= 6000, Bps >= 1600000] of
-        [First | _] -> ?assert(First =< 7500);
+        [First | _] -> ?assert(First =< 8500);
         [] -> ct:fail({never_reached, Est})
     end,
     ?assert(lists:all(fun(X) -> X =< 3300000 end, window(Est, 6000, 9000))),

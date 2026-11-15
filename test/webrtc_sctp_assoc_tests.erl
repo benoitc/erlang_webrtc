@@ -437,6 +437,43 @@ interleaving_test() ->
     %% The small message is not stuck behind the large one.
     ?assertEqual([{2, 53, <<"small">>}, {1, 53, Large}], received(b, N2)).
 
+%% RFC 8260 §3.6, RFC 8831 §6.4: weighted fair queueing. Both streams
+%% have a backlog; the one weighing four times more gets about four
+%% times the bytes.
+priority(Side, Sid, W, N) ->
+    ?NET:set_engine(Side, ?A:set_stream_priority(Sid, W, ?NET:engine(Side, N)), N).
+
+backlog(N0, Count, Size) ->
+    lists:foldl(
+        fun(I, N) -> send(a, 3, payload(100 + I, Size), #{}, send(a, 1, payload(I, Size), #{}, N)) end,
+        N0,
+        lists:seq(1, Count)
+    ).
+
+wfq_interleaved_test() ->
+    Opts = #{interleaving => true},
+    N0 = priority(a, 3, 1024, priority(a, 1, 256, established(Opts, Opts, #{}))),
+    N1 = wait_messages(b, 10, backlog(N0, 10, 4800)),
+    Got = [Sid || {Sid, _, _} <- lists:sublist(received(b, N1), 10)],
+    High = length([x || 3 <- Got]),
+    ?assert(High >= 7),
+    %% Everything arrives in the end.
+    N2 = wait_messages(b, 20, N1),
+    ?assertEqual(20, length(received(b, N2))).
+
+%% With DATA chunks whole messages are scheduled: the same shares.
+wfq_data_test() ->
+    N0 = priority(a, 3, 1024, priority(a, 1, 256, established(#{}, #{}, #{}))),
+    N1 = wait_messages(b, 10, backlog(N0, 10, 4800)),
+    Got = [Sid || {Sid, _, _} <- lists:sublist(received(b, N1), 10)],
+    ?assert(length([x || 3 <- Got]) >= 7).
+
+%% Equal weights: round robin.
+wfq_equal_test() ->
+    N0 = established(#{}, #{}, #{}),
+    N1 = wait_messages(b, 6, backlog(N0, 3, 4800)),
+    ?assertEqual([1, 3, 1, 3, 1, 3], [Sid || {Sid, _, _} <- received(b, N1)]).
+
 no_interleaving_test() ->
     N0 = established(#{interleaving => true}, #{}, #{}),
     [{connected, #{message_interleaving := false}}] = ?NET:events(a, N0),

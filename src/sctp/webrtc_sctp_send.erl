@@ -4,10 +4,18 @@
 %% Internal module of `webrtc_sctp_assoc'. The state is a `#snd{}'
 %% record. Messages wait in per stream queues; TSNs are assigned when a
 %% fragment is first transmitted ("late TSN assignment"), which lets
-%% I-DATA interleave fragments of messages from different streams with a
-%% round robin scheduler. With DATA chunks the scheduler stays on one
-%% message until its last fragment so that fragments get consecutive
-%% TSNs, as RFC 9260 §6.9 requires.
+%% I-DATA interleave fragments of messages from different streams.
+%%
+%% The scheduler is weighted fair queueing (RFC 8260 §3.6): every stream
+%% has a weight (`set_priority/3', the data channel priority of RFC 8831
+%% §6.4, 256 by default) and a virtual time that grows by the bytes it
+%% sends divided by its weight; the active stream with the smallest
+%% virtual time goes next, ties in activation order. Streams of equal
+%% weight share the link equally by bytes. A stream that becomes active
+%% starts at the virtual time of the stream served last, so idling earns
+%% it nothing. With DATA chunks the scheduler stays on one message until
+%% its last fragment so that fragments get consecutive TSNs, as RFC 9260
+%% §6.9 requires.
 %%
 %% Acknowledgement processing, congestion control and the retransmission
 %% timer live in `webrtc_sctp_ack'.
@@ -22,6 +30,7 @@
     transmit/2,
     buffered_amount/2,
     set_low_threshold/3,
+    set_priority/3,
     pause_streams/2,
     drained/2,
     reset_streams/2,
@@ -166,6 +175,11 @@ buffered_amount(Sid, #snd{streams = M}) ->
 -spec set_low_threshold(0..65535, non_neg_integer(), #snd{}) -> #snd{}.
 set_low_threshold(Sid, Low, S) ->
     put_stream(Sid, (stream(Sid, S))#ostream{low = Low}, S).
+
+%% @doc The scheduling weight of a stream (RFC 8260 §3.6); 0 counts as 1.
+-spec set_priority(0..65535, 0..65535, #snd{}) -> #snd{}.
+set_priority(Sid, W, S) when is_integer(W), W >= 0, W =< 65535 ->
+    put_stream(Sid, (stream(Sid, S))#ostream{weight = max(1, W)}, S).
 
 %% @doc True when nothing is queued and nothing is outstanding.
 -spec idle(#snd{}) -> boolean().
@@ -381,21 +395,32 @@ send_new(Now, Limit, S0, Acc, Evs) ->
 %% expired before any fragment was sent are dropped here.
 prepare(Now, #snd{current = Cur} = S, Evs) when Cur =/= undefined ->
     head_len(Now, Cur, S, Evs);
-prepare(Now, #snd{active = Act} = S, Evs) ->
-    case queue:peek(Act) of
-        empty ->
+prepare(Now, S, Evs) ->
+    case pick(S) of
+        none ->
             {S, none, Evs};
-        {value, Sid} ->
+        Sid ->
             case head_len(Now, Sid, S, Evs) of
                 {S1, none, Evs1} ->
                     Str = stream(Sid, S1),
                     S2 = put_stream(Sid, Str#ostream{active = false}, S1#snd{
-                        active = queue:drop(S1#snd.active)
+                        active = queue:delete(Sid, S1#snd.active)
                     }),
                     prepare(Now, S2, Evs1);
                 Found ->
                     Found
             end
+    end.
+
+%% The active stream with the smallest virtual time, the first activated
+%% on a tie.
+pick(#snd{active = Act} = S) ->
+    case queue:to_list(Act) of
+        [] ->
+            none;
+        Sids ->
+            {_, _, Sid} = lists:min([{(stream(Sid, S))#ostream.vtime, I, Sid} || {I, Sid} <- lists:enumerate(Sids)]),
+            Sid
     end.
 
 head_len(Now, Sid, S, Evs) ->
@@ -472,16 +497,16 @@ commit(Now, Sid, #snd{idata = IData, next_tsn = U, active = Act} = S, Evs) ->
             true -> Q1;
             false -> queue:in_r(M#omsg{offset = Off + Len, mid = Mid, fsn = Fsn + 1}, Q1)
         end,
-    Str2 = Str1#ostream{queue = Q2},
+    VStart = Str1#ostream.vtime,
+    Str2 = Str1#ostream{queue = Q2, vtime = VStart + Len * 65536 div Str1#ostream.weight},
     More = not queue:is_empty(Q2),
     %% Scheduling: DATA keeps the stream until the end of the message,
-    %% I-DATA rotates after every fragment (round robin, RFC 8260 §3.2).
-    %% Unless the stream is the current DATA stream it is at the front of
-    %% the round robin queue.
+    %% I-DATA picks again after every fragment (RFC 8260 §3.2). Unless
+    %% the stream is the current DATA stream it is in the active queue.
     Act0 =
         case S#snd.current of
             Sid -> Act;
-            _ -> queue:drop(Act)
+            _ -> queue:delete(Sid, Act)
         end,
     {Cur, Act1, Active} =
         case {IData, E, More} of
@@ -502,6 +527,7 @@ commit(Now, Sid, #snd{idata = IData, next_tsn = U, active = Act} = S, Evs) ->
         rwnd = sub0(S#snd.rwnd, Len),
         current = Cur,
         active = Act1,
+        vclock = VStart,
         rtt_probe = Probe,
         last_data_sent = Now,
         t3 =
@@ -572,7 +598,9 @@ activate(Sid, Str, S) ->
         true ->
             put_stream(Sid, Str, S);
         false ->
-            put_stream(Sid, Str#ostream{active = true}, S#snd{active = queue:in(Sid, S#snd.active)})
+            %% No credit for the time it was idle.
+            Str1 = Str#ostream{active = true, vtime = max(Str#ostream.vtime, S#snd.vclock)},
+            put_stream(Sid, Str1, S#snd{active = queue:in(Sid, S#snd.active)})
     end.
 
 dec_bytes(Sid, N, S, Evs) ->

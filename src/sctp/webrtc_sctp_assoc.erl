@@ -67,6 +67,7 @@
     next_timeout/1,
     buffered_amount/2,
     set_buffered_amount_low_threshold/3,
+    set_stream_priority/3,
     stats/1,
     state/1,
     info/1
@@ -258,6 +259,11 @@ set_buffered_amount_low_threshold(Sid, Low, #assoc{snd = Snd} = A) when
     is_integer(Low), Low >= 0
 ->
     A#assoc{snd = webrtc_sctp_send:set_low_threshold(Sid, Low, Snd)}.
+
+%% @doc Scheduling weight of an outgoing stream (RFC 8260 §3.6).
+-spec set_stream_priority(0..65535, 0..65535, assoc()) -> assoc().
+set_stream_priority(Sid, W, #assoc{snd = Snd} = A) ->
+    A#assoc{snd = webrtc_sctp_send:set_priority(Sid, W, Snd)}.
 
 -spec state(assoc()) -> atom().
 state(#assoc{state = S}) -> S.

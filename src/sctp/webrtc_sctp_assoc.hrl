@@ -58,7 +58,11 @@
     ssn = 0 :: non_neg_integer(),
     umid = 0 :: non_neg_integer(),
     reset = none :: none | pending | requested,
-    active = false :: boolean()
+    active = false :: boolean(),
+    %% Weighted fair queueing (RFC 8260 §3.6): the stream's weight (the
+    %% data channel priority, RFC 8831 §6.4) and its virtual time.
+    weight = 256 :: pos_integer(),
+    vtime = 0 :: non_neg_integer()
 }).
 
 %% Outstanding (TSN assigned) chunk.
@@ -86,6 +90,8 @@
     os = 65535 :: non_neg_integer(),
     streams = #{} :: #{0..65535 => #ostream{}},
     active = queue:new() :: queue:queue(0..65535),
+    %% Virtual time of the last stream served (WFQ).
+    vclock = 0 :: non_neg_integer(),
     %% DATA mode: stream whose message is being fragmented.
     current = undefined :: undefined | 0..65535,
     buffered = 0 :: non_neg_integer(),

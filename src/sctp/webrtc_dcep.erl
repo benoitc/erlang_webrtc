@@ -86,7 +86,7 @@
     ordered => boolean(),
     max_retransmits => non_neg_integer(),
     max_packet_life_time => non_neg_integer(),
-    priority => 0..65535,
+    priority => 0..65535 | very_low | low | medium | high,
     protocol => binary(),
     negotiated => boolean(),
     id => 0..?MAX_ID
@@ -231,7 +231,7 @@ connect(Now, #dc{sctp = S} = D) ->
 open_channel(Label, Opts, Now, #dc{} = D) when is_binary(Label), is_map(Opts) ->
     case channel_from_opts(Label, Opts, D) of
         {ok, Ch} ->
-            D1 = D#dc{channels = (D#dc.channels)#{Ch#ch.id => Ch}},
+            D1 = prioritize(Ch, D#dc{channels = (D#dc.channels)#{Ch#ch.id => Ch}}),
             Sent =
                 case Ch#ch.negotiated of
                     true -> {ok, D1};
@@ -275,7 +275,7 @@ channel_from_opts(Label, Opts, #dc{channels = Chs} = D) ->
         end,
     Negotiated = maps:get(negotiated, Opts, false),
     Proto = maps:get(protocol, Opts, <<>>),
-    Prio = maps:get(priority, Opts, 256),
+    Prio = priority(maps:get(priority, Opts, low)),
     Ordered = maps:get(ordered, Opts, true),
     Valid =
         is_boolean(Negotiated) andalso is_binary(Proto) andalso is_boolean(Ordered) andalso
@@ -318,6 +318,18 @@ channel_from_opts(Label, Opts, #dc{channels = Chs} = D) ->
                 heard = Negotiated
             }}
     end.
+
+%% RFC 8831 §6.4: the channel's priority weighs its stream in the SCTP
+%% scheduler.
+prioritize(#ch{id = Id, priority = P}, #dc{sctp = S} = D) ->
+    D#dc{sctp = webrtc_sctp_assoc:set_stream_priority(Id, P, S)}.
+
+%% W3C RTCPriorityType values in DCEP (RFC 8832 §5.1, RFC 8831 §6.4).
+priority(very_low) -> 128;
+priority(low) -> 256;
+priority(medium) -> 512;
+priority(high) -> 1024;
+priority(P) -> P.
 
 parity(I, Role) ->
     case I rem 2 =:= own_parity(Role) of
@@ -559,7 +571,7 @@ dcep_message(Id, {ok, {open, M}}, Now, #dc{channels = Chs, role = Role} = D) ->
                 state = open,
                 heard = true
             },
-            D1 = D#dc{channels = Chs#{Id => Ch}},
+            D1 = prioritize(Ch, D#dc{channels = Chs#{Id => Ch}}),
             case dcep_send(Id, encode(ack), Now, D1) of
                 {ok, D2} ->
                     event({channel_open, Id, L, Proto, event_opts(Ch)}, D2);

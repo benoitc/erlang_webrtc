@@ -105,7 +105,8 @@
 -type opts() :: #{
     replay_window => pos_integer(),
     rtcp_replay_window => pos_integer(),
-    encrypt_rtcp => boolean()
+    encrypt_rtcp => boolean(),
+    cryptex => boolean()
 }.
 -type error_reason() :: malformed | auth_failed | replay | too_old | key_exhausted | too_many_streams.
 

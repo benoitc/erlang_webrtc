@@ -324,7 +324,7 @@ establish(F, Now, Event, #assoc{cfg = C} = A) ->
             infinity -> undefined;
             Ival -> Now + Ival + Snd#snd.rto
         end,
-    A1 = A#assoc{
+    A1 = webrtc_sctp_pmtu:start(Now, A#assoc{
         state = established,
         my_vtag = maps:get(my_tag, F),
         peer_vtag = maps:get(peer_tag, F),
@@ -338,7 +338,7 @@ establish(F, Now, Event, #assoc{cfg = C} = A) ->
         error_count = 0,
         hb_at = HbAt,
         connected_at = Now
-    },
+    }),
     Info = #{
         message_interleaving => IData,
         partial_reliability => PR,

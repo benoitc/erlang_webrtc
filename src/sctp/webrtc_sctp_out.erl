@@ -64,8 +64,7 @@ flush(Now, #assoc{state = St} = A) when St =:= shutdown_sent; St =:= shutdown_ac
 flush(_Now, #assoc{} = A) ->
     A#assoc{ctrl = []}.
 
-bundle(Now, Data, #assoc{ctrl = Ctrl0, rcv = Rcv0, cfg = C} = A) ->
-    Mtu = C#cfg.mtu,
+bundle(Now, Data, #assoc{ctrl = Ctrl0, rcv = Rcv0, snd = #snd{mtu = Mtu}} = A) ->
     Ctrl = lists:reverse(Ctrl0),
     {First, Others} = lists:partition(fun(X) -> X =:= cookie_ack end, Ctrl),
     WantSack =

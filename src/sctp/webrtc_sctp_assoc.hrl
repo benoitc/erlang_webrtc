@@ -13,6 +13,8 @@
     local_port = 5000 :: 0..65535,
     remote_port = 5000 :: 0..65535,
     mtu = 1200 :: pos_integer(),
+    %% Largest packet PLPMTUD may probe for (RFC 8899); `mtu' when off.
+    max_mtu = 1200 :: pos_integer(),
     os = 65535 :: 1..65535,
     mis = 65535 :: 1..65535,
     rbuf = 1048576 :: pos_integer(),
@@ -230,5 +232,7 @@
     ctrl = [] :: [term()],
     rand :: crypto | rand:state(),
     connected_at = undefined :: undefined | integer(),
+    %% Path MTU discovery (webrtc_sctp_pmtu).
+    pmtu :: webrtc_sctp_pmtu:state(),
     stats = #{} :: #{atom() => non_neg_integer()}
 }).

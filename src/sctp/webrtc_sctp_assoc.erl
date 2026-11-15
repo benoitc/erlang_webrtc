@@ -36,7 +36,9 @@
 %%   `{protocol_violation, Info}'.
 %%
 %% Options of `new/1' (all optional): `local_port', `remote_port'
-%% (default 5000), `mtu' (largest SCTP packet, default 1200),
+%% (default 5000), `mtu' (largest SCTP packet, default 1200; the base
+%% size of path MTU discovery), `max_mtu' (largest packet PLPMTUD probes
+%% for, default `mtu': no discovery),
 %% `outbound_streams', `inbound_streams' (default 65535),
 %% `receive_buffer' (advertised window, default 1 MiB), `send_buffer'
 %% (bytes queued and not yet sent, default 8 MiB), `max_message_size'
@@ -70,7 +72,8 @@
     set_stream_priority/3,
     stats/1,
     state/1,
-    info/1
+    info/1,
+    path_changed/2
 ]).
 
 -export_type([assoc/0, action/0, event/0, send_opts/0]).
@@ -110,7 +113,8 @@ new(Opts) when is_map(Opts) ->
         cfg = C,
         snd = webrtc_sctp_send:new(C),
         rcv = webrtc_sctp_recv:new(C),
-        rand = Rand
+        rand = Rand,
+        pmtu = webrtc_sctp_pmtu:new(C)
     }.
 
 cfg(O) ->
@@ -118,6 +122,7 @@ cfg(O) ->
         local_port = opt(local_port, O, 5000, fun port/1),
         remote_port = opt(remote_port, O, 5000, fun port/1),
         mtu = opt(mtu, O, 1200, fun(V) -> is_integer(V) andalso V >= 256 andalso V =< 65535 end),
+        max_mtu = opt(max_mtu, O, maps:get(mtu, O, 1200), fun(V) -> is_integer(V) andalso V >= 256 andalso V =< 65535 end),
         os = opt(outbound_streams, O, 65535, fun streams/1),
         mis = opt(inbound_streams, O, 65535, fun streams/1),
         rbuf = opt(receive_buffer, O, 1048576, fun(V) -> is_integer(V) andalso V >= 1500 end),
@@ -270,8 +275,8 @@ state(#assoc{state = S}) -> S.
 
 %% @doc Negotiated parameters (empty before establishment).
 -spec info(assoc()) -> map().
-info(#assoc{state = St, peer = P, snd = Snd, rcv = Rcv}) ->
-    #{
+info(#assoc{state = St, peer = P, snd = Snd, rcv = Rcv, pmtu = Pm}) ->
+    (webrtc_sctp_pmtu:info(Pm))#{
         state => St,
         outbound_streams => Snd#snd.os,
         inbound_streams => Rcv#rcv.mis,
@@ -283,9 +288,10 @@ info(#assoc{state = St, peer = P, snd = Snd, rcv = Rcv}) ->
 
 %% @doc Counters and current congestion control state.
 -spec stats(assoc()) -> map().
-stats(#assoc{stats = S0, snd = Snd, rcv = Rcv, state = St, error_count = E}) ->
+stats(#assoc{stats = S0, snd = Snd, rcv = Rcv, state = St, error_count = E, pmtu = Pm}) ->
     S1 = maps:merge(maps:merge(S0, Snd#snd.stats), Rcv#rcv.stats),
     S1#{
+        pmtu => webrtc_sctp_pmtu:mtu(Pm),
         state => St,
         cwnd => Snd#snd.cwnd,
         ssthresh => Snd#snd.ssthresh,
@@ -307,7 +313,8 @@ next_timeout(#assoc{t1 = T1, t2 = T2, hb_at = Hb, snd = Snd, rcv = Rcv} = A) ->
         t(Hb),
         webrtc_sctp_send:next_timeout(Snd),
         webrtc_sctp_recv:next_timeout(Rcv),
-        webrtc_sctp_reconfig:next_timeout(A)
+        webrtc_sctp_reconfig:next_timeout(A),
+        webrtc_sctp_pmtu:next_timeout(A#assoc.pmtu)
     ]).
 
 %% Integers sort before atoms, so `infinity' never wins lists:min/1.
@@ -327,7 +334,8 @@ handle_timeout(Now, A0) ->
     A3 = t3_expired(Now, A2),
     A4 = heartbeat(Now, A3),
     A5 = reconfig_expired(Now, A4),
-    done(Now, A5).
+    A6 = webrtc_sctp_pmtu:timeout(Now, A5),
+    done(Now, A6).
 
 t2_expired(Now, #assoc{t2 = {D, Rto}, cfg = C, state = St} = A) when Now >= D ->
     case incr_error(A) of
@@ -352,7 +360,7 @@ t3_expired(Now, #assoc{snd = #snd{t3 = T3} = Snd} = A) when is_integer(T3), Now 
     {Snd1, Counted} = webrtc_sctp_ack:handle_t3(Now, Snd),
     A1 = A#assoc{snd = Snd1},
     case Counted of
-        true -> incr_error(A1);
+        true -> incr_error(webrtc_sctp_pmtu:black_hole(Now, A1));
         false -> A1
     end;
 t3_expired(_Now, A) ->
@@ -495,6 +503,8 @@ chunk({heartbeat, Info}, _P, _Now, #assoc{state = St} = A) when
     St =/= closed, St =/= cookie_wait
 ->
     {continue, webrtc_sctp_out:ctrl({heartbeat_ack, Info}, A)};
+chunk({heartbeat_ack, <<"PLPMTUD", _/binary>> = Info}, _P, Now, A) ->
+    {continue, webrtc_sctp_pmtu:ack(Info, Now, A)};
 chunk(
     {heartbeat_ack, <<Nonce:8/binary, Sent:64/signed>>}, _P, Now, #assoc{hb_out = {Nonce, _}} = A
 ) ->
@@ -619,6 +629,17 @@ done_packet(Now, A) ->
 
 done(Now, A) ->
     webrtc_sctp_out:take(webrtc_sctp_out:flush(Now, progress(Now, A))).
+
+%% @doc The lower layer moved to another path (RFC 8261 §6.1, ICE
+%% selected a new pair): path MTU back to the base and searched again,
+%% congestion state and RTO back to their initial values (RFC 9260
+%% §7.2.1, §6.3).
+-spec path_changed(integer(), assoc()) -> {assoc(), [action()]}.
+path_changed(Now, #assoc{state = established} = A0) ->
+    A = webrtc_sctp_pmtu:path_changed(Now, A0),
+    done(Now, A#assoc{snd = webrtc_sctp_send:reset_path(A#assoc.cfg, A#assoc.snd)});
+path_changed(Now, A) ->
+    done(Now, A).
 
 %% Move a pending shutdown forward once all data is acknowledged.
 progress(Now, #assoc{state = shutdown_pending, snd = Snd} = A) ->

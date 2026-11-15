@@ -15,7 +15,8 @@
 %%     | failed | closed}'</li>
 %% <li>`{ice_restart, disconnected | consent_lost}': the connection
 %%     restarted ICE by itself (`ice_auto_restart'); a
-%%     `negotiation_needed' follows, so send the new offer.</li>
+%%     `negotiation_needed' follows, so send the new offer, unless the
+%%     `signaling' option sends it for you.</li>
 %% <li>`{track, Mid, audio | video}': the remote side sends media on
 %%     this transceiver.</li>
 %% <li>`{ssrc_changed, Mid, Old, New}': the peer sent with one of our
@@ -150,6 +151,16 @@ new_peer_connection() ->
 %%     incident; meanwhile the connection is reported `disconnected'
 %%     rather than `failed'. DTLS and data channels survive the restart
 %%     (RFC 8842).</li>
+%% <li>`signaling': `fun((offer | answer, Sdp) -> any())' that sends a
+%%     description to the peer. When set, the connection runs ICE
+%%     restarts without you: it creates and applies the offer of an
+%%     automatic restart, answers every restart offer you pass to
+%%     `set_remote_description/3', and hands each description to the
+%%     function. Only pass the peer's descriptions to
+%%     `set_remote_description/3' and relay candidates as usual; they
+%%     arrive after the description they belong to. On glare the
+%%     controlled side rolls its own offer back. The function runs in a
+%%     helper process and may call either peer connection.</li>
 %% <li>`addresses': local `[{IP, Port}]' to bind, default every
 %%     interface; `loopback' (boolean) to use only 127.0.0.1.</li>
 %% <li>`certificate': `webrtc_dtls_cert:generate/1' result, default a

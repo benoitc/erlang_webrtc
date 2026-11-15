@@ -24,6 +24,7 @@
 -include("webrtc_sctp_assoc.hrl").
 
 -export([
+    reset_path/2,
     new/1,
     start/2,
     enqueue/6,
@@ -252,13 +253,41 @@ last_assigned_tsn(#snd{next_tsn = N}) -> ?TSN(N - 1).
 %% @doc Produce the chunks to send now: FORWARD TSN, fast
 %% retransmissions, retransmissions and new data, in that order.
 -spec transmit(integer(), #snd{}) -> {#snd{}, [term()], [event()]}.
-transmit(Now, S0) ->
+transmit(Now, S00) ->
+    S0 = idle_decay(Now, S00),
     {S1, Fast} = fast_retransmit(Now, S0),
     Limit = burst_limit(S1),
     {S2, Rtx} = retransmit(Now, Limit, S1),
     {S3, New, Evs} = send_new(Now, Limit, S2, [], []),
     {S4, Fwd} = webrtc_sctp_pr:forward_tsn(Now, S3),
     {S4, Fwd ++ Fast ++ Rtx ++ New, Evs}.
+
+%% RFC 9260 §7.2.1: a sender that sent no data for an RTO halves its
+%% cwnd, down to 4 MTUs, once per RTO of idleness. Applied when data
+%% starts again.
+idle_decay(Now, #snd{flight = 0, buffered = B, last_data_sent = Last, rto = Rto, cwnd = Cwnd, mtu = Mtu} = S) when
+    B > 0, is_integer(Last), Now - Last >= Rto
+->
+    Periods = min((Now - Last) div Rto, 16),
+    Floor = 4 * Mtu,
+    S#snd{cwnd = max(Floor, min(Cwnd, Cwnd bsr Periods)), last_data_sent = Now};
+idle_decay(_Now, S) ->
+    S.
+
+%% @doc A new path (RFC 9260 §7.2.1, §6.3): initial cwnd and ssthresh,
+%% RTO back to its initial value and a fresh RTT estimate.
+-spec reset_path(#cfg{}, #snd{}) -> #snd{}.
+reset_path(#cfg{rto_initial = Rto}, #snd{mtu = Mtu, rwnd = Rwnd} = S) ->
+    S#snd{
+        cwnd = min(4 * Mtu, max(2 * Mtu, ?INIT_CWND_BYTES)),
+        ssthresh = max(Rwnd, 4 * Mtu),
+        pba = 0,
+        fr_exit = undefined,
+        srtt = undefined,
+        rttvar = 0,
+        rto = Rto,
+        rtt_probe = undefined
+    }.
 
 %% Rule D: limit a burst to Max.Burst packets beyond the flight size.
 burst_limit(#snd{cwnd = Cwnd, flight = F, max_burst = MB, mtu = Mtu}) ->

@@ -84,6 +84,8 @@
     replay = #{} :: #{non_neg_integer() => webrtc_dtls_record:replay()},
     %% Records of the next epoch received before ChangeCipherSpec.
     early = [] :: [webrtc_dtls_record:dtls_record()],
+    %% A server's ChangeCipherSpec received before CertificateVerify.
+    ccs_held = false :: boolean(),
     %% Flight being built and the last flight sent (for retransmission).
     building = [] :: [flight_item()],
     last_flight = [] :: [flight_item()],

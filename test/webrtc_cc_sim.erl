@@ -20,6 +20,8 @@
 %% (`reverse_link', webrtc_cc_link options), by default unlimited with
 %% `reverse_delay_ms' (20) of delay. `tcp' adds TCP flows
 %% (webrtc_cc_tcp): [#{app => long | {short, Opts}, delay_ms}].
+%% `trace_ms' records the estimator state of every flow that often
+%% (`trace' in the result).
 -module(webrtc_cc_sim).
 
 -export([run/1, average/4, min_after/4, reached/3]).
@@ -46,7 +48,9 @@ run(Opts) ->
         tcp => maps:from_list([{maps:get(id, T), T} || T <- Tcp]),
         events => lists:keysort(1, maps:get(events, Opts, [])),
         bins => #{},
-        samples => []
+        samples => [],
+        trace_ms => maps:get(trace_ms, Opts, undefined),
+        trace => []
     },
     loop(maps:get(duration_ms, Opts), Sim).
 
@@ -94,15 +98,22 @@ new_tcp(K, Opts, Seed) ->
     }.
 
 loop(Duration, #{t := T} = Sim) when T > Duration ->
-    Sim#{samples := lists:reverse(maps:get(samples, Sim))};
+    Sim#{samples := lists:reverse(maps:get(samples, Sim)), trace := lists:reverse(maps:get(trace, Sim))};
 loop(Duration, #{t := T} = Sim0) ->
     Sim1 = apply_events(T, Sim0),
     Sim2 = lists:foldl(fun(Id, S) -> sender_step(Id, T, S) end, Sim1, lists:sort(maps:keys(maps:get(flows, Sim1)))),
     Sim3 = lists:foldl(fun(K, S) -> tcp_step(K, T, S) end, Sim2, lists:sort(maps:keys(maps:get(tcp, Sim2)))),
     Sim4 = deliver(rlink, T, deliver(link, T, Sim3)),
     Sim5 = receivers_step(T, Sim4),
-    Sim6 = sample(T, Sim5),
+    Sim6 = trace(T, sample(T, Sim5)),
     loop(Duration, Sim6#{t := T + 1}).
+
+%% `trace_ms': every so often, the estimator state of each flow.
+trace(T, #{trace_ms := Every, flows := Fs} = Sim) when is_integer(Every), T rem Every =:= 0 ->
+    Infos = [{Id, maps:get(estimator, webrtc_cc:stats(maps:get(cc, F)))} || {Id, F} <- lists:sort(maps:to_list(Fs))],
+    Sim#{trace := [{T, Infos} | maps:get(trace, Sim)]};
+trace(_T, Sim) ->
+    Sim.
 
 apply_events(T, #{events := [{At, Ev} | Rest]} = Sim) when At =< T ->
     Sim1 =

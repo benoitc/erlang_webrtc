@@ -13,3 +13,6 @@ __pycache__/
 /interop/browser/node_modules/
 /interop/bogo/boringssl/
 /interop/bogo/ebin/
+/interop/dtlsfuzzer/dtls-fuzzer/
+/interop/dtlsfuzzer/ebin/
+/interop/dtlsfuzzer/output/

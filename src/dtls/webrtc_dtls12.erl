@@ -86,6 +86,11 @@ handle_record(#{epoch := E} = R, _Now, #dtls{read_epoch = RE, pending_read = P, 
 handle_record(_R, _Now, St) ->
     St.
 
+change_read_epoch(Now, #dtls{pending_read = P} = St) ->
+    St1 = St#dtls{read_cipher = P, read_epoch = St#dtls.read_epoch + 1, pending_read = undefined},
+    Early = lists:reverse(St1#dtls.early),
+    lists:foldl(fun(R, S) -> handle_record(R, Now, S) end, St1#dtls{early = []}, Early).
+
 open_record(#{epoch := 0, type := T, fragment := F}, _St) when T =/= tls12_cid ->
     {ok, T, F};
 open_record(#{epoch := 0}, _St) ->
@@ -106,9 +111,13 @@ open_record(_, _) ->
     error.
 
 content(change_cipher_spec, <<1>>, _E, Now, #dtls{pending_read = P} = St) when P =/= undefined ->
-    St1 = St#dtls{read_cipher = P, read_epoch = St#dtls.read_epoch + 1, pending_read = undefined},
-    Early = lists:reverse(St1#dtls.early),
-    lists:foldl(fun(R, S) -> handle_record(R, Now, S) end, St1#dtls{early = []}, Early);
+    case St of
+        %% A server reads the next epoch only once CertificateVerify is
+        %% verified, so it is never taken encrypted (RFC 5246 §7.4.8). The
+        %% CCS can overtake it on the network, so it is held, not refused.
+        #dtls{role = server, cv_ok = false} -> St#dtls{ccs_held = true};
+        _ -> change_read_epoch(Now, St)
+    end;
 content(change_cipher_spec, _, _E, _Now, St) ->
     St;
 content(alert, <<Level, Desc>>, E, _Now, St) ->
@@ -117,8 +126,14 @@ content(alert, _, _E, _Now, St) ->
     St;
 content(handshake, Frag, E, Now, St) ->
     case webrtc_dtls_msg:decode_fragment(Frag) of
-        {ok, Frags} -> lists:foldl(fun(F, S) -> webrtc_dtls_reasm:fragment(F, E, Now, S) end, St, Frags);
-        {error, _} -> webrtc_dtls:fail(?ALERT_DECODE_ERROR, decode_error, St)
+        {ok, Frags} ->
+            St1 = lists:foldl(fun(F, S) -> webrtc_dtls_reasm:fragment(F, E, Now, S) end, St, Frags),
+            case St1 of
+                #dtls{ccs_held = true, cv_ok = true} -> change_read_epoch(Now, St1#dtls{ccs_held = false});
+                _ -> St1
+            end;
+        {error, _} ->
+            webrtc_dtls:fail(?ALERT_DECODE_ERROR, decode_error, St)
     end;
 content(application_data, Data, E, _Now, #dtls{handshake_done = true} = St) when E > 0 ->
     case St#dtls.verified of

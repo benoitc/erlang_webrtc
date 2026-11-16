@@ -41,6 +41,12 @@ Of its 1,488 DTLS tests, 217 run and pass, and none fails. The others are:
 
 Running the suite found and fixed: an ECDSA client that could not reach an RSA server, the HelloVerifyRequest version, reassembly of one-byte fragments, wrong alerts for unexpected messages, unsolicited extensions, oversized records and bad Finished messages, a replayed or final flight that made the client resend its own, a DTLS 1.3 ServerHello accepted after a HelloVerifyRequest, alerts in the wrong epoch, ACKs withheld from a peer's KeyUpdates, and empty certificate_authorities accepted.
 
+## DTLS state machine learning (interop/dtlsfuzzer)
+
+DTLS-Fuzzer (pinned in `interop/dtlsfuzzer/DTLS_FUZZER_REV`) learns the state machine of our DTLS 1.2 server from its answers to handshake messages sent in every order. You run it by hand with `interop/dtlsfuzzer/learn.sh`, which compares the learned model with `interop/dtlsfuzzer/models/server_ecdhe_cert_req.dot`.
+
+The first model showed the server taking a ChangeCipherSpec before the client's CertificateVerify, then reading that CertificateVerify encrypted. The server now holds the ChangeCipherSpec until the CertificateVerify is verified (DTLS-74). No other path reaches the connected state.
+
 ## TURN relay (webrtc_turn_interop_SUITE)
 
 Erlang peers against the pion/turn v5 server (`interop/turn`). A filter drops every datagram not addressed to the server, so only relayed pairs can work.

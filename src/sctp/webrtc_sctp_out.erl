@@ -10,7 +10,7 @@
 
 -include("webrtc_sctp_assoc.hrl").
 
--export([event/2, raw/4, ctrl/2, flush/2, take/1, terminate/2, bump/2, bump/3]).
+-export([event/2, raw/4, ctrl/2, flush/2, take/1, terminate/2, abort_peer/1, bump/2, bump/3]).
 
 -spec event(term(), #assoc{}) -> #assoc{}.
 event(E, #assoc{acts = Acts} = A) ->
@@ -104,6 +104,11 @@ pack([C | Rest], Mtu, Size, Cur, Pkts) ->
     end.
 
 %% @doc The association is over: stop every timer and report `Reason'.
+%% @doc An ABORT to the peer, when its tag is known (§8.1).
+-spec abort_peer(#assoc{}) -> #assoc{}.
+abort_peer(#assoc{peer_vtag = 0} = A) -> A;
+abort_peer(#assoc{peer_vtag = Tag} = A) -> raw(Tag, [{abort, false, []}], crc32c, A).
+
 -spec terminate(term(), #assoc{}) -> #assoc{}.
 terminate(Reason, #assoc{snd = Snd, rcv = Rcv, rcf = Rcf} = A) ->
     A1 = A#assoc{
@@ -111,6 +116,7 @@ terminate(Reason, #assoc{snd = Snd, rcv = Rcv, rcf = Rcf} = A) ->
         terminated = true,
         t1 = undefined,
         t2 = undefined,
+        t5 = undefined,
         hb_at = undefined,
         hb_out = undefined,
         ctrl = [],

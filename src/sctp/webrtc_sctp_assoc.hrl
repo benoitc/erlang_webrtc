@@ -170,6 +170,12 @@
     discard = #{} :: #{0..65535 => true},
     %% SACK scheduling.
     got_data = false :: boolean(),
+    %% No packet with DATA processed yet: the first one is acknowledged
+    %% at once (also DATA bundled with COOKIE ECHO, RFC 9260 §5.1.5).
+    first = true :: boolean(),
+    %% The last packet left a gap: the one that closes it is
+    %% acknowledged at once.
+    gap = false :: boolean(),
     only_dups = true :: boolean(),
     sack_now = false :: boolean(),
     packets = 0 :: non_neg_integer(),
@@ -225,6 +231,9 @@
     %% T1 (init / cookie) and T2 (shutdown) timers.
     t1 = undefined :: undefined | {init | cookie, integer(), pos_integer(), non_neg_integer()},
     t2 = undefined :: undefined | {integer(), pos_integer()},
+    %% T5-shutdown-guard (RFC 9260 §9.2): bounds the whole shutdown we
+    %% started.
+    t5 = undefined :: undefined | integer(),
     stale_retries = 0 :: non_neg_integer(),
     preservative = 0 :: non_neg_integer(),
     error_count = 0 :: non_neg_integer(),

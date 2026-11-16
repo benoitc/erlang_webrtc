@@ -101,8 +101,9 @@ handle_data(#sctp_data{tsn = W, data = D} = C, #rcv{cum = Cum} = R0) ->
     end.
 
 accept(_U, #sctp_data{sid = Sid}, #rcv{mis = Mis} = R) when Sid >= Mis ->
-    %% §6.5: report the invalid stream, the TSN is still acknowledged.
-    {ok, R, [], [{invalid_stream, Sid}]};
+    %% §6.5: report the invalid stream, the TSN is still acknowledged;
+    %% the SACK goes with the ERROR, at once.
+    {ok, R#rcv{sack_now = true}, [], [{invalid_stream, Sid}]};
 accept(U, #sctp_data{sid = Sid} = C, #rcv{deferred = Def} = R) ->
     case lists:any(fun({L, Sids, _}) -> U > L andalso affects(Sid, Sids) end, Def) of
         true ->
@@ -449,11 +450,11 @@ packet_done(_Now, #rcv{got_data = false} = R) ->
     R;
 packet_done(Now, #rcv{} = R) ->
     N = R#rcv.packets + 1,
+    Gap = not gb_sets:is_empty(R#rcv.seen),
     Now1 =
-        R#rcv.sack_now orelse R#rcv.only_dups orelse
-            not gb_sets:is_empty(R#rcv.seen) orelse N >= R#rcv.sack_freq orelse
-            R#rcv.sack_delay =:= 0,
-    R1 = R#rcv{packets = N, got_data = false, only_dups = true},
+        R#rcv.first orelse R#rcv.gap orelse R#rcv.sack_now orelse R#rcv.only_dups orelse
+            Gap orelse N >= R#rcv.sack_freq orelse R#rcv.sack_delay =:= 0,
+    R1 = R#rcv{packets = N, got_data = false, only_dups = true, first = false, gap = Gap},
     case Now1 of
         true ->
             R1#rcv{sack_now = true};

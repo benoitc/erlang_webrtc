@@ -398,13 +398,19 @@ send_new(Now, Limit, S0, Acc, Evs) ->
             {S1, Chunk, Evs2} = commit(Now, Sid, S#snd{zwp = undefined, zwp_interval = 0}, Evs1),
             send_new(Now, Limit, S1, [Chunk | Acc], Evs2);
         {S, {Sid, _Len}, Evs1} when S#snd.flight =:= 0, S#snd.rtx_count =:= 0 ->
-            %% The peer window is closed and nothing is in flight: probe
-            %% after one RTO, then back off exponentially.
+            %% The peer window is closed and nothing is in flight: one
+            %% DATA chunk may always be in flight (§6.1 rule A), so the
+            %% first probe goes now (T3 retransmits it with back-off), and
+            %% while the window stays closed later probes back off.
             case S#snd.zwp of
+                undefined when S#snd.zwp_interval =:= 0 ->
+                    {S1, Chunk, Evs2} = commit(Now, Sid, S#snd{zwp = undefined}, Evs1),
+                    S2 = bump(zero_window_probes, S1#snd{zwp_interval = S1#snd.rto}),
+                    {S2, lists:reverse([Chunk | Acc]), lists:reverse(Evs2)};
                 undefined ->
-                    Ival = max(S#snd.rto, S#snd.zwp_interval),
+                    %% The window is still closed after a probe: back off.
                     {
-                        S#snd{zwp = Now + Ival, zwp_interval = Ival},
+                        S#snd{zwp = Now + S#snd.zwp_interval},
                         lists:reverse(Acc),
                         lists:reverse(Evs1)
                     };

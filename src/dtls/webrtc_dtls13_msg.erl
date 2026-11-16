@@ -34,6 +34,7 @@
 -define(EXT_PRE_SHARED_KEY, 41).
 -define(EXT_EARLY_DATA, 42).
 -define(EXT_PSK_MODES, 45).
+-define(EXT_CERTIFICATE_AUTHORITIES, 47).
 -define(MESSAGE_HASH, 254).
 
 %%====================================================================
@@ -215,14 +216,24 @@ body(encrypted_extensions, Bin) ->
 body(certificate_request, Bin) ->
     {Ctx, Rest} = take8(Bin),
     {Block, <<>>} = take16(Rest),
-    #{context => Ctx, extensions => exts(Block)};
+    Exts = exts(Block),
+    %% RFC 8446 §4.2.4: DistinguishedName authorities<3..2^16-1>, each
+    %% opaque<1..2^16-1>.
+    case lists:keyfind(?EXT_CERTIFICATE_AUTHORITIES, 1, Exts) of
+        {_, <<L:16, Names:L/binary>>} when L >= 3 -> ok = distinguished_names(Names);
+        {_, _} -> error(decode_error);
+        false -> ok
+    end,
+    #{context => Ctx, extensions => Exts};
 body(certificate, Bin) ->
     {Ctx, Rest} = take8(Bin),
     {List, <<>>} = take24(Rest),
     #{context => Ctx, certs => entries(List, [])};
 body(certificate_verify, <<S:16, L:16, Sig:L/binary>>) ->
     #{scheme => S, signature => Sig};
-body(finished, VD) when byte_size(VD) =:= 32; byte_size(VD) =:= 48 ->
+%% Any length: a wrong verify_data, whatever its size, fails its check
+%% with decrypt_error (RFC 8446 §4.4.4).
+body(finished, VD) ->
     VD;
 %% RFC 9147 §9: ConnectionId cids<0..2^16-1> (each opaque<0..2^8-1>)
 %% and the usage; and the number of CIDs asked for.
@@ -246,6 +257,9 @@ body(new_session_ticket, <<Lifetime:32, AgeAdd:32, Rest0/binary>>) ->
             false -> 0
         end,
     #{lifetime => Lifetime, age_add => AgeAdd, nonce => Nonce, ticket => Ticket, max_early_data => MaxEarly}.
+
+distinguished_names(<<>>) -> ok;
+distinguished_names(<<N:16, _:N/binary, Rest/binary>>) when N >= 1 -> distinguished_names(Rest).
 
 entries(<<>>, Acc) ->
     lists:reverse(Acc);

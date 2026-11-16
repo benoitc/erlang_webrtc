@@ -35,6 +35,8 @@ The happy path is ClientHello, HelloVerifyRequest, ClientHello, then the server'
 - The sink state the fuzzer reaches when it changes epoch on its own side: we cannot read what it sends after that.
 - The state an empty client Certificate leads to: it answers with a handshake_failure alert.
 
+DTLS-Fuzzer may report a few queries as nondeterministic, where the same CertificateVerify sometimes gets a decrypt_error alert. TLS-Attacker drops the leading zero bytes of its RSA signatures, so about one signature in 256 is shorter than the modulus, and we refuse it (RFC 8017 §8.2.2). The fuzzer reruns these queries, and they do not change the model.
+
 The first run found that the server took a ChangeCipherSpec before the CertificateVerify, so the fuzzer's encrypted CertificateVerify was read in epoch 1 (RFC 5246 §7.4.8). The server now holds that ChangeCipherSpec until the CertificateVerify is verified.
 
 The DTLS-Fuzzer revision is pinned in `DTLS_FUZZER_REV`. When you update it, or change the handshake on purpose, relearn the model and commit the new one.

@@ -141,6 +141,10 @@ decrypt(E, R, Now, #dtls{read_keys = RK, replay = Rp} = St) ->
     W = maps:get(E, Rp, webrtc_dtls_record:replay_new()),
     {Max, _} = W,
     case webrtc_dtls13_record:open(R, Keys, Max + 1) of
+        record_overflow ->
+            %% RFC 8446 §5.2: an authentic record above 2^14 bytes of
+            %% plaintext ends the connection.
+            fail(?ALERT_RECORD_OVERFLOW, record_overflow, St);
         {ok, Seq, Type, Content} ->
             case webrtc_dtls_record:replay_check(Seq, W) of
                 ok ->
@@ -190,6 +194,8 @@ content(_Type, _Data, _E, _Seq, _Now, St) ->
 
 %% RFC 8446 §6: close_notify and user_canceled are the only non-error
 %% alerts; every other alert terminates the connection.
+alert(Level, _Desc, St) when Level =/= 1, Level =/= 2 ->
+    fail(?ALERT_ILLEGAL_PARAMETER, {bad_alert_level, Level}, St);
 alert(_Level, ?ALERT_CLOSE_NOTIFY, St) ->
     {Dgrams, St1} = webrtc_dtls:alert_datagram(1, ?ALERT_CLOSE_NOTIFY, St),
     St2 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St1, Dgrams),
@@ -233,9 +239,13 @@ handshake(F, E, Seq, Now, St) ->
 %%====================================================================
 
 ack(Recs, E, Now, St) ->
-    %% Erratum 8108: an ACK cannot cover records of a later epoch.
-    lists:any(fun({RE, _}) -> RE > E end, Recs) andalso fail(?ALERT_ILLEGAL_PARAMETER, ack_for_later_epoch, St),
-    Known = [maps:get(R, St#dtls.sent_recs) || R <- Recs, maps:is_key(R, St#dtls.sent_recs)],
+    %% §7: during the handshake an ACK is sent in an epoch at least that of
+    %% the records it acknowledges. After it only the highest sending epoch
+    %% is required, and a peer that did not update its keys acknowledges
+    %% our later epochs from an older one (Figure 14).
+    not St#dtls.handshake_done andalso lists:any(fun({RE, _}) -> RE > E end, Recs) andalso
+        fail(?ALERT_ILLEGAL_PARAMETER, ack_for_later_epoch, St),
+    Known = lists:append([maps:get(R, St#dtls.sent_recs) || R <- Recs, maps:is_key(R, St#dtls.sent_recs)]),
     case Known of
         [] ->
             St;
@@ -353,10 +363,15 @@ arm_ack(_Now, St) ->
 send_ack(#dtls{rcv_recs = []} = St) ->
     St;
 send_ack(#dtls{rcv_recs = Recs0, write_epoch = E, mtu = Mtu} = St) ->
-    %% Erratum 8108: an ACK covers no record of a later epoch than its
-    %% own. Records the peer sent after its KeyUpdate wait until ours is
-    %% acknowledged too (webrtc_dtls13_epoch:key_update_acked/1).
-    {Recs, Later} = lists:partition(fun({RE, _}) -> RE =< E end, Recs0),
+    %% §7: during the handshake an ACK covers no record of a later epoch
+    %% than its own. After the handshake it goes in our highest sending
+    %% epoch whatever the records' epochs: a peer's KeyUpdates are
+    %% acknowledged without waiting for one of ours (Figure 14).
+    {Recs, Later} =
+        case St#dtls.handshake_done of
+            true -> {Recs0, []};
+            false -> lists:partition(fun({RE, _}) -> RE =< E end, Recs0)
+        end,
     N = max(1, (Mtu - webrtc_dtls13_record:overhead(St#dtls.peer_cid) - 2) div 16),
     case Recs of
         [] ->
@@ -458,46 +473,70 @@ encode(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
             {ok, Rec, Seq, St#dtls{write_seq = Seqs#{E => Seq + 1}}}
     end.
 
-%% Encode the unacknowledged parts of a flight, one fragment per
-%% record, remembering which record carries which bytes. At most
-%% MAX_RECORDS records go in one transmission (§5.8.3); the rest follow
-%% the next ACK or timer.
-transmit(Items, St0) ->
-    {Recs, St, _} = lists:foldl(
-        fun(Item, {Acc, S, Left}) ->
-            {Rs, S1} = item_records(Item, Left, S),
-            {[Rs | Acc], S1, Left - length(Rs)}
-        end,
-        {[], St0, ?MAX_RECORDS},
-        Items
-    ),
-    {St, webrtc_dtls12:pack(lists:append(lists:reverse(Recs)), record_mtu(St))}.
+%% Encode the unacknowledged parts of a flight. Fragments of consecutive
+%% messages of one epoch share a record, and a record takes what is left
+%% of the datagram before a new datagram starts, so a flight uses as few
+%% records and datagrams as the MTU allows. Each record remembers the
+%% fragments it carries, for ACKs. At most MAX_RECORDS records go in one
+%% transmission (§5.8.3); the rest follow the next ACK or timer.
+transmit(Items, St) ->
+    Pieces = [{E, webrtc_dtls_msg:type_code(Type), byte_size(Body), MS, Body, Off, End}
+              || {handshake, E, Type, MS, Body} = Item <- Items, {Off, End} <- unacked(Item, St#dtls.acked)],
+    build(Pieces, #{mtu => record_mtu(St), used => 0, rec => none, recs => 0, dgram => [], out => []}, St).
 
-item_records(_Item, Left, St) when Left =< 0 ->
-    {[], St};
-item_records({handshake, E, Type, MS, Body} = Item, Left, St) ->
-    Max = max(1, record_mtu(St) - header(E, St) - 12),
-    Chunks = lists:sublist(lists:append([chunks(Off, End, Max) || {Off, End} <- unacked(Item, St#dtls.acked)]), Left),
-    T = webrtc_dtls_msg:type_code(Type),
-    L = byte_size(Body),
-    {Recs, St1} = lists:foldl(
-        fun({Off, Len}, {Acc, S}) ->
-            Frag = <<T, L:24, MS:16, Off:24, Len:24, (binary:part(Body, Off, Len))/binary>>,
-            {ok, Rec, RSeq, S1} = encode(handshake, E, Frag, S),
-            {[Rec | Acc], S1#dtls{sent_recs = maps:put({E, RSeq}, {MS, Off, Len}, S1#dtls.sent_recs)}}
-        end,
-        {[], St},
-        Chunks
-    ),
-    {lists:reverse(Recs), St1}.
+build([], B, St) ->
+    finish(B, St);
+build(_, #{rec := none, recs := N} = B, St) when N >= ?MAX_RECORDS ->
+    finish(B, St);
+build([{E, T, L, MS, Body, Off, End} = P | Rest], B, St) ->
+    %% A fragment needs its 12-byte header and a byte, or only the header
+    %% for an empty message.
+    Need = case End - Off of 0 -> 12; _ -> 13 end,
+    case room(E, B, St) of
+        Room when Room >= Need ->
+            N = min(End - Off, Room - 12),
+            Frag = <<T, L:24, MS:16, Off:24, N:24, (binary:part(Body, Off, N))/binary>>,
+            B1 = add_fragment(E, Frag, {MS, Off, N}, B),
+            case Off + N of
+                End -> build(Rest, B1, St);
+                Off1 -> build([setelement(6, P, Off1) | Rest], B1, St)
+            end;
+        _ ->
+            {B1, St1} = make_room(B, St),
+            build([P | Rest], B1, St1)
+    end.
 
-%% Split [Off, End) in pieces of at most Max bytes; an empty message is
-%% one empty fragment.
-chunks(0, 0, _Max) -> [{0, 0}];
-chunks(Off, End, _Max) when Off >= End -> [];
-chunks(Off, End, Max) ->
-    N = min(Max, End - Off),
-    [{Off, N} | chunks(Off + N, End, Max)].
+%% Payload bytes the next fragment of epoch E can take: the rest of the
+%% open record of that epoch, or of a new record in this datagram.
+room(E, #{rec := {E, Size, _, _}, mtu := Mtu, used := U}, St) -> Mtu - U - header(E, St) - Size;
+room(E, #{rec := none, mtu := Mtu, used := U}, St) -> Mtu - U - header(E, St);
+room(_E, _B, _St) -> 0.
+
+add_fragment(E, Frag, Info, #{rec := none} = B) ->
+    B#{rec := {E, byte_size(Frag), [Frag], [Info]}};
+add_fragment(E, Frag, Info, #{rec := {E, Size, Payload, Infos}} = B) ->
+    B#{rec := {E, Size + byte_size(Frag), [Frag | Payload], [Info | Infos]}}.
+
+%% Close the open record, or else the datagram (a datagram without any
+%% record yet always has room, the MTU leaves space for one fragment).
+make_room(#{rec := none, dgram := D, out := Out} = B, St) ->
+    {B#{used := 0, dgram := [], out := [iolist_to_binary(lists:reverse(D)) | Out]}, St};
+make_room(B, St) ->
+    close_record(B, St).
+
+close_record(#{rec := {E, _, Payload, Infos}, used := U, recs := N, dgram := D} = B, St) ->
+    {ok, Rec, RSeq, St1} = encode(handshake, E, lists:reverse(Payload), St),
+    St2 = St1#dtls{sent_recs = maps:put({E, RSeq}, lists:reverse(Infos), St1#dtls.sent_recs)},
+    {B#{rec := none, used := U + byte_size(Rec), recs := N + 1, dgram := [Rec | D]}, St2}.
+
+finish(#{rec := none, dgram := [], out := Out}, St) ->
+    {St, lists:reverse(Out)};
+finish(#{rec := none} = B, St) ->
+    {B1, St1} = make_room(B, St),
+    finish(B1, St1);
+finish(B, St) ->
+    {B1, St1} = close_record(B, St),
+    finish(B1, St1).
 
 %% The timer a new flight starts with.
 base(#dtls{rtx_base = undefined, rtx_initial = I}) -> I;

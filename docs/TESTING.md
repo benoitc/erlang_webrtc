@@ -58,6 +58,7 @@ Each independent implementation runs behind the same line-delimited JSON protoco
 ```sh
 make -C interop pion          # Go toolchain
 make -C interop aiortc        # Python 3
+make -C interop bogo          # BoringSSL's test runner (Go), see interop/bogo/README.md
 (cd interop/browser && npm ci && npx playwright install chromium firefox)
 ```
 

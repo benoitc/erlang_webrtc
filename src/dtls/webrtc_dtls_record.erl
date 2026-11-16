@@ -29,7 +29,10 @@
 -define(DTLS12, 16#FEFD).
 -define(MAX_PLAINTEXT, 16384).
 -define(MAX_CIPHERTEXT, (16384 + 2048)).
--define(WINDOW, 64).
+%% RFC 6347 §4.1.2.6 and RFC 9147 §4.5.1 ask for at least 32 and allow a
+%% larger window: 256 tolerates reordering a 64 entry window drops, for
+%% a few more bytes of bitmap.
+-define(WINDOW, 256).
 
 -type content_type() ::
     change_cipher_spec | alert | handshake | application_data | heartbeat | tls12_cid | ack | 0..255.
@@ -157,7 +160,7 @@ overhead(#{explicit_nonce := E}, Cid) when Cid =:= undefined; Cid =:= <<>> -> 13
 overhead(#{explicit_nonce := E}, Cid) -> 13 + E + 16 + byte_size(Cid) + 1.
 
 %% @doc Decrypt a protected record, either format: `{ok, Type, Content}'.
--spec open(dtls_record(), cipher()) -> {ok, content_type(), binary()} | {error, bad_record_mac}.
+-spec open(dtls_record(), cipher()) -> {ok, content_type(), binary()} | {error, bad_record_mac | record_overflow}.
 open(#{type := tls12_cid, version := Version, epoch := Epoch, seq := Seq, cid := Cid, fragment := Frag},
      #{cipher := C, key := K, iv := IV, explicit_nonce := E}) ->
     case Frag of
@@ -190,12 +193,15 @@ inner(Inner, I) ->
             inner(Inner, I - 1);
         T when T =/= 25, I =< ?MAX_PLAINTEXT ->
             {ok, type_name(T), binary:part(Inner, 0, I)};
+        T when T =/= 25 ->
+            %% Authentic but above 2^14 bytes (RFC 5246 §6.2.1).
+            {error, record_overflow};
         _ ->
             {error, bad_record_mac}
     end.
 
 %% @doc Decrypt a protected record.
--spec unprotect(dtls_record(), cipher()) -> {ok, binary()} | {error, bad_record_mac}.
+-spec unprotect(dtls_record(), cipher()) -> {ok, binary()} | {error, bad_record_mac | record_overflow}.
 unprotect(
     #{type := Type, version := Version, epoch := Epoch, seq := Seq, fragment := Frag},
     #{cipher := C, key := K, iv := IV, explicit_nonce := E}
@@ -213,6 +219,7 @@ unprotect(
             AAD = <<SeqNum/binary, (type_code(Type)), Version:16, CtLen:16>>,
             case crypto:crypto_one_time_aead(C, K, Nonce, Ct, AAD, Tag, false) of
                 Plain when is_binary(Plain), byte_size(Plain) =< ?MAX_PLAINTEXT -> {ok, Plain};
+                Plain when is_binary(Plain) -> {error, record_overflow};
                 _ -> {error, bad_record_mac}
             end;
         _ ->

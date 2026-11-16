@@ -145,7 +145,7 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
         remote_fps = maps:get(remote_fingerprints, Opts, undefined),
         srtp_profiles = maps:get(srtp_profiles, Opts, ?DEFAULT_SRTP),
         versions = Versions,
-        suites = suites_for_key(Key, Suites),
+        suites = suites_for_key(Role, Key, Suites),
         suites13 = Suites13,
         rekey_records = maps:get(rekey_records, Opts, 1 bsl 23),
         cookie_lifetime = maps:get(cookie_lifetime, Opts, 60000),
@@ -170,9 +170,12 @@ new(#{role := Role, cert := #{der := Der, key := Key}} = Opts) when
 version_atom('dtlsv1.3') -> dtls13;
 version_atom('dtlsv1.2') -> dtls12.
 
-%% Only offer DTLS 1.2 suites whose authentication matches our
-%% certificate key.
-suites_for_key(Key, Suites) ->
+%% A DTLS 1.2 suite names the server's key type: a server only picks
+%% suites its certificate can sign, a client offers them all, whatever
+%% its own key (its CertificateVerify does not depend on the suite).
+suites_for_key(client, _Key, Suites) ->
+    [S || S <- Suites, webrtc_dtls_crypto:suite(S) =/= error];
+suites_for_key(server, Key, Suites) ->
     Auth =
         case element(1, Key) of
             'RSAPrivateKey' -> rsa;
@@ -506,7 +509,15 @@ encode_record(Type, E, Data, St) ->
 
 %% @private
 -spec alert_datagram(1 | 2, 0..255, state()) -> {[binary()], state()}.
-alert_datagram(Level, Desc, #dtls{write_epoch = E} = St) ->
+alert_datagram(Level, Desc, #dtls{write_epoch = E0, write_ciphers = Cs, version = V, role = Role, state = S} = St) ->
+    %% A DTLS 1.3 server that sent its Finished holds back application
+    %% data until the client's Finished but has application keys, and the
+    %% client reads epoch 3 once it processed that Finished: alerts go
+    %% there. Otherwise alerts use the epoch the peer last saw from us.
+    E = case {V, Role, maps:is_key(3, Cs)} of
+        {dtls13, server, true} when S =:= wait_client_cert; S =:= wait_client_cv; S =:= wait_client_finished -> 3;
+        _ -> E0
+    end,
     case encode_record(alert, E, <<Level, Desc>>, St) of
         {ok, R, St1} -> {[R], St1};
         {error, _} -> {[], St}

@@ -106,11 +106,29 @@ srtp_ext(Profiles) -> [{use_srtp, {Profiles, <<>>}}].
 %% Dispatch
 %%====================================================================
 
-handle(Type, Body, Full, Now, St) ->
-    case webrtc_dtls_msg:decode_body(Type, Body) of
-        {ok, Msg} -> msg(St#dtls.role, St#dtls.state, Type, Msg, Full, Now, St);
-        {error, _} -> fail(?ALERT_DECODE_ERROR, {decode_error, Type}, St)
+%% A message the state does not expect is unexpected_message whatever
+%% its body (RFC 5246 §7.2.2); only an expected one that does not parse
+%% is a decode_error.
+handle(Type, Body, Full, Now, #dtls{role = Role, state = State} = St) ->
+    case expects(Role, State, Type) of
+        false ->
+            fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St);
+        true ->
+            case webrtc_dtls_msg:decode_body(Type, Body) of
+                {ok, Msg} -> msg(Role, State, Type, Msg, Full, Now, St);
+                {error, _} -> fail(?ALERT_DECODE_ERROR, {decode_error, Type}, St)
+            end
     end.
+
+expects(client, wait_server_hello, T) -> T =:= hello_verify_request orelse T =:= server_hello;
+expects(client, wait_server_hello_done, T) ->
+    lists:member(T, [certificate, server_key_exchange, certificate_request, server_hello_done]);
+expects(client, wait_server_finished, T) -> T =:= finished;
+expects(server, wait_client_hello, T) -> T =:= client_hello;
+expects(server, wait_client_finished, T) ->
+    lists:member(T, [certificate, client_key_exchange, certificate_verify, finished]);
+expects(_, connected, T) -> T =:= client_hello orelse T =:= hello_request;
+expects(_, _, _) -> false.
 
 %% Client side.
 msg(client, wait_server_hello, hello_verify_request, #{cookie := C}, _Full, _Now, St) when
@@ -125,6 +143,11 @@ msg(client, wait_server_hello, server_hello, #{extensions := Exts} = M, Full, _N
             %% supported_versions: DTLS 1.3 (RFC 8446 §4.2.1).
             lists:member(dtls13, St#dtls.versions) orelse
                 fail(?ALERT_UNSUPPORTED_EXTENSION, {unsolicited_extension, 43}, St),
+            %% A DTLS 1.3 server asks for a cookie with HelloRetryRequest
+            %% (RFC 9147 §5.1); one that sent HelloVerifyRequest is a DTLS
+            %% 1.2 server and cannot select DTLS 1.3 afterwards.
+            St#dtls.hvr_count =:= 0 orelse
+                fail(?ALERT_ILLEGAL_PARAMETER, dtls13_after_hello_verify_request, St),
             <<_:12/binary, Body/binary>> = Full,
             webrtc_dtls13_hs:client_server_hello(M, Body, St);
         false ->
@@ -150,7 +173,10 @@ msg(client, wait_server_hello_done, server_hello_done, _M, Full, _Now, St) when
 msg(client, wait_server_finished, finished, VD, Full, _Now, St) ->
     check_finished(server, VD, St),
     St1 = add(Full, St),
-    maybe_verify(St1#dtls{handshake_done = true, state = connected, rtx_at = infinity});
+    %% The server's flight is the final one (RFC 6347 §4.2.4): once it
+    %% arrived our flight was received, so a copy of the server's flight
+    %% must not make us resend ours.
+    maybe_verify(St1#dtls{handshake_done = true, state = connected, rtx_at = infinity, last_flight = []});
 %% Server side.
 msg(server, wait_client_hello, client_hello, M, Full, Now, St) ->
     server_client_hello(M, Full, Now, St);
@@ -232,12 +258,13 @@ client_server_hello(M, St) ->
             undefined -> undefined;
             <<L, C:L/binary>> when is_binary(St#dtls.cid) -> C;
             _ when is_binary(St#dtls.cid) -> fail(?ALERT_DECODE_ERROR, bad_connection_id, St);
-            _ -> fail(?ALERT_ILLEGAL_PARAMETER, {unsolicited_extension, ?EXT_CID}, St)
+            _ -> fail(?ALERT_UNSUPPORTED_EXTENSION, {unsolicited_extension, ?EXT_CID}, St)
         end,
     Known = [supported_groups, ec_point_formats, extended_master_secret, renegotiation_info, use_srtp, ?EXT_CID],
-    %% RFC 5246 §7.4.1.4: the server must not send extensions we did not
-    %% offer (supported_groups is not sent by servers but tolerated).
-    [fail(?ALERT_ILLEGAL_PARAMETER, {unsolicited_extension, T}, St) || {T, _} <- Exts, not lists:member(T, Known)],
+    %% RFC 5246 §7.4.1.4: an extension we did not offer aborts the
+    %% handshake with unsupported_extension (supported_groups is not sent
+    %% by servers but tolerated).
+    [fail(?ALERT_UNSUPPORTED_EXTENSION, {unsolicited_extension, T}, St) || {T, _} <- Exts, not lists:member(T, Known)],
     St#dtls{
         peer_cid = PeerCid,
         server_random = SR,
@@ -341,9 +368,10 @@ cookie(CR, Sid, Suites, #dtls{cookie_secret = K}) ->
     crypto:mac(hmac, sha256, K, [CR, Sid, <<<<S:16>> || S <- Suites>>]).
 
 %% Stateless reply; HelloVerifyRequest always has message_seq 0 and is
-%% not part of the transcript.
+%% not part of the transcript. Its server_version is DTLS 1.0 whatever
+%% version follows (RFC 6347 §4.2.1).
 send_hello_verify(Cookie, St) ->
-    Body = webrtc_dtls_msg:encode_body(hello_verify_request, #{version => ?DTLS12, cookie => Cookie}),
+    Body = webrtc_dtls_msg:encode_body(hello_verify_request, #{version => ?DTLS10, cookie => Cookie}),
     {_, St1} = queue_handshake(hello_verify_request, Body, false, St#dtls{send_msg_seq = 0}),
     St1#dtls{send_msg_seq = 0}.
 
@@ -500,7 +528,8 @@ check_finished(PeerRole, VD, #dtls{read_epoch = RE} = St) ->
     RE >= 1 orelse fail(?ALERT_UNEXPECTED_MESSAGE, finished_before_ccs, St),
     #{prf := H} = St#dtls.suite,
     Expected = webrtc_dtls_crypto:finished(H, PeerRole, St#dtls.master, transcript_hash(St)),
-    crypto:hash_equals(Expected, VD) orelse fail(?ALERT_DECRYPT_ERROR, bad_finished, St),
+    (byte_size(VD) =:= byte_size(Expected) andalso crypto:hash_equals(Expected, VD)) orelse
+        fail(?ALERT_DECRYPT_ERROR, bad_finished, St),
     ok.
 
 %% A scheme the peer used must be one we offered, and one we can verify.

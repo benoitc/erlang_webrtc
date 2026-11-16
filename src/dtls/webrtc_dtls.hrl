@@ -8,6 +8,7 @@
 %% Alert descriptions (RFC 5246 §7.2).
 -define(ALERT_CLOSE_NOTIFY, 0).
 -define(ALERT_UNEXPECTED_MESSAGE, 10).
+-define(ALERT_RECORD_OVERFLOW, 22).
 -define(ALERT_HANDSHAKE_FAILURE, 40).
 -define(ALERT_BAD_CERTIFICATE, 42).
 -define(ALERT_UNSUPPORTED_CERTIFICATE, 43).
@@ -126,7 +127,9 @@
     %% flight (RecordNumber => {MsgSeq, Offset, Length}) and the ranges
     %% the peer acknowledged (MsgSeq => [{Start, End}]).
     read_keys = #{} :: #{non_neg_integer() => map()},
-    sent_recs = #{} :: #{{non_neg_integer(), non_neg_integer()} => {non_neg_integer(), non_neg_integer(), non_neg_integer()}},
+    %% Records of the flight sent: {Epoch, Seq} => the fragments
+    %% {MessageSeq, Offset, Length} each carries.
+    sent_recs = #{} :: #{{non_neg_integer(), non_neg_integer()} => [{non_neg_integer(), non_neg_integer(), non_neg_integer()}]},
     acked = #{} :: #{non_neg_integer() => [{non_neg_integer(), non_neg_integer()}]},
     %% Handshake records of the current incoming flight to acknowledge,
     %% the ACK timer and whether an ACK must be sent now.

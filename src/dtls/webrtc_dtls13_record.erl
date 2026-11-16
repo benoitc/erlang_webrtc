@@ -177,7 +177,7 @@ protect(Type, Epoch, Seq, Plain, #{cipher := C, key := K} = Keys, Cid0) ->
 %% the record. Returns the full sequence number, the inner content type
 %% and the content.
 -spec open(rec(), webrtc_dtls13_keys:keys(), non_neg_integer()) ->
-    {ok, non_neg_integer(), webrtc_dtls_record:content_type(), binary()} | error.
+    {ok, non_neg_integer(), webrtc_dtls_record:content_type(), binary()} | record_overflow | error.
 open(#{format := unified, seq_len := SL, enc_seq := Enc, first := First, length := L, body := Body} = R, Keys, Next) ->
     Bits = SL * 8,
     <<M:Bits, _/binary>> = mask(Keys, Body),
@@ -198,6 +198,9 @@ open(#{format := unified, seq_len := SL, enc_seq := Enc, first := First, length 
                 {ok, Type, Content} -> {ok, Seq, Type, Content};
                 error -> error
             end;
+        Inner when is_binary(Inner) ->
+            %% Authentic but above 2^14 bytes (RFC 8446 §5.2).
+            record_overflow;
         _ ->
             error
     end;

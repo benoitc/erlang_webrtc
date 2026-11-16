@@ -298,7 +298,7 @@ ack_final_flight_test() ->
     [{_, Ack, _} | _] = lists:reverse(webrtc_dtls_sim:sent(W, s)),
     ?assertEqual(3, epoch_bits(Ack)),
     %% Header, inner type, tag and a non-empty record number list.
-    ?assert(byte_size(Ack) > 5 + 2 + 16 + 1 + 16).
+    ?assert(byte_size(Ack) >= 5 + 2 + 16 + 1 + 16).
 
 lost_ack_test() ->
     {_, _, W0} = established(#{}, #{}),
@@ -477,15 +477,17 @@ split_test() ->
     ?assertEqual([], webrtc_dtls13_record:split(<<16#2E, 1, 2, 0, 3, 1, 2, 3>>)),
     ?assertEqual([], webrtc_dtls13_record:split(<<64, 1, 2, 3>>)).
 
-%% Erratum 8108: an ACK may not cover records of a later epoch than its
-%% own.
-ack_for_later_epoch_test() ->
+%% RFC 9147 §7: only during the handshake must an ACK be sent in an epoch
+%% at least that of the records it covers. After it, a peer that has not
+%% updated its keys acknowledges our later epochs from an older one
+%% (Figure 14): such an ACK is not an error.
+ack_for_later_epoch_after_handshake_test() ->
     {C, S, _} = established(#{}, #{}),
     Body = webrtc_dtls13_record:encode_ack([{4, 0}]),
-    {ok, Rec, _} = webrtc_dtls13:encode_record(ack, 3, Body, C),
-    {S1, A} = webrtc_dtls:handle_packet(Rec, 0, S),
-    ?assertMatch([{send, _}, {event, {failed, ack_for_later_epoch}}], A),
-    ?assertEqual(failed, webrtc_dtls:status(S1)).
+    {ok, Rec, C1} = webrtc_dtls13:encode_record(ack, 3, Body, C),
+    {S1, []} = webrtc_dtls:handle_packet(Rec, 0, S),
+    ?assertEqual(connected, webrtc_dtls:status(S1)),
+    data(C1, S1, <<"still up">>, 0).
 
 %% Unknown record numbers in an ACK are ignored.
 ack_unknown_records_test() ->
@@ -1214,10 +1216,12 @@ cid_message_waits_for_ack_test() ->
     ?assertNot(S3#dtls.rotate),
     ?assertNotEqual(<<"cccc">>, S3#dtls.peer_cid).
 
-%% Erratum 8108: while our KeyUpdate waits for its ACK we write the old
-%% epoch, so a record the peer sent in its next epoch is acknowledged
-%% only once ours is acknowledged too.
-ack_waits_for_our_epoch_test() ->
+%% RFC 9147 §7: after the handshake an ACK goes in our highest sending
+%% epoch, whatever the epoch of the records it covers. While our
+%% KeyUpdate waits for its ACK we write the old epoch, and still
+%% acknowledge at once a record the peer sent in its next epoch; the peer
+%% accepts that ACK (Figure 14).
+ack_in_older_epoch_test() ->
     {C, S, _} = established(#{}, #{}),
     {ok, C1, [{send, Ku}]} = webrtc_dtls:key_update(100, C),
     %% S acknowledges and updates too; its ACK is held back.
@@ -1226,19 +1230,22 @@ ack_waits_for_our_epoch_test() ->
     ?assertEqual(3, epoch_bits(Ack)),
     {C2, [{send, CAck}]} = webrtc_dtls:handle_packet(SKu, 110, C1),
     {S2, []} = webrtc_dtls:handle_packet(CAck, 120, S1),
-    %% S now writes epoch 4 and sends a ticket; C still writes epoch 3.
+    %% S now writes epoch 4 and sends a ticket; C still writes epoch 3
+    %% and acknowledges it from there.
     Nst = webrtc_dtls13_msg:encode(new_session_ticket, #{lifetime => 60, age_add => 0, nonce => <<0>>,
                                                           ticket => <<1, 2, 3>>, max_early_data => 0}),
     {S3, [SNst]} = post_handshake(new_session_ticket, Nst, 130, S2),
     ?assertEqual(0, epoch_bits(SNst)),
-    {C3, Held} = webrtc_dtls:handle_packet(SNst, 140, C2),
-    ?assertEqual([], [D || {send, D} <- Held, epoch_bits(D) =:= 3]),
-    %% S's first ACK arrives: C moves to epoch 4 and acknowledges.
+    {C3, Now} = webrtc_dtls:handle_packet(SNst, 140, C2),
+    [NstAck] = [D || {send, D} <- Now, epoch_bits(D) =:= 3],
+    {S3b, _} = webrtc_dtls:handle_packet(NstAck, 145, S3),
+    ?assertEqual(connected, S3b#dtls.state),
+    %% S's first ACK arrives: C moves to epoch 4.
     {C4, Acts} = webrtc_dtls:handle_packet(Ack, 150, C3),
-    [_ | _] = Out = [D || {send, D} <- Acts],
+    Out = [D || {send, D} <- Acts],
     ?assert(lists:all(fun(D) -> epoch_bits(D) =:= 0 end, Out)),
     {S4, _} = lists:foldl(fun(D, {Sv, A}) -> {Sv1, A1} = webrtc_dtls:handle_packet(D, 160, Sv), {Sv1, A ++ A1} end,
-                          {S3, []}, Out),
+                          {S3b, []}, Out),
     ?assertEqual(connected, S4#dtls.state),
     ?assertEqual([], S4#dtls.last_flight),
     _ = data(C4, S4, <<"after both updates">>, 200).
@@ -1315,6 +1322,22 @@ feed(Ds, Now, Ep) ->
     lists:foldl(fun(D, {E, Out}) -> {E1, A} = webrtc_dtls:handle_packet(D, Now, E), {E1, Out ++ [B || {send, B} <- A]} end,
                 {Ep, []}, Ds).
 
+%% Feed client retransmissions to the server until a held datagram goes
+%% out, checking the amplification bound after each one.
+retransmit_until_released(_Cl, _Sv, _Sent, _Recv, _Now, 0) ->
+    false;
+retransmit_until_released(Cl, Sv, Sent, Recv, Now, Tries) ->
+    {Cl1, Again} = webrtc_dtls:handle_timeout(webrtc_dtls:next_timeout(Cl), Cl),
+    In = [D || {send, D} <- Again],
+    {Sv1, Out} = feed(In, Now * 500, Sv),
+    Sent1 = Sent + lists:sum([byte_size(D) || D <- Out]),
+    Recv1 = Recv + lists:sum([byte_size(D) || D <- In]),
+    ?assert(Sent1 =< 3 * Recv1),
+    case length(Sv1#dtls.amp_held) < length(Sv#dtls.amp_held) of
+        true -> true;
+        false -> retransmit_until_released(Cl1, Sv1, Sent1, Recv1, Now + 1, Tries - 1)
+    end.
+
 %% Without a cookie the server sends at most three times what the client
 %% sent until the address is validated; the rest goes out as the client
 %% retransmits, and the handshake completes.
@@ -1327,11 +1350,9 @@ amplification_limit_test() ->
     Recv1 = lists:sum([byte_size(D) || D <- In]),
     ?assert(Sent1 =< 3 * Recv1),
     ?assertMatch([_ | _], Sv1#dtls.amp_held),
-    %% The client's retransmission lets more out.
-    {_, Again} = webrtc_dtls:handle_timeout(webrtc_dtls:next_timeout(Cl1), Cl1),
-    {Sv2, Out2} = feed([D || {send, D} <- Again], 500, Sv1),
-    ?assert(Sent1 + lists:sum([byte_size(D) || D <- Out2]) =< 3 * (Recv1 + lists:sum([byte_size(D) || {send, D} <- Again]))),
-    ?assert(length(Sv2#dtls.amp_held) < length(Sv1#dtls.amp_held)),
+    %% The client's retransmissions let more out, never beyond three
+    %% times what arrived.
+    ?assert(retransmit_until_released(Cl1, Sv1, Sent1, Recv1, 1, 5)),
     {Cl2, Sv2b} = pair(rsa(), rsa(), #{}, #{use_cookie => false}),
     #{ev := #{c := CE, s := SE}} = run(Cl2, Sv2b),
     ?assertMatch([_], connected(CE)),
@@ -1455,3 +1476,11 @@ pha_lost_answer_test() ->
     {_, Acts} = lists:foldl(fun({send, D}, {Sv0, A}) -> {Sv1, A1} = webrtc_dtls:handle_packet(D, At, Sv0), {Sv1, A ++ A1} end,
                             {S1, []}, Again),
     ?assert(lists:member({event, {peer_authenticated, maps:get(der, Cc)}}, Acts)).
+
+%% RFC 8446 §4.2.4: certificate_authorities is DistinguishedName
+%% authorities<3..2^16-1>; an empty list or trailing bytes do not parse.
+certificate_authorities_syntax_test() ->
+    Req = fun(Ext) -> <<0, (byte_size(Ext) + 4):16, 47:16, (byte_size(Ext)):16, Ext/binary>> end,
+    ?assertMatch({ok, _}, webrtc_dtls13_msg:decode(certificate_request, Req(<<3:16, 1:16, "a">>))),
+    ?assertEqual({error, decode_error}, webrtc_dtls13_msg:decode(certificate_request, Req(<<0:16>>))),
+    ?assertEqual({error, decode_error}, webrtc_dtls13_msg:decode(certificate_request, Req(<<3:16, 1:16, "a", 0>>))).

@@ -1,9 +1,10 @@
 %% Test-only bottleneck link: a drop-tail FIFO served at a fixed
 %% capacity, followed by a propagation delay, with optional seeded
-%% random loss before the queue, and optional ECN marking: with
-%% `ecn_ms', an ECT packet (`{rtp, _, _, 2}') that finds the queue longer
-%% than that may be marked CE (RFC 3168), with a probability growing as
-%% the queue does, the way a RED-like AQM marks instead of dropping.
+%% random loss before the queue, and optional ECN marking by CoDel (RFC
+%% 8289): with `ecn_ms' (the target) and `ecn_interval_ms' (100), once
+%% the queuing delay has stayed above the target for an interval, ECT
+%% packets (`{rtp, _, _, 2}') are marked CE (RFC 3168) at CoDel's
+%% control law instead of being dropped. Other packets are never marked.
 %%
 %% `jitter' (#{std_ms, n_std}) adds packet delay variation as RFC 8868
 %% §4.5 asks (NR-BPDV): a truncated Gaussian sample added to the
@@ -31,6 +32,13 @@ new(Opts) ->
         queue_us => maps:get(queue_ms, Opts, 300) * 1000,
         loss => maps:get(loss, Opts, 0.0),
         ecn_us => case maps:get(ecn_ms, Opts, undefined) of undefined -> undefined; Ms -> Ms * 1000 end,
+        interval_us => maps:get(ecn_interval_ms, Opts, 100) * 1000,
+        %% CoDel state (RFC 8289 §5).
+        first_above => 0,
+        marking => false,
+        count => 0,
+        last_count => 0,
+        mark_next => 0,
         jitter => maps:get(jitter, Opts, undefined),
         extra_delay => maps:get(extra_delay, Opts, fun(_) -> 0 end),
         marked => 0,
@@ -59,20 +67,7 @@ send(Pkt, Size, Now, #{loss := P, rand := R0} = L) ->
 
 enqueue(Pkt0, Size, Now, #{busy_until := Busy, capacity := C, queue_us := Q} = L0) ->
     Start = max(Now, Busy),
-    {Pkt, L} =
-        case {Pkt0, maps:get(ecn_us, L0)} of
-            {{rtp, _, _, 2}, E} when is_integer(E), Start - Now > E ->
-                %% RED-like: the marking probability grows from 0 at
-                %% `ecn_ms' to 10% at three times that.
-                P = min(0.1, 0.1 * (Start - Now - E) / (2 * E)),
-                {U, R} = rand:uniform_s(maps:get(rand, L0)),
-                case U < P of
-                    true -> {setelement(4, Pkt0, 3), L0#{marked := maps:get(marked, L0) + 1, rand := R}};
-                    false -> {Pkt0, L0#{rand := R}}
-                end;
-            _ ->
-                {Pkt0, L0}
-        end,
+    {Pkt, L} = codel(Pkt0, Start, Start - Now, L0),
     case Start - Now > Q of
         true ->
             L#{dropped := maps:get(dropped, L) + 1};
@@ -91,6 +86,51 @@ enqueue(Pkt0, Size, Now, #{busy_until := Busy, capacity := C, queue_us := Q} = L
     end.
 
 flow_key(Pkt) -> element(2, Pkt).
+
+%% CoDel at the packet's dequeue time (FIFO: when it starts to be sent),
+%% marking where RFC 8289 §5.5 drops.
+codel(Pkt, _At, _Sojourn, #{ecn_us := undefined} = L) ->
+    {Pkt, L};
+codel(Pkt, At, Sojourn, #{ecn_us := Target, interval_us := I} = L0) ->
+    {OkToMark, L} =
+        if
+            Sojourn < Target -> {false, L0#{first_above := 0}};
+            map_get(first_above, L0) =:= 0 -> {false, L0#{first_above := At + I}};
+            true -> {At >= map_get(first_above, L0), L0}
+        end,
+    case {maps:get(marking, L), OkToMark} of
+        {true, false} ->
+            {Pkt, L#{marking := false}};
+        {true, true} ->
+            case At >= maps:get(mark_next, L) andalso ect(Pkt) of
+                true ->
+                    N = maps:get(count, L) + 1,
+                    {mark(Pkt), counted(L#{count := N, mark_next := control_law(maps:get(mark_next, L), N, I)})};
+                false ->
+                    {Pkt, L}
+            end;
+        {false, true} ->
+            case ect(Pkt) of
+                true ->
+                    Delta = maps:get(count, L) - maps:get(last_count, L),
+                    N = case Delta > 1 andalso At - maps:get(mark_next, L) < 16 * I of true -> Delta; false -> 1 end,
+                    {mark(Pkt), counted(L#{marking := true, count := N, last_count := N,
+                                           mark_next := control_law(At, N, I)})};
+                false ->
+                    {Pkt, L}
+            end;
+        {false, false} ->
+            {Pkt, L}
+    end.
+
+control_law(T, Count, Interval) -> T + round(Interval / math:sqrt(Count)).
+
+ect({rtp, _, _, 2}) -> true;
+ect(_) -> false.
+
+mark(Pkt) -> setelement(4, Pkt, 3).
+
+counted(L) -> L#{marked := maps:get(marked, L) + 1}.
 
 jitter(#{jitter := undefined} = L) ->
     {0, L};

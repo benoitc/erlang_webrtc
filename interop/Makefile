@@ -1,7 +1,7 @@
 # Build the interop peer adapters. Each target is independent; a missing
 # toolchain only disables the matching peer (reported as skipped).
 
-.PHONY: all pion piondtls aiortc turn bogo clean
+.PHONY: all pion piondtls aiortc turn bogo dtlsfuzzer clean
 
 all: pion piondtls aiortc turn bogo
 
@@ -24,9 +24,20 @@ bogo:
 	    git checkout -q $(BORINGSSL_REV)
 	mkdir -p bogo/ebin && erlc -o bogo/ebin bogo/webrtc_bogo_shim.erl
 
+# DTLS-Fuzzer at the pinned revision (Java 21 and Maven), and our endpoint.
+# Not part of `all`: it takes a while to build and is run by hand.
+DTLS_FUZZER_REV := $(shell cat dtlsfuzzer/DTLS_FUZZER_REV)
+
+dtlsfuzzer:
+	test -d dtlsfuzzer/dtls-fuzzer/.git || git clone -q https://github.com/assist-project/dtls-fuzzer.git dtlsfuzzer/dtls-fuzzer
+	cd dtlsfuzzer/dtls-fuzzer && git checkout -q $(DTLS_FUZZER_REV) && \
+	    (test -f target/dtls-fuzzer.jar || \
+	    MAVEN_ARGS="-Dspotless.check.skip=true -Dspotless.apply.skip=true" ./install.sh)
+	mkdir -p dtlsfuzzer/ebin && erlc -o dtlsfuzzer/ebin dtlsfuzzer/webrtc_dtls_sut.erl
+
 aiortc:
 	python3 -m venv aiortc/.venv
 	aiortc/.venv/bin/pip install -q -r aiortc/requirements.txt
 
 clean:
-	rm -rf pion/bin piondtls/bin turn/bin aiortc/.venv bogo/ebin
+	rm -rf pion/bin piondtls/bin turn/bin aiortc/.venv bogo/ebin dtlsfuzzer/ebin dtlsfuzzer/output

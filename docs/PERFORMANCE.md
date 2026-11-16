@@ -56,13 +56,13 @@ The RMCAT cases run in simulation (`rebar3 eunit --module=webrtc_rmcat_tests`, a
 | 5.1, one flow, capacity 1, 2.5, 0.6, 1 Mbps | 0.93 to 1.00 of the available rate, queue p95 at most 72 ms |
 | 5.2, two flows, capacity 4 to 1 Mbps | together 0.92 to 1.00 of the available rate |
 | 5.3, media both ways | 0.92 to 1.00 of the share in each direction |
-| 5.4, three flows joining | Jain index 0.95, 0.93 of the link |
-| 5.5, RTT fairness | Jain index 0.71 (not met) |
-| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 214 / 475 kbps, TCP 1698 / 1447 kbps |
-| 5.7, against ten short TCP flows | media 311 and 334 kbps, never below the minimum |
-| 5.8, pause and resume | Jain index 0.89 after the resume (not met) |
-| 6.2, ECN, one flow | 0.95 to 1.00 of the available rate, queue p95 at most 40 ms |
-| 6.2, ECN, three flows | Jain index 0.87 (not met) |
+| 5.4, three flows joining | Jain index 0.99, 0.93 of the link |
+| 5.5, RTT fairness | Jain index 0.79 to 0.91 over six seeds (not met) |
+| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 175 / 394 kbps, TCP 1737 / 1538 kbps |
+| 5.7, against ten short TCP flows | media 360 and 391 kbps, never below the minimum |
+| 5.8, pause and resume | Jain index 0.98 after the resume |
+| 6.2, ECN (CoDel marking), one flow | 0.95 to 0.96 of the available rate, queue p95 at most 45 ms |
+| 6.2, ECN (CoDel marking), three flows | Jain index 0.995 |
 
 ## Where the time goes
 

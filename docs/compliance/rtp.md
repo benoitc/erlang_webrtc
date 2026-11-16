@@ -216,21 +216,22 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 | GCC-8 | gcc-02 §5.5 | Bounded memory, deterministic with injected time | webrtc_gcc, webrtc_cc | sim deterministic_test_ | Unit tested |
 | R8836-1 | RFC 8836 §2 (1) | Low delay: queuing delay kept low once converged | webrtc_gcc | sim converges_500k_test_, converges_2m_test_, converges_10m_test_ | Simulated: average target 0.95, 0.94 and 0.91 of the capacity at 500 kbps, 2 Mbps and 10 Mbps, average bottleneck queue 22 to 28 ms |
 | R8836-2 | RFC 8836 §2 (1c, 1d) | React quickly to a capacity reduction | webrtc_gcc | sim capacity_drop_test_, webrtc_cc_SUITE:estimate_follows_capacity_drop | Simulated and E2E tested: 2 Mbps to 500 kbps, the target is below 600 kbps within 2 s and the queue drains within 4 s |
-| R8836-3 | RFC 8836 §2 (2) | Fair to other instances of itself | webrtc_gcc | sim fairness_test_, webrtc_rmcat_tests (RMCAT-4) | Simulated: two flows on 2 Mbps, the second starting 5 s later, share within a factor of 1.3 after a minute (test bound 1.5), using 0.94 of the link together; three flows joining 20 s apart reach a Jain index of 0.95 (RMCAT-4). Not met with different RTTs, after a resume and with ECN marking (RMCAT-5, RMCAT-8, RMCAT-10) |
-| R8836-4 | RFC 8836 §2 (3) | Do not starve competing TCP flows, avoid being starved | webrtc_gcc | webrtc_rmcat_tests (RMCAT-6, RMCAT-7) | Simulated: against a long TCP flow the media keeps at least its minimum and TCP gets 1.4 to 1.7 Mbps of 2 Mbps; against ten short flows the media never drops below its minimum |
+| R8836-3 | RFC 8836 §2 (2) | Fair to other instances of itself | webrtc_gcc | sim fairness_test_, webrtc_rmcat_tests (RMCAT-4, RMCAT-8, RMCAT-10) | Simulated: two flows on 2 Mbps, the second starting 5 s later, share within a factor of 1.3 after a minute (test bound 1.5), using 0.94 of the link together; three flows joining 20 s apart, after a pause and resume, and under ECN marking reach a Jain index of 0.96 or more over six seeds. Not met with different RTTs (RMCAT-5) |
+| R8836-4 | RFC 8836 §2 (3) | Do not starve competing TCP flows, avoid being starved | webrtc_gcc | webrtc_rmcat_tests (RMCAT-6, RMCAT-7) | Simulated: against a long TCP flow the media keeps at least its minimum and TCP gets 1.5 to 1.7 Mbps of 2 Mbps; against ten short flows the media never drops below its minimum |
 | R8836-5 | RFC 8836 §2 (4) | Adapt quickly at the start of a flow | webrtc_cc_probe, webrtc_gcc_aimd | sim probing_startup_test_, probing_slow_link_test_, webrtc_cc_SUITE:probing_fills_link_at_start | Simulated and E2E tested: probe clusters at 3 and 6 times the start bitrate, then at twice each good result, take a 2 Mbps link to 70% in 200 ms against 4 s without probing; on a 500 kbps link the result stays at what got through. Later probes (PROBE-6 to PROBE-8) adapt quickly again when the application was limited, after a drop and on a raised maximum |
 | R8836-6 | RFC 8836 §2 (5) | Stable when streams pause or are rate limited | webrtc_gcc_aimd | aimd_increase_test | Unit tested: the estimate does not grow beyond 1.5 R_hat + 10 kbps |
 | R8836-7 | RFC 8836 §2 (6) | One estimate for all streams of the transport | webrtc_cc | webrtc_media_cc_tests:transport_wide_sequence_test | Implemented: one estimate per BUNDLE transport; the split between streams is left to the application |
 | R8836-8 | RFC 8836 §2 (8) | Feedback over RTCP with AVPF | webrtc_media | webrtc_media_cc_tests:feedback_round_trip_test | Unit tested |
 | R8836-9 | RFC 8836 §2 (9) | Use DSCP markings | | | Not implemented |
 | R8836-10 | RFC 8836 §2 (10) | React to a lack of feedback | webrtc_gcc | feedback_timeout_test | Unit tested: 20% cut per `feedback_timeout` (1.5 s) while sending without feedback |
-| R8836-11 | RFC 8836 §2 (11) | Stable with AQM | | | Not tested (drop-tail only) |
+| R8836-11 | RFC 8836 §2 (11) | Stable with AQM | webrtc_gcc | webrtc_rmcat_tests (RMCAT-10) | Simulated with CoDel marking (RFC 8289, 5 ms target): one flow follows the capacity at 0.95 of its share, three flows share the link with a Jain index of 0.99, queue p95 under 50 ms. Dropping AQMs are not simulated |
 | NADA-1 | RFC 8698 | NADA congestion control | | | Not implemented |
 
 ## RFC 8867: evaluation test cases
 
 These are the RMCAT test cases, run on the simulator by `webrtc_rmcat_tests` with the settings of RFC 8867 §4:
-- 50 ms one-way delay, and packet delay variation as RFC 8868 §4.5 asks (NR-BPDV, 5 ms standard deviation, cut at 3);
+- 50 ms one-way delay, and packet delay variation as RFC 8868 §4.5 asks (NR-BPDV, 5 ms standard deviation, cut at 3, no reordering within a flow);
+- for the ECN cases, CoDel marking at its default 5 ms target and 100 ms interval (RFC 8289);
 - a 300 ms tail-drop queue;
 - video from 150 kbps to 1.5 Mbps starting at 150 kbps, with 20 kbps audio on the same transport;
 - TCP from `webrtc_cc_tcp`: RFC 5681 congestion control with SACK recovery (RFC 6675).
@@ -246,14 +247,14 @@ The bounds are fixed from each case's expected behavior:
 |---|---|---|---|---|
 | RMCAT-1 | 5.1 | Variable capacity (1, 2.5, 0.6, 1 Mbps), one flow, 50 and 100 ms | variable_capacity_single_50ms_test_, variable_capacity_single_100ms_test_ | Simulated: 0.93 to 1.00 of the available rate in every phase, queue p95 at most 72 ms |
 | RMCAT-2 | 5.2 | Variable capacity (4, 2, 3.5, 1, 2 Mbps), two flows | variable_capacity_multiple_test_ | Simulated: together 0.92 to 1.00 of the available rate, queue p95 at most 55 ms |
-| RMCAT-3 | 5.3 | Media both ways, forward and backward capacities changing | feedback_congestion_test_ | Simulated: forward flow 0.92 to 1.00 of its share, backward flow 0.95 to 1.00 |
-| RMCAT-4 | 5.4 | Three flows joining 20 s apart on 3.5 Mbps | competing_flows_test_ | Simulated: Jain index 0.95, 0.93 of the link, queue p95 50 ms |
-| RMCAT-5 | 5.5 | Five flows with one-way delays of 10 to 150 ms on 4 Mbps | rtt_fairness/0 (by hand) | Non-compliant / known limitation: Jain index 0.71, two flows near 1.4 Mbps and three near 350 kbps. The per-flow adaptive over-use threshold of GCC (also in libwebrtc) lets flows that saw large delay trends stay less sensitive |
-| RMCAT-6 | 5.6 | One flow against a long TCP flow, 300 and 1000 ms queues | long_tcp_300ms_test_, long_tcp_1000ms_test_ | Simulated: media 214 and 475 kbps, never below its minimum; TCP 1698 and 1447 kbps |
-| RMCAT-7 | 5.7 | Two flows against ten short TCP flows | short_tcp_test_ | Simulated: media 311 and 334 kbps, never below its minimum, Jain index between them above 0.9 |
-| RMCAT-8 | 5.8 | Three flows, one paused from 40 to 60 s | pause_resume/0 (by hand) | Non-compliant / known limitation: the others take the paused share, but 10 s after the resume the Jain index is 0.89 (the resumed flow at 568 kbps against about 1.3 Mbps) |
+| RMCAT-3 | 5.3 | Media both ways, forward and backward capacities changing | feedback_congestion_test_ | Simulated: forward flow 0.92 to 1.00 of its share, backward flow 0.94 to 1.00 |
+| RMCAT-4 | 5.4 | Three flows joining 20 s apart on 3.5 Mbps | competing_flows_test_ | Simulated: Jain index 0.99, 0.93 of the link, queue p95 47 ms |
+| RMCAT-5 | 5.5 | Five flows with one-way delays of 10 to 150 ms on 4 Mbps | rtt_fairness/0 (by hand) | Non-compliant / known limitation: Jain index 0.79 to 0.91 over six seeds. The flow with the longest path learns of each congestion after the others have already backed off, so it decreases less often, leaves the range of its past decreases and switches to multiplicative increase. A constant additive increase raises the index to 0.86 to 0.95 but lets the queue grow past the bound in RMCAT-2, so GCC's own increase is kept |
+| RMCAT-6 | 5.6 | One flow against a long TCP flow, 300 and 1000 ms queues | long_tcp_300ms_test_, long_tcp_1000ms_test_ | Simulated: media 175 and 394 kbps, never below its minimum; TCP 1737 and 1538 kbps |
+| RMCAT-7 | 5.7 | Two flows against ten short TCP flows | short_tcp_test_ | Simulated: media 360 and 391 kbps, never below its minimum, Jain index between them above 0.9 |
+| RMCAT-8 | 5.8 | Three flows, one paused from 40 to 60 s | pause_resume_test_ | Simulated: the others take the paused share; from 10 s after the resume the Jain index is 0.98 (0.97 to 0.99 over six seeds) |
 | RMCAT-9 | 6.1 | Flows with priorities | | Not implemented: needs coupled congestion control (RFC 8699) |
-| RMCAT-10 | 6.2 | 5.1 and 5.4 with RFC 8888 feedback and ECN marking | ecn_variable_capacity_test_, ecn_competing_flows/0 (by hand) | Simulated for 5.1: 0.95 to 1.00 of the available rate, queue p95 at most 40 ms. Non-compliant / known limitation for 5.4: Jain index 0.87, because CE marks count as loss and every flow is marked alike, so all of them sit in the loss controller's hold band and the late flow does not catch up |
+| RMCAT-10 | 6.2 | 5.1 and 5.4 with RFC 8888 feedback and ECN marking | ecn_variable_capacity_test_, ecn_competing_flows_test_ | Simulated: one flow 0.95 to 0.96 of the available rate, queue p95 at most 45 ms; three flows reach a Jain index of 0.995 (0.96 to 1.00 over six seeds) |
 | RMCAT-11 | 6.3 | Multiple bottlenecks | | Not tested: the simulator has one bottleneck per direction |
 
 ## Bandwidth probing

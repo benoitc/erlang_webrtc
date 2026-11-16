@@ -30,6 +30,17 @@ Resumption and 0-RTT (`dtls => #{resumption => true, early_data => true}`) were 
 
 The CID cases check the wire: every protected record we send carries the peer's CID. mbedTLS pads the inner plaintext of CID records to 16 bytes. Its `exp_label` option stops `ssl_server2` 3.6 after the handshake, so the keys are compared through the DTLS-SRTP key material it prints anyway.
 
+## BoringSSL's DTLS tests (webrtc_bogo_SUITE)
+
+BoringSSL's test runner (BoGo, pinned in `interop/bogo/BORINGSSL_REV`) drives our DTLS engine through a shim (`interop/bogo`). The runner is an independent DTLS 1.2 and 1.3 implementation that sends reordered, fragmented, replayed and deliberately broken traffic and checks every record we send back.
+
+Of its 1,488 DTLS tests, 217 run and pass, and none fails. The others are:
+- unimplemented in the shim: features a WebRTC peer does not use (resumption in DTLS 1.2, PSK, ECH, OCSP, ALPN, raw public keys, credential selection), and server tests without client authentication, which WebRTC always requires (RFC 8827);
+- disabled in `interop/bogo/config.json`, each with its reason: DTLS 1.0, static RSA and CBC suites, records we discard where BoringSSL aborts (RFC 6347 §4.1.2.7), KeyUpdates we acknowledge at once where the runner expects BoringSSL's ACK timer, and tests that assume BoringSSL internals;
+- open (marked "Open:" in the config): timer schedules the runner checks, the client resending its ClientHello after part of the server's flight arrived, records in an unexpected epoch under heavy reordering, and two DTLS 1.3 record header cases.
+
+Running the suite found and fixed: an ECDSA client that could not reach an RSA server, the HelloVerifyRequest version, reassembly of one-byte fragments, wrong alerts for unexpected messages, unsolicited extensions, oversized records and bad Finished messages, a replayed or final flight that made the client resend its own, a DTLS 1.3 ServerHello accepted after a HelloVerifyRequest, alerts in the wrong epoch, ACKs withheld from a peer's KeyUpdates, and empty certificate_authorities accepted.
+
 ## TURN relay (webrtc_turn_interop_SUITE)
 
 Erlang peers against the pion/turn v5 server (`interop/turn`). A filter drops every datagram not addressed to the server, so only relayed pairs can work.

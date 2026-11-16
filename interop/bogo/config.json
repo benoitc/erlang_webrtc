@@ -1,0 +1,32 @@
+{
+  "DisabledTests": {
+    "*-TLS1-*": "DTLS 1.0 is not supported (RFC 8996 deprecates it)",
+    "*-TLS1": "DTLS 1.0 is not supported (RFC 8996 deprecates it)",
+    "*-RSA_WITH_*": "Static RSA key exchange is not offered: RFC 9325 §4.1 requires forward secrecy, WebRTC uses ECDHE (RFC 8827 §6.5)",
+    "*_CBC_*": "Only AEAD suites are offered (RFC 9325 §4.2; WebRTC requires AES-GCM, RFC 8827 §6.5)",
+    "AppDataBeforeHandshake-DTLS*": "Records that cannot be valid are silently discarded (RFC 6347 §4.1.2.7) rather than aborting the handshake",
+    "AppDataBeforeTLS13KeyChange-DTLS*": "Records that cannot be valid are silently discarded (RFC 6347 §4.1.2.7, RFC 9147 §4.5.2) rather than aborting the handshake",
+    "SendInvalidRecordType-DTLS": "Records of an unknown type are silently discarded (RFC 6347 §4.1.2.7) rather than aborting the connection",
+    "WrongMessageType-NewSessionTicket-DTLS": "DTLS 1.2 session tickets are not offered, so the runner never sends the NewSessionTicket this test alters",
+    "TrailingMessageData-NewSessionTicket-DTLS": "DTLS 1.2 session tickets are not offered, so the runner never sends the NewSessionTicket this test alters",
+    "KeyUpdate-ProcessInOrder-DTLS": "The runner merges its KeyUpdate into a NewSessionTicket flight and panics when the server sends none; ours only sends tickets with resumption on",
+    "KeyUpdate-ExtraMessage-DTLS": "The runner merges its KeyUpdate into a NewSessionTicket flight and panics when the server sends none; ours only sends tickets with resumption on",
+    "KeyUpdate-ExtraMessageBuffered-DTLS": "The runner merges its KeyUpdate into a NewSessionTicket flight and panics when the server sends none; ours only sends tickets with resumption on",
+    "KeyUpdate-MaxReadEpoch-DTLS": "The runner merges its KeyUpdate into a NewSessionTicket flight and panics when the server sends none; ours only sends tickets with resumption on",
+    "KeyUpdate-ToClient-DTLS": "A KeyUpdate is acknowledged at once (RFC 9147 §7 allows it); the runner expects BoringSSL's ACK timer, which the test never fires, and rejects the ACK",
+    "KeyUpdate-Requested-DTLS": "A KeyUpdate is acknowledged at once (RFC 9147 §7 allows it); the runner expects BoringSSL's ACK timer, which the test never fires, and rejects the ACK",
+    "KeyUpdate-ToClient-PacketLoss-DTLS": "A KeyUpdate is acknowledged at once (RFC 9147 §7 allows it); the runner expects the ACK only after BoringSSL's ACK timer",
+    "UnencryptedEncryptedExtensions-DTLS": "A plaintext record after handshake keys exist is silently discarded (RFC 9147 §4.5.2) rather than ending the handshake",
+    "DTLS-Retransmit-BothTimers-TLS13*": "Open: our retransmission and ACK timers do not follow the schedule the runner checks (expect-next-timeout)",
+    "DTLS-Retransmit-PartialProgress-Client-TLS13*": "Open: after partial progress of a flight the client's timer does not follow the schedule the runner checks",
+    "DTLS-Retransmit-Client-NoImplictACKFinished-TLS13*": "Open: the client answers a retransmitted server flight in a way the runner reports as an unexpected message",
+    "ReorderHandshakeFragments-*-DTLS-TLS12": "Open: the client resends its ClientHello (record version DTLS 1.0) after part of the server's flight arrived; BoringSSL stops resending on partial progress",
+    "MixCompleteMessageWithFragments-DTLS-TLS12": "Open: the client resends its ClientHello (record version DTLS 1.0) after part of the server's flight arrived; BoringSSL stops resending on partial progress",
+    "ReorderHandshakeFragments-*-DTLS-TLS13": "Open: under heavy reordering the client sends a record in an epoch the runner does not expect",
+    "MixCompleteMessageWithFragments-DTLS-TLS13": "Open: under heavy reordering the client sends a record in an epoch the runner does not expect",
+    "DTLS13-SendExtraFinished-*": "Open: an extra Finished after the key change is refused with the wrong alert, in an epoch the runner does not expect",
+    "DTLS13RecordHeader-OldHeader": "Open: a DTLS 1.3 record with the DTLS 1.2 header after the handshake is not handled as the runner expects",
+    "DTLS13RecordHeader-CIDBit": "Open: a DTLS 1.3 record with the CID bit set without negotiated CIDs is not handled as the runner expects",
+    "ClientAuth-Server-TLS13-DTLS-*-PackHandshake": "Open: with packed 2-byte fragments the server acknowledges a set of records the runner does not expect"
+  }
+}

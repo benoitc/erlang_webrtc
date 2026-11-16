@@ -11,3 +11,5 @@ __pycache__/
 .claude/
 /interop/aiortc/.venv/
 /interop/browser/node_modules/
+/interop/bogo/boringssl/
+/interop/bogo/ebin/

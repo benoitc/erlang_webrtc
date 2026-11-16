@@ -8,7 +8,9 @@
 %% `jitter' (#{std_ms, n_std}) adds packet delay variation as RFC 8868
 %% §4.5 asks (NR-BPDV): a truncated Gaussian sample added to the
 %% propagation delay, never letting a packet arrive before the previous
-%% one plus its serialization time, so nothing is reordered.
+%% one of its flow plus its serialization time, so no flow is
+%% reordered. Packets are tagged tuples whose second element names the
+%% flow.
 %% `extra_delay' (fun(Pkt) -> Ms) adds a per-packet delay after that,
 %% for paths of different lengths sharing the bottleneck; it must be
 %% constant per flow so a flow stays in order.
@@ -35,7 +37,8 @@ new(Opts) ->
         rand => rand:seed_s(exsss, {Seed, Seed + 7, Seed + 13}),
         jrand => rand:seed_s(exsss, {Seed, Seed + 3, Seed + 5}),
         busy_until => 0,
-        last_at => 0,
+        %% Arrival of the previous packet of each flow.
+        last_at => #{},
         n => 0,
         flight => gb_sets:new(),
         sent => 0,
@@ -77,12 +80,17 @@ enqueue(Pkt0, Size, Now, #{busy_until := Busy, capacity := C, queue_us := Q} = L
             Ser = (Size * 8 * 1000000) div C,
             Done = Start + Ser,
             {Z, L1} = jitter(L),
-            At0 = max(Done + maps:get(delay, L) + Z, maps:get(last_at, L) + Ser),
+            %% RFC 8868 §4.5: no reordering within a flow.
+            Key = flow_key(Pkt),
+            Last = maps:get(Key, maps:get(last_at, L), 0),
+            At0 = max(Done + maps:get(delay, L) + Z, Last + Ser),
             At = At0 + (maps:get(extra_delay, L))(Pkt) * 1000,
             N = maps:get(n, L1),
-            L1#{busy_until := Done, last_at := At0, n := N + 1,
+            L1#{busy_until := Done, last_at := (maps:get(last_at, L))#{Key => At0}, n := N + 1,
                 flight := gb_sets:add({At, N, Pkt, Size}, maps:get(flight, L1))}
     end.
+
+flow_key(Pkt) -> element(2, Pkt).
 
 jitter(#{jitter := undefined} = L) ->
     {0, L};

@@ -3,7 +3,9 @@
 %% RFC 8867 §4: 50 ms one-way delay, packet delay variation as RFC 8868
 %% §4.5 asks (NR-BPDV, 5 ms std, at most 3 std), a 300 ms tail-drop
 %% queue, video from 150 kbps to 1.5 Mbps starting at 150 kbps, and 20
-%% kbps audio on the same transport.
+%% kbps audio on the same transport. The ECN cases (6.2) mark with
+%% CoDel at its default 5 ms target (RFC 8289, one of the AQMs RFC 8868
+%% suggests).
 %%
 %% The bounds follow each case's expected behavior and are fixed: after
 %% a change of the available rate, a flow averages 0.7 to 1.05 of its
@@ -15,10 +17,9 @@
 -module(webrtc_rmcat_tests).
 -include_lib("eunit/include/eunit.hrl").
 
-%% Cases GCC does not meet yet (docs/compliance/rtp.md, RMCAT-5,
-%% RMCAT-8 and RMCAT-10): run them by hand, they become tests once they
-%% pass.
--export([rtt_fairness/0, pause_resume/0, ecn_competing_flows/0]).
+%% A case GCC does not meet yet (docs/compliance/rtp.md, RMCAT-5): run
+%% it by hand, it becomes a test once it passes.
+-export([rtt_fairness/0]).
 
 -define(SIM, webrtc_cc_sim).
 -define(MIN, 150000).
@@ -231,15 +232,17 @@ short_tcp_test_() ->
 %% 5.8 Media pause and resume
 %%====================================================================
 
-pause_resume() ->
-    Sim = run(#{capacity => 3500000}, #{
-        flows => [video(#{}), video(#{pause => [{40000, 60000}]}), video(#{})],
-        duration_ms => 120000
-    }),
-    %% While flow 2 is paused the others take its share.
-    [?assert(share(Sim, N, 50000, 60000, ?MAX) >= 0.7) || N <- [1, 3]],
-    %% From 10 s after the resume, all three share the link fairly.
-    check_fair("5.8", Sim, [1, 2, 3], 70000, 120000, 3500000).
+pause_resume_test_() ->
+    {timeout, 120, fun() ->
+        Sim = run(#{capacity => 3500000}, #{
+            flows => [video(#{}), video(#{pause => [{40000, 60000}]}), video(#{})],
+            duration_ms => 120000
+        }),
+        %% While flow 2 is paused the others take its share.
+        [?assert(share(Sim, N, 50000, 60000, ?MAX) >= 0.7) || N <- [1, 3]],
+        %% From 10 s after the resume, all three share the link fairly.
+        check_fair("5.8", Sim, [1, 2, 3], 70000, 120000, 3500000)
+    end}.
 
 %%====================================================================
 %% 6.2 ECN: 5.1 and 5.4 with RFC 8888 feedback and ECN marking
@@ -247,7 +250,7 @@ pause_resume() ->
 
 ecn_variable_capacity_test_() ->
     {timeout, 120, fun() ->
-        Sim = run(#{capacity => 1000000, ecn_ms => 10}, #{
+        Sim = run(#{capacity => 1000000, ecn_ms => 5}, #{
             flows => [video(#{feedback => ccfb})],
             duration_ms => 100000,
             events => [{40000, {capacity, 2500000}}, {60000, {capacity, 600000}}, {80000, {capacity, 1000000}}]
@@ -256,10 +259,12 @@ ecn_variable_capacity_test_() ->
                                            {80000, 100000, 980000}])
     end}.
 
-ecn_competing_flows() ->
-    Sim = run(#{capacity => 3500000, ecn_ms => 10}, #{
-        flows => [video(#{feedback => ccfb}), video(#{feedback => ccfb, start_ms => 20000}),
-                  video(#{feedback => ccfb, start_ms => 40000})],
-        duration_ms => 120000
-    }),
-    check_fair("6.2 (5.4)", Sim, [1, 2, 3], 60000, 120000, 3500000).
+ecn_competing_flows_test_() ->
+    {timeout, 120, fun() ->
+        Sim = run(#{capacity => 3500000, ecn_ms => 5}, #{
+            flows => [video(#{feedback => ccfb}), video(#{feedback => ccfb, start_ms => 20000}),
+                      video(#{feedback => ccfb, start_ms => 40000})],
+            duration_ms => 120000
+        }),
+        check_fair("6.2 (5.4)", Sim, [1, 2, 3], 60000, 120000, 3500000)
+    end}.

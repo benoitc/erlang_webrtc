@@ -51,6 +51,19 @@ curl -sL https://webrtc.googlesource.com/src/+archive/refs/heads/main/test/fuzze
 
 Copy the directories listed in `test/corpora/libwebrtc/README.md` and update the commit it names.
 
+## ETSI SCTP conformance tests
+
+`test/sctp_etsi` holds the packetdrill scripts of the ETSI TS 102 369 test purposes (nplab suite). `webrtc_sctp_etsi_tests` runs each one through `webrtc_sctp_drill`, a small interpreter for the part of packetdrill they use, against the sans-IO association on a fake clock. Use them when you change anything in `src/sctp`.
+
+- A script must pass unless `?NOT_RUN` lists it with its reason; a listed one must keep failing, so a change of behaviour shows up.
+- Where Linux and FreeBSD expect different packets, the FreeBSD lines are used.
+- To run one script and see where it stops:
+
+```erlang
+webrtc_sctp_drill:run("test/sctp_etsi/sctp-d-tests/sctp-d-o-8-6.pkt").
+%% ok | {fail, Line, Reason}
+```
+
 ## Interop adapters
 
 Each independent implementation runs behind the same line-delimited JSON protocol ([interop/PROTOCOL.md](../interop/PROTOCOL.md)). The controller is `test/interop/webrtc_interop_peer.erl`.

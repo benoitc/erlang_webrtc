@@ -119,24 +119,40 @@ finish_params(#{ext := Ext, fwd := Fwd, zero := Z} = Acc) ->
 %%====================================================================
 
 -spec handle_init(#sctp_init{}, integer(), #assoc{}) -> #assoc{}.
-handle_init(#sctp_init{tag = 0}, _Now, A) ->
+handle_init(#sctp_init{tag = PeerTag, params = Ps} = Init, Now, A) when PeerTag =/= 0 ->
+    %% §5.1.2: an INIT with a Host Name Address is answered with an ABORT.
+    case host_name(Ps) of
+        {ok, Param} -> webrtc_sctp_out:raw(PeerTag, [{abort, false, [{unresolvable_address, Param}]}], crc32c, A);
+        none -> init(Init, Now, A)
+    end;
+handle_init(Init, Now, A) ->
+    init(Init, Now, A).
+
+%% The Host Name Address parameter, encoded, if the chunk has one.
+host_name(Ps) ->
+    case [H || {host_name, H} <- Ps] of
+        [H | _] -> {ok, iolist_to_binary(webrtc_sctp_param:encode_param({host_name, H}))};
+        [] -> none
+    end.
+
+init(#sctp_init{tag = 0}, _Now, A) ->
     A;
-handle_init(#sctp_init{tag = PeerTag, os = OS, mis = MIS}, _Now, A) when OS =:= 0; MIS =:= 0 ->
+init(#sctp_init{tag = PeerTag, os = OS, mis = MIS}, _Now, A) when OS =:= 0; MIS =:= 0 ->
     webrtc_sctp_out:raw(PeerTag, [{abort, false, [invalid_mandatory_param]}], crc32c, A);
-handle_init(#sctp_init{tag = PeerTag}, _Now, #assoc{state = closed, terminated = true} = A) ->
+init(#sctp_init{tag = PeerTag}, _Now, #assoc{state = closed, terminated = true} = A) ->
     webrtc_sctp_out:raw(PeerTag, [{abort, false, []}], crc32c, A);
-handle_init(Init, Now, #assoc{state = closed} = A0) ->
+init(Init, Now, #assoc{state = closed} = A0) ->
     {Tag, A1} = rand_nonzero(A0),
     {Itsn, A2} = rand32(A1),
     respond(Init, Tag, Itsn, 0, 0, Now, A2);
-handle_init(Init, Now, #assoc{state = cookie_wait} = A) ->
+init(Init, Now, #assoc{state = cookie_wait} = A) ->
     respond(Init, A#assoc.my_vtag, A#assoc.my_itsn, 0, 0, Now, A);
-handle_init(Init, Now, #assoc{state = cookie_echoed} = A) ->
+init(Init, Now, #assoc{state = cookie_echoed} = A) ->
     respond(Init, A#assoc.my_vtag, A#assoc.my_itsn, A#assoc.my_vtag, A#assoc.peer_vtag, Now, A);
-handle_init(_Init, _Now, #assoc{state = shutdown_ack_sent} = A) ->
+init(_Init, _Now, #assoc{state = shutdown_ack_sent} = A) ->
     %% §9.2: the SHUTDOWN COMPLETE was probably lost.
     webrtc_sctp_out:ctrl(shutdown_ack, A);
-handle_init(Init, Now, A0) ->
+init(Init, Now, A0) ->
     {Tag, A1} = rand_nonzero(A0),
     {Itsn, A2} = rand32(A1),
     respond(Init, Tag, Itsn, A0#assoc.my_vtag, A0#assoc.peer_vtag, Now, A2).
@@ -166,7 +182,9 @@ respond(#sctp_init{} = Init, Tag, Itsn, LTie, PTie, Now, #assoc{cfg = C} = A) ->
         ack = true,
         tag = Tag,
         a_rwnd = (A#assoc.rcv)#rcv.rbuf,
-        os = C#cfg.os,
+        %% The streams the association will use: no more than the
+        %% peer can receive (§5.1.1).
+        os = min(C#cfg.os, Init#sctp_init.mis),
         mis = C#cfg.mis,
         tsn = Itsn,
         params = [{state_cookie, Cookie} | local_params(C)] ++ Unrec
@@ -181,9 +199,22 @@ respond(#sctp_init{} = Init, Tag, Itsn, LTie, PTie, Now, #assoc{cfg = C} = A) ->
 handle_init_ack(#sctp_init{} = Ack, Now, #assoc{state = cookie_wait} = A) ->
     #sctp_init{tag = Tag, os = OS, mis = MIS, params = Params} = Ack,
     P = peer_params(Params),
+    HostName = host_name(Params),
     if
         Tag =:= 0; OS =:= 0; MIS =:= 0 ->
-            {stop, webrtc_sctp_out:terminate({protocol_violation, invalid_init_ack}, A)};
+            %% §3.3.3: the association is destroyed; an ABORT tells the
+            %% peer why (it MAY be sent). A zero tag cannot address the
+            %% peer, the ABORT then reflects our own (T bit).
+            Abort = case Tag of
+                0 -> webrtc_sctp_out:raw(A#assoc.my_vtag, [{abort, true, [invalid_mandatory_param]}], crc32c, A);
+                _ -> webrtc_sctp_out:raw(Tag, [{abort, false, [invalid_mandatory_param]}], crc32c, A)
+            end,
+            {stop, webrtc_sctp_out:terminate({protocol_violation, invalid_init_ack}, Abort)};
+        HostName =/= none ->
+            %% §5.1.2: a Host Name Address is answered with an ABORT.
+            {ok, HParam} = HostName,
+            A1 = webrtc_sctp_out:raw(Tag, [{abort, false, [{unresolvable_address, HParam}]}], crc32c, A),
+            {stop, webrtc_sctp_out:terminate({protocol_violation, host_name_address}, A1)};
         map_get(cookie, P) =:= undefined ->
             A1 = webrtc_sctp_out:raw(Tag, [{abort, false, [{missing_param, [7]}]}], crc32c, A),
             {stop, webrtc_sctp_out:terminate({protocol_violation, missing_state_cookie}, A1)};
@@ -410,7 +441,9 @@ handle_stale_cookie(_Usec, _Now, A) ->
 t1_expired(Now, #assoc{t1 = {Kind, D, Rto, N}, cfg = C} = A) when Now >= D ->
     case N + 1 > C#cfg.max_init_retrans of
         true ->
-            webrtc_sctp_out:terminate(handshake_timeout, A);
+            %% Giving up on a COOKIE ECHO: the peer's tag is known, tell it.
+            A1 = case Kind of cookie -> webrtc_sctp_out:abort_peer(A); init -> A end,
+            webrtc_sctp_out:terminate(handshake_timeout, A1);
         false ->
             Rto1 = min(2 * Rto, C#cfg.rto_max),
             A1 = webrtc_sctp_out:bump(init_retransmissions, A#assoc{

@@ -33,6 +33,7 @@
 %% - `{closed, Reason}': the association is over. Reasons: `shutdown',
 %%   `aborted' (local abort), `{peer_abort, [Cause]}',
 %%   `max_retransmissions', `handshake_timeout', `stale_cookie',
+%%   `shutdown_timeout' (T5-shutdown-guard, 5 times `rto_max'),
 %%   `{protocol_violation, Info}'.
 %%
 %% Options of `new/1' (all optional): `local_port', `remote_port'
@@ -306,10 +307,11 @@ stats(#assoc{stats = S0, snd = Snd, rcv = Rcv, state = St, error_count = E, pmtu
     }.
 
 -spec next_timeout(assoc()) -> integer() | infinity.
-next_timeout(#assoc{t1 = T1, t2 = T2, hb_at = Hb, snd = Snd, rcv = Rcv} = A) ->
+next_timeout(#assoc{t1 = T1, t2 = T2, t5 = T5, hb_at = Hb, snd = Snd, rcv = Rcv} = A) ->
     lists:min([
         t(T1),
         t(T2),
+        t(T5),
         t(Hb),
         webrtc_sctp_send:next_timeout(Snd),
         webrtc_sctp_recv:next_timeout(Rcv),
@@ -330,7 +332,7 @@ t(D) when is_integer(D) -> D.
 -spec handle_timeout(integer(), assoc()) -> {assoc(), [action()]}.
 handle_timeout(Now, A0) ->
     A1 = webrtc_sctp_handshake:t1_expired(Now, A0),
-    A2 = t2_expired(Now, A1),
+    A2 = t5_expired(Now, t2_expired(Now, A1)),
     A3 = t3_expired(Now, A2),
     A4 = heartbeat(Now, A3),
     A5 = reconfig_expired(Now, A4),
@@ -354,6 +356,17 @@ t2_expired(Now, #assoc{t2 = {D, Rto}, cfg = C, state = St} = A) when Now >= D ->
             end
     end;
 t2_expired(_Now, A) ->
+    A.
+
+%% §9.2: the shutdown we started took more than 5 times RTO.Max.
+t5_expired(Now, #assoc{t5 = At, state = St} = A) when is_integer(At), Now >= At ->
+    case St of
+        S when S =:= shutdown_sent; S =:= shutdown_pending ->
+            webrtc_sctp_out:terminate(shutdown_timeout, webrtc_sctp_out:abort_peer(A#assoc{t5 = undefined}));
+        _ ->
+            A#assoc{t5 = undefined}
+    end;
+t5_expired(_Now, A) ->
     A.
 
 t3_expired(Now, #assoc{snd = #snd{t3 = T3} = Snd} = A) when is_integer(T3), Now >= T3 ->
@@ -406,10 +419,11 @@ heartbeat(Now, #assoc{hb_at = At, state = St, cfg = C, snd = Snd} = A) when
 heartbeat(_Now, A) ->
     A.
 
-%% Association.Max.Retrans (§8.1).
+%% Association.Max.Retrans (§8.1): the peer is considered unreachable.
+%% An ABORT still goes out, in case only the other direction is broken.
 incr_error(#assoc{error_count = E, cfg = C} = A) ->
     case E + 1 > C#cfg.assoc_max_retrans of
-        true -> webrtc_sctp_out:terminate(max_retransmissions, A);
+        true -> webrtc_sctp_out:terminate(max_retransmissions, webrtc_sctp_out:abort_peer(A));
         false -> A#assoc{error_count = E + 1}
     end.
 
@@ -440,9 +454,12 @@ packet(#sctp_packet{chunks = []}, _Now, A) ->
 packet(#sctp_packet{vtag = 0, chunks = [#sctp_init{ack = false} = Init]}, Now, A) ->
     webrtc_sctp_handshake:handle_init(Init, Now, A);
 packet(#sctp_packet{vtag = Vtag, chunks = Chunks} = P, Now, A) ->
-    case lists:any(fun(Ch) -> is_record(Ch, sctp_init) andalso not Ch#sctp_init.ack end, Chunks) of
+    Alone = fun(#sctp_init{}) -> true; ({shutdown_complete, _}) -> true; (_) -> false end,
+    case lists:any(fun(Ch) -> is_record(Ch, sctp_init) andalso not Ch#sctp_init.ack end, Chunks) orelse
+        (length(Chunks) > 1 andalso lists:any(Alone, Chunks)) of
         true ->
-            %% INIT must be alone with a zero tag (§8.5.1 A).
+            %% INIT must be alone with a zero tag (§8.5.1 A); INIT ACK and
+            %% SHUTDOWN COMPLETE are never bundled either (§6.10).
             webrtc_sctp_out:bump(packets_invalid, A);
         false ->
             case Chunks of
@@ -646,7 +663,8 @@ progress(Now, #assoc{state = shutdown_pending, snd = Snd} = A) ->
     case webrtc_sctp_send:idle(Snd) of
         true ->
             Rto = Snd#snd.rto,
-            A1 = A#assoc{state = shutdown_sent, t2 = {Now + Rto, Rto}},
+            Guard = case A#assoc.t5 of undefined -> Now + 5 * Snd#snd.rto_max; G -> G end,
+            A1 = A#assoc{state = shutdown_sent, t2 = {Now + Rto, Rto}, t5 = Guard},
             webrtc_sctp_out:ctrl({shutdown, webrtc_sctp_recv:cum_tsn(A#assoc.rcv)}, A1);
         false ->
             A

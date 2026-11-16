@@ -23,17 +23,17 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | SCTP-15 | 5.2.4 | Restart while in SHUTDOWN-ACK-SENT: resend SHUTDOWN ACK and ERROR "Cookie Received While Shutting Down" | webrtc_sctp_handshake | | Implemented, untested |
 | SCTP-16 | 5.2.6 | Stale Cookie ERROR, retried with a Cookie Preservative (alternative 3) | webrtc_sctp_handshake | assoc:stale_cookie_test | Unit tested |
 | SCTP-17 | 5.3.1 | Verification tags and initial TSNs random (crypto:strong_rand_bytes/1, seedable for tests) | webrtc_sctp_handshake | | Implemented, untested |
-| SCTP-18 | 6.1 A | Peer rwnd respected; zero window probing after one RTO with exponential backoff | webrtc_sctp_send | assoc:zero_window_test, assoc:receive_window_test | Unit tested |
+| SCTP-18 | 6.1 A | Peer rwnd respected; with the window closed and nothing in flight the first zero window probe goes at once (one DATA chunk may always be in flight), T3 retransmits it with backoff, later probes while the window stays closed back off | webrtc_sctp_send | assoc:zero_window_test, assoc:receive_window_test, ETSI sctp-d-o-8-7, sctp-d-o-8-8 | Unit tested |
 | SCTP-19 | 6.1 B, D | cwnd with one packet of overbooking; Max.Burst | webrtc_sctp_send | assoc:loss_10_test_, assoc:loss_30_test_ | Unit tested |
 | SCTP-20 | 6.1 C | Retransmissions sent before new data | webrtc_sctp_send | assoc:loss_30_test_ | Unit tested |
 | SCTP-21 | 6.1 | SACK bundled with outgoing DATA when an acknowledgement is pending | webrtc_sctp_out | | Implemented, untested |
-| SCTP-22 | 6.2 | Delayed SACK within SACK.Delay (200 ms, at most 500), at least every second packet, immediately on gaps, duplicates or the I bit (RFC 7053) | webrtc_sctp_recv | assoc:delayed_sack_test | Unit tested |
+| SCTP-22 | 6.2, 6.7 | Delayed SACK within SACK.Delay (200 ms, at most 500), at least every second packet, immediately on gaps, duplicates or the I bit (RFC 7053); also immediately for the first DATA of the association (which covers DATA bundled with COOKIE ECHO, §5.1.5) and for the packet that closes a gap, as FreeBSD does | webrtc_sctp_recv | assoc:delayed_sack_test, ETSI sctp-a-v-9-1, sctp-a-o-9-3, sctp-bdc-v-7-4, sctp-d-o-8-6 | Unit tested |
 | SCTP-23 | 6.2 | Receive window: data beyond the highest TSN dropped when the window is closed; a_rwnd advertised from buffered bytes | webrtc_sctp_recv | assoc:receive_window_test | Unit tested |
 | SCTP-24 | 6.2 | DATA without user data answered with ABORT (No User Data) | webrtc_sctp_recv | assoc:no_user_data_test | Unit tested |
 | SCTP-25 | 6.2.1 | SACK processing: out of order SACK dropped, gap blocks, reneging, rwnd update | webrtc_sctp_ack | assoc:loss_30_test_, prop:prop_reliable_delivery | Unit tested |
 | SCTP-26 | 6.3.1 | RTO from SRTT/RTTVAR, Karn's rule, one measurement per round trip, RTO.Min / RTO.Max | webrtc_sctp_ack | assoc:heartbeat_failure_test (SRTT from heartbeats) | Unit tested |
 | SCTP-27 | 6.3.2, 6.3.3 | T3-rtx rules R1 to R4, backoff, retransmission of the earliest chunks | webrtc_sctp_ack, webrtc_sctp_send | assoc:retransmission_limit_test, assoc:loss_30_test_ | Unit tested |
-| SCTP-28 | 6.5 | DATA on an invalid stream acknowledged and reported with "Invalid Stream Identifier" | webrtc_sctp_recv | assoc:invalid_stream_test | Unit tested |
+| SCTP-28 | 6.5 | DATA on an invalid stream acknowledged at once and reported with "Invalid Stream Identifier", the ERROR after the SACK | webrtc_sctp_recv | assoc:invalid_stream_test | Unit tested |
 | SCTP-29 | 6.6 | Ordered and unordered delivery per stream | webrtc_sctp_recv | assoc:ordered_delivery_with_reordering_test, assoc:unordered_delivery_test | Unit tested |
 | SCTP-30 | 6.7 | Gap Ack Blocks and Duplicate TSNs reported, bounded by the MTU | webrtc_sctp_recv | assoc:fast_retransmit_test, assoc:loss_30_test_ | Unit tested |
 | SCTP-31 | 6.9 | Fragmentation to the configured MTU and reassembly (TSN based for DATA) | webrtc_sctp_send, webrtc_sctp_recv | assoc:large_message_test, assoc:large_message_small_mtu_test, assoc:unordered_fragmented_test | Unit tested |
@@ -49,13 +49,19 @@ SCTP runs over DTLS application data (RFC 8261) and is implemented by the sans-I
 | SCTP-41 | 8.5, 8.5.1 | Verification tag checks, INIT alone with tag 0, ABORT / SHUTDOWN COMPLETE T bit rules | webrtc_sctp_assoc | assoc:bad_vtag_test, assoc:init_validation_test | Unit tested |
 | SCTP-42 | 9.1 | ABORT with User-Initiated Abort cause | webrtc_sctp_assoc | assoc:abort_test | Unit tested |
 | SCTP-43 | 9.2 | Graceful shutdown: queued data delivered, T2-shutdown, SHUTDOWN in reply to DATA in SHUTDOWN-SENT, SHUTDOWN COMPLETE | webrtc_sctp_assoc | assoc:shutdown_test, assoc:shutdown_lossy_test | Unit tested |
-| SCTP-44 | 9.2 | T5-shutdown-guard | | | Not implemented (MAY) |
+| SCTP-44 | 9.2 | T5-shutdown-guard: 5 times RTO.Max after our SHUTDOWN, the association is aborted with an ABORT (event `shutdown_timeout`) | webrtc_sctp_assoc | ETSI sctp-at-i-2-5 | Unit tested |
 | SCTP-45 | 12.2.4.2 | SACK acknowledging a TSN never sent aborts the association | webrtc_sctp_ack | assoc:sack_unsent_tsn_test | Unit tested |
 | SCTP-46 | 6.1 | Sender silly window avoidance: no DATA chunk is sent into a window smaller than it | webrtc_sctp_send | | Implemented, untested |
 | SCTP-47 | 6.2 | Receiver window update SACKs when the application consumes data | | | Non-compliant / known limitation: complete messages are handed to the owner on arrival, so the window only depends on fragments and out of order messages and no separate window update is needed |
 | SCTP-48 | RFC 7053 | Sender sets the I bit | | | Not implemented (receive side honours it) |
 | SCTP-49 | | ECN, AUTH (RFC 4895), ASCONF (RFC 5061 beyond Supported Extensions) | | | Not implemented (not required by RFC 8831) |
 | SCTP-50 | | Robustness: random chunks with a valid tag never crash an established association | webrtc_sctp_assoc | prop:prop_engine_never_crashes | Unit tested |
+| SCTP-51 | 6.10 | A packet bundling INIT ACK or SHUTDOWN COMPLETE with other chunks is discarded | webrtc_sctp_assoc | ETSI sctp-bdc-i-7-2, sctp-bdc-i-7-3 | Unit tested |
+| SCTP-52 | 5.1.2, 3.3.2.1 | An INIT or INIT ACK with a Host Name Address is answered with an ABORT carrying "Unresolvable Address" | webrtc_sctp_handshake | ETSI sctp-as-v-1-12-1, sctp-as-i-1-12-2 | Unit tested |
+| SCTP-53 | 3.3.3 | An INIT ACK with initiate tag 0 or zero streams destroys the association, with an ABORT carrying "Invalid Mandatory Parameter" | webrtc_sctp_handshake | ETSI sctp-as-i-1-14-2, sctp-as-i-1-7-4 | Unit tested |
+| SCTP-54 | 5.1.1 | The INIT ACK advertises the outbound streams the association will use, no more than the INIT's inbound streams | webrtc_sctp_handshake | ETSI sctp-as-v-1-7-1 | Unit tested |
+| SCTP-55 | 8.1, 5.1 C | Giving up after Association.Max.Retrans or Max.Init.Retransmits of a COOKIE ECHO sends an ABORT, in case only the other direction is broken | webrtc_sctp_assoc, webrtc_sctp_handshake | ETSI sctp-as-i-1-3-2, sctp-at-i-2-12, sctp-fh-i-5-1-1, sctp-fh-i-5-1-2 | Unit tested |
+| SCTP-56 | ETSI TS 102 369 | The ETSI SCTP conformance test purposes, as the packetdrill scripts of the nplab suite (FreeBSD lines where the platforms differ): 108 of 115 pass; the 7 others differ on purpose or do not apply over DTLS, listed with their reason in webrtc_sctp_etsi_tests | webrtc_sctp_assoc | webrtc_sctp_etsi_tests | Unit tested |
 
 ## RFC 3758 and RFC 7496 (partial reliability)
 

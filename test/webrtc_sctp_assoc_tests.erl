@@ -889,8 +889,9 @@ bad_options_test() ->
 %% SACK timing, invalid streams, chunk type mismatches
 %%====================================================================
 
-%% One DATA packet is acknowledged after SACK.Delay; a second packet
-%% triggers an immediate SACK (RFC 9260 §6.2).
+%% The first DATA packet of the association is acknowledged at once;
+%% then one DATA packet is acknowledged after SACK.Delay and a second
+%% packet triggers an immediate SACK (RFC 9260 §6.2).
 delayed_sack_test() ->
     Tab = ets:new(cap, [ordered_set, public]),
     Filter = fun
@@ -901,7 +902,11 @@ delayed_sack_test() ->
         (_, _, _) ->
             keep
     end,
-    N0 = ?NET:set(filter, Filter, ?NET:run(1000, established(#{}, #{}, #{delay => 10}))),
+    N00 = ?NET:set(filter, Filter, ?NET:run(1000, established(#{}, #{}, #{delay => 10}))),
+    T00 = ?NET:now(N00),
+    N0 = ?NET:run(1000, send(a, 0, <<"first">>, #{}, N00)),
+    ?assertEqual([{T00 + 10, sack}], ets:tab2list(Tab)),
+    ets:delete_all_objects(Tab),
     T0 = ?NET:now(N0),
     N1 = ?NET:run(1000, send(a, 0, <<"one">>, #{}, N0)),
     ?assertEqual([{T0 + 10 + 200, sack}], ets:tab2list(Tab)),

@@ -243,7 +243,9 @@ body(client_key_exchange, Bin) ->
 body(certificate_verify, <<Scheme:16, Rest/binary>>) ->
     {Sig, <<>>} = take16(Rest),
     #{scheme => Scheme, signature => Sig};
-body(finished, <<VD:12/binary>>) ->
+%% Any length: a Finished that is not the expected verify_data fails its
+%% check with decrypt_error (RFC 5246 §7.4.9), not as a decode error.
+body(finished, VD) ->
     VD;
 body(hello_request, <<>>) ->
     #{}.

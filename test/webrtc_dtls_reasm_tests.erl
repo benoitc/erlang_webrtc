@@ -53,6 +53,19 @@ held_bytes_bounded_test() ->
     Held = lists:sum([C || Seq <- lists:seq(1, 7), {C, _, _} <- [webrtc_dtls_reasm:peek(Seq, St)]]),
     ?assert(Held =< 262144).
 
+%% RFC 6347 §4.2.3 allows fragments of any size: a message sent one
+%% byte at a time, in order or not, reassembles however many fragments
+%% it takes, and its data stays compact.
+one_byte_fragments_test() ->
+    Len = 5000,
+    Msg = crypto:strong_rand_bytes(Len),
+    Frags = [{I, binary:part(Msg, I, 1)} || I <- lists:seq(0, Len - 1)],
+    [begin
+         St = lists:foldl(fun({Off, D}, S) -> webrtc_dtls_reasm:add(frag(1, Len, Off, D), 0, S) end, st(), Order),
+         ?assertMatch({Len, 1, Msg}, webrtc_dtls_reasm:peek(1, St)),
+         ?assert(erts_debug:flat_size(St) < Len)
+     end || Order <- [Frags, lists:reverse(Frags)]].
+
 %% Overlapping fragments in any order reassemble to the message.
 overlapping_reassembly_test() ->
     rand:seed(exsss, {2, 7, 1}),

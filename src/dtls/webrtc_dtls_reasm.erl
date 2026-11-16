@@ -15,20 +15,23 @@
 
 -define(MAX_MSG_LEN, 131072).
 -define(REASM_AHEAD, 8).
-%% A maximum length message sent with a 1200 byte MTU is about 115
-%% fragments; the limits leave room for retransmissions that fragment
-%% differently.
+%% At most this many disjoint ranges per message: fragments that only
+%% extend a range (however small, RFC 6347 §4.2.3 allows any size) never
+%% count against it.
 -define(MAX_PIECES, 256).
 -define(MAX_HELD, 262144).
+%% A range's data is an iolist of the fragments it joined; past this
+%% many it is copied into one binary, so tiny fragments do not pile up.
+-define(FLATTEN, 32).
 
 -record(msg, {
     type :: webrtc_dtls_msg:msg_type(),
     len :: non_neg_integer(),
     epoch :: non_neg_integer(),
-    %% Sorted disjoint intervals {Start, End, iodata()}.
-    ivs = [] :: [{non_neg_integer(), non_neg_integer(), iodata()}],
-    covered = 0 :: non_neg_integer(),
-    pieces = 0 :: non_neg_integer()
+    %% Sorted disjoint, non-adjacent intervals {Start, End, iodata(),
+    %% binaries in it}.
+    ivs = [] :: [{non_neg_integer(), non_neg_integer(), iodata(), pos_integer()}],
+    covered = 0 :: non_neg_integer()
 }).
 
 %% @doc DTLS 1.2 entry point (and the hello exchange before a version
@@ -67,8 +70,9 @@ classify(_, _) ->
 %% so far. A new fragment is trimmed to the bytes not covered yet, so the
 %% bytes held never exceed the advertised length however the peer
 %% overlaps its fragments; completion is a counter check. Fragments are
-%% dropped, as any invalid record would be, once a message holds
-%% ?MAX_PIECES pieces or all buffered messages hold ?MAX_HELD bytes.
+%% dropped, as any invalid record would be, when they would leave a
+%% message in more than ?MAX_PIECES disjoint ranges or all buffered
+%% messages above ?MAX_HELD bytes.
 -spec add(webrtc_dtls_msg:fragment(), non_neg_integer(), #dtls{}) -> #dtls{}.
 add(#{length := Len}, _E, St) when Len > ?MAX_MSG_LEN ->
     webrtc_dtls:fail(?ALERT_HANDSHAKE_FAILURE, message_too_large, St);
@@ -91,34 +95,37 @@ add(#{type := T, length := L, seq := Seq, offset := Off, data := D}, E, #dtls{re
 held(R) ->
     maps:fold(fun(_, #msg{covered = C}, Acc) -> Acc + C end, 0, R).
 
-insert(Off, D, #msg{ivs = Ivs, covered = C, pieces = P} = M, Held) ->
+insert(Off, D, #msg{ivs = Ivs, covered = C} = M, Held) ->
     New = gaps(Off, Off + byte_size(D), Ivs),
     Bytes = lists:sum([E - S || {S, E} <- New]),
-    if
-        New =:= [] ->
+    case New =:= [] orelse Held + Bytes > ?MAX_HELD of
+        true when New =:= [] ->
             {ok, M};
-        P + length(New) > ?MAX_PIECES; Held + Bytes > ?MAX_HELD ->
-            drop;
         true ->
-            Pieces = [{S, E, binary:part(D, S - Off, E - S)} || {S, E} <- New],
-            {ok, M#msg{
-                ivs = merge(lists:keymerge(1, Ivs, Pieces)),
-                covered = C + Bytes,
-                pieces = P + length(New)
-            }}
+            drop;
+        false ->
+            Pieces = [{S, E, binary:part(D, S - Off, E - S), 1} || {S, E} <- New],
+            Ivs1 = merge(lists:keymerge(1, Ivs, Pieces)),
+            case length(Ivs1) > ?MAX_PIECES of
+                true -> drop;
+                false -> {ok, M#msg{ivs = Ivs1, covered = C + Bytes}}
+            end
     end.
 
 %% Sub-ranges of [S, E) not covered by the sorted disjoint intervals.
 gaps(S, E, _) when S >= E -> [];
 gaps(S, E, []) -> [{S, E}];
-gaps(S, E, [{_IS, IE, _} | Rest]) when IE =< S -> gaps(S, E, Rest);
-gaps(S, E, [{IS, _, _} | _]) when IS >= E -> [{S, E}];
-gaps(S, E, [{IS, IE, _} | Rest]) when IS > S -> [{S, IS} | gaps(IE, E, Rest)];
-gaps(_S, E, [{_IS, IE, _} | Rest]) -> gaps(IE, E, Rest).
+gaps(S, E, [{_IS, IE, _, _} | Rest]) when IE =< S -> gaps(S, E, Rest);
+gaps(S, E, [{IS, _, _, _} | _]) when IS >= E -> [{S, E}];
+gaps(S, E, [{IS, IE, _, _} | Rest]) when IS > S -> [{S, IS} | gaps(IE, E, Rest)];
+gaps(_S, E, [{_IS, IE, _, _} | Rest]) -> gaps(IE, E, Rest).
 
 %% Join adjacent intervals; their data is an iolist, so joining copies
-%% nothing.
-merge([{S1, E1, D1}, {E1, E2, D2} | Rest]) -> merge([{S1, E2, [D1, D2]} | Rest]);
+%% nothing until a range holds ?FLATTEN fragments.
+merge([{S1, E1, D1, N1}, {E1, E2, D2, N2} | Rest]) when N1 + N2 > ?FLATTEN ->
+    merge([{S1, E2, iolist_to_binary([D1, D2]), 1} | Rest]);
+merge([{S1, E1, D1, N1}, {E1, E2, D2, N2} | Rest]) ->
+    merge([{S1, E2, [D1, D2], N1 + N2} | Rest]);
 merge([I | Rest]) -> [I | merge(Rest)];
 merge([]) -> [].
 
@@ -130,7 +137,7 @@ deliver(Now, #dtls{recv_msg_seq = Next, reasm = R} = St) ->
             Body =
                 case Ivs of
                     [] -> <<>>;
-                    [{0, L, Io}] -> iolist_to_binary(Io)
+                    [{0, L, Io, _}] -> iolist_to_binary(Io)
                 end,
             St1 = St#dtls{recv_msg_seq = Next + 1, reasm = maps:remove(Next, R)},
             St2 =
@@ -149,12 +156,12 @@ deliver(Now, #dtls{recv_msg_seq = Next, reasm = R} = St) ->
     end.
 
 -ifdef(TEST).
-%% Test helper: `{Covered, Pieces, Body | incomplete}' of a buffered
+%% Test helper: `{Covered, Ranges, Body | incomplete}' of a buffered
 %% message, or `none'.
 peek(Seq, #dtls{reasm = R}) ->
     case maps:find(Seq, R) of
-        {ok, #msg{len = L, covered = L, ivs = [{0, L, Io}], pieces = P}} -> {L, P, iolist_to_binary(Io)};
-        {ok, #msg{covered = C, pieces = P}} -> {C, P, incomplete};
+        {ok, #msg{len = L, covered = L, ivs = [{0, L, Io, _}]}} -> {L, 1, iolist_to_binary(Io)};
+        {ok, #msg{covered = C, ivs = Ivs}} -> {C, length(Ivs), incomplete};
         error -> none
     end.
 -endif.

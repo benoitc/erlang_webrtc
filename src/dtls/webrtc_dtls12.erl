@@ -42,6 +42,10 @@ handle_record(_R, _Now, #dtls{state = S} = St) when S =:= failed; S =:= closed -
     St;
 handle_record(#{epoch := E} = R, Now, #dtls{read_epoch = RE} = St) when E =:= RE ->
     case open_record(R, St) of
+        record_overflow ->
+            %% RFC 5246 §6.2.1: an authentic record above 2^14 bytes of
+            %% plaintext ends the connection.
+            webrtc_dtls:fail(?ALERT_RECORD_OVERFLOW, record_overflow, St);
         {ok, Type, Plain} ->
             #{seq := Seq} = R,
             W = maps:get(E, St#dtls.replay, webrtc_dtls_record:replay_new()),
@@ -58,13 +62,22 @@ handle_record(#{epoch := E} = R, Now, #dtls{read_epoch = RE} = St) when E =:= RE
             %% RFC 6347 §4.1.2.7: invalid records are silently discarded.
             St
     end;
-handle_record(#{epoch := 0, type := handshake, fragment := Frag}, Now, #dtls{read_epoch = RE} = St) when
+handle_record(#{epoch := 0, type := handshake, fragment := Frag, seq := Seq}, Now, #dtls{read_epoch = RE} = St) when
     RE > 0
 ->
-    %% Plaintext retransmission of an earlier flight of the peer.
-    case webrtc_dtls_msg:decode_fragment(Frag) of
-        {ok, [_ | _]} -> peer_retransmitted(Now, St);
-        _ -> St
+    %% Plaintext retransmission of an earlier flight of the peer. A
+    %% retransmission has a new sequence number; a record already seen is
+    %% a replay and is dropped (RFC 6347 §4.1.2.6).
+    W = maps:get(0, St#dtls.replay, webrtc_dtls_record:replay_new()),
+    case webrtc_dtls_record:replay_check(Seq, W) of
+        replay ->
+            St;
+        ok ->
+            St1 = St#dtls{replay = maps:put(0, webrtc_dtls_record:replay_update(Seq, W), St#dtls.replay)},
+            case webrtc_dtls_msg:decode_fragment(Frag) of
+                {ok, [_ | _]} -> peer_retransmitted(Now, St1);
+                _ -> St1
+            end
     end;
 handle_record(#{epoch := E} = R, _Now, #dtls{read_epoch = RE, pending_read = P, early = Early} = St) when
     E =:= RE + 1, P =/= undefined, length(Early) < ?MAX_EARLY
@@ -83,6 +96,7 @@ open_record(R, #dtls{read_cipher = C} = St) when C =/= undefined ->
         true ->
             case webrtc_dtls_record:open(R, C) of
                 {ok, T, P} -> {ok, T, P};
+                {error, record_overflow} -> record_overflow;
                 {error, _} -> error
             end;
         false ->
@@ -118,6 +132,8 @@ content(application_data, Data, E, _Now, #dtls{handshake_done = true} = St) when
 content(_Type, _Data, _E, _Now, St) ->
     St.
 
+handle_alert(Level, _Desc, _E, St) when Level =/= 1, Level =/= 2 ->
+    webrtc_dtls:fail(?ALERT_ILLEGAL_PARAMETER, {bad_alert_level, Level}, St);
 handle_alert(_Level, ?ALERT_CLOSE_NOTIFY, _E, St) ->
     {Dgrams, St1} = webrtc_dtls:alert_datagram(1, ?ALERT_CLOSE_NOTIFY, St),
     St2 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St1, Dgrams),
@@ -216,7 +232,7 @@ encode_record(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
             Rec =
                 case E of
                     0 ->
-                        webrtc_dtls_record:encode(Type, ?DTLS12, 0, Seq, Data);
+                        webrtc_dtls_record:encode(Type, plain_version(St), 0, Seq, Data);
                     _ ->
                         %% RFC 9146: the peer's CID in records with
                         %% negotiated keys.
@@ -226,6 +242,13 @@ encode_record(Type, E, Data, #dtls{write_seq = Seqs} = St) ->
                 end,
             {ok, Rec, St#dtls{write_seq = Seqs#{E => Seq + 1}}}
     end.
+
+%% Record version of plaintext records. Until the server picked a version
+%% the client's ClientHello records carry DTLS 1.0, as RFC 9147 §4
+%% allows for the initial ClientHello and DTLS 1.2 clients do, except
+%% after a HelloRetryRequest, which RFC 9147 asks to carry {254, 253}.
+plain_version(#dtls{role = client, version = undefined, hrr = false}) -> ?DTLS10;
+plain_version(_) -> ?DTLS12.
 
 %% @doc Pack records into datagrams of at most `Mtu' bytes.
 -spec pack([binary()], pos_integer()) -> [binary()].

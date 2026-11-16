@@ -126,6 +126,71 @@ rsa_certificate_test() ->
     ?assertMatch([#{suite := tls_ecdhe_rsa_with_aes_128_gcm_sha256}], connected(CE)),
     ?assertMatch([_], connected(SE)).
 
+%% A suite names the server's key type: a client with an ECDSA key still
+%% reaches a server with an RSA key, and the other way round.
+mixed_key_types_test_() ->
+    [?_test(begin
+         C = webrtc_dtls_cert:generate(#{key => CK}),
+         S = webrtc_dtls_cert:generate(#{key => SK}),
+         Cl = webrtc_dtls:new(#{role => client, cert => C, remote_fingerprints => [fp(S)], versions => ['dtlsv1.2']}),
+         Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(C)]}),
+         #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
+         ?assertMatch([#{suite := Suite}], connected(CE)),
+         ?assertMatch([_], connected(SE))
+     end)
+     || {CK, SK, Suite} <- [{ecdsa_p256, {rsa, 2048}, tls_ecdhe_rsa_with_aes_128_gcm_sha256},
+                            {{rsa, 2048}, ecdsa_p256, tls_ecdhe_ecdsa_with_aes_128_gcm_sha256}]].
+
+%% RFC 6347 §4.2.4: the server's flight is the final one. A client that
+%% received it has nothing to resend, even when the server retransmits an
+%% earlier flight (new record sequence numbers, so not a replay).
+final_flight_copy_ignored_test() ->
+    {Cl0, Sv0} = pair(#{versions => ['dtlsv1.2']}, #{}),
+    {Cl1, A0} = webrtc_dtls:start(0, Cl0),
+    {Sv1, Hvr} = feed(Sv0, sends(A0)),
+    {Cl2, Hello} = feed(Cl1, Hvr),
+    {Sv2, Flight2} = feed(Sv1, Hello),
+    {Cl3, Flight3} = feed(Cl2, Flight2),
+    {_, Final} = feed(Sv2, Flight3),
+    {Cl, []} = feed(Cl3, Final),
+    ?assertEqual(connected, webrtc_dtls:status(Cl)),
+    Resent = [iolist_to_binary([bump_seq(R) || R <- records(D)]) || D <- Flight2],
+    ?assertEqual({ok, []}, {ok, element(2, feed(Cl, Resent))}).
+
+%% The same epoch 0 record with a sequence number far ahead.
+bump_seq(<<T, V:16, E:16, Seq:48, Rest/binary>>) -> <<T, V:16, E:16, (Seq + 1000):48, Rest/binary>>.
+
+%% A copy of an earlier server flight that arrives after the server's
+%% ChangeCipherSpec but before its Finished is a replay (same record
+%% sequence numbers): it must not make the client resend its flight.
+replayed_flight_after_ccs_test() ->
+    {Cl0, Sv0} = pair(#{versions => ['dtlsv1.2']}, #{}),
+    {Cl1, A0} = webrtc_dtls:start(0, Cl0),
+    {Sv1, Hvr} = feed(Sv0, sends(A0)),
+    {Cl2, Hello} = feed(Cl1, Hvr),
+    {Sv2, Flight2} = feed(Sv1, Hello),
+    {Cl3, Flight3} = feed(Cl2, Flight2),
+    {_, Final} = feed(Sv2, Flight3),
+    [Ccs | _] = records(iolist_to_binary(Final)),
+    {Cl4, []} = feed(Cl3, [Ccs]),
+    ?assertEqual({ok, []}, {ok, element(2, feed(Cl4, Flight2))}).
+
+records(<<>>) -> [];
+records(<<H:11/binary, Len:16, Body:Len/binary, Rest/binary>>) -> [<<H/binary, Len:16, Body/binary>> | records(Rest)].
+
+feed(E, Ds) ->
+    lists:foldl(fun(D, {S, Out}) -> {S1, A} = webrtc_dtls:handle_packet(D, 0, S), {S1, Out ++ sends(A)} end, {E, []}, Ds).
+
+sends(Actions) -> [D || {send, D} <- Actions].
+
+%% RFC 6347 §4.2.1: the HelloVerifyRequest carries DTLS 1.0 whatever
+%% version the handshake goes on with.
+hello_verify_request_version_test() ->
+    {Cl, Sv} = pair(#{versions => ['dtlsv1.2']}, #{}),
+    {_, [{send, Hello}]} = webrtc_dtls:start(0, Cl),
+    {_, [{send, Hvr}]} = webrtc_dtls:handle_packet(Hello, 0, Sv),
+    ?assertMatch(<<22, _:16, _:64, _:16, 3, _:24, 0:16, 0:24, _:24, 16#FE, 16#FF, _/binary>>, Hvr).
+
 no_cookie_test() ->
     {Cl, Sv} = pair(#{}, #{use_cookie => false}),
     #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
@@ -296,13 +361,14 @@ record_replay_window_test() ->
     ?assertEqual(ok, webrtc_dtls_record:replay_check(0, W0)),
     W1 = webrtc_dtls_record:replay_update(0, W0),
     ?assertEqual(replay, webrtc_dtls_record:replay_check(0, W1)),
-    W2 = webrtc_dtls_record:replay_update(100, W1),
-    ?assertEqual(replay, webrtc_dtls_record:replay_check(36, W2)),
-    ?assertEqual(ok, webrtc_dtls_record:replay_check(37, W2)),
-    ?assertEqual(ok, webrtc_dtls_record:replay_check(99, W2)),
-    W3 = webrtc_dtls_record:replay_update(99, W2),
-    ?assertEqual(replay, webrtc_dtls_record:replay_check(99, W3)),
-    ?assertEqual(replay, webrtc_dtls_record:replay_check(100, W3)).
+    %% A 256 entry window: 300 - 256 = 44 is just outside it.
+    W2 = webrtc_dtls_record:replay_update(300, W1),
+    ?assertEqual(replay, webrtc_dtls_record:replay_check(44, W2)),
+    ?assertEqual(ok, webrtc_dtls_record:replay_check(45, W2)),
+    ?assertEqual(ok, webrtc_dtls_record:replay_check(299, W2)),
+    W3 = webrtc_dtls_record:replay_update(299, W2),
+    ?assertEqual(replay, webrtc_dtls_record:replay_check(299, W3)),
+    ?assertEqual(replay, webrtc_dtls_record:replay_check(300, W3)).
 
 fingerprint_format_test() ->
     FP = {sha256, <<1, 2, 171, 255, 0:224>>},
@@ -425,3 +491,21 @@ dtls12_mutated_handshake_test() ->
     [_ = webrtc_dtls:handle_packet(M, 0, Sv) || M <- Mutations(CH)],
     [_ = webrtc_dtls:handle_packet(M, 0, Cl1) || M <- Mutations(HVR)],
     ok.
+
+%% RFC 5246 §6.2.1, RFC 8446 §5.2: an authentic record carrying more than
+%% 2^14 bytes of plaintext ends the connection with record_overflow; an
+%% alert of unknown level with illegal_parameter. Both versions.
+record_limits_test_() ->
+    [?_test(begin
+         {Cl, Sv} = pair(V, #{}),
+         #{c := C, s := S} = run(Cl, Sv),
+         Mod = case webrtc_dtls:info(C) of #{version := 'dtlsv1.3'} -> webrtc_dtls13; _ -> webrtc_dtls12 end,
+         Epoch = case Mod of webrtc_dtls13 -> 3; webrtc_dtls12 -> 1 end,
+         {ok, Big, _} = Mod:encode_record(application_data, Epoch, binary:copy(<<0>>, 16385), S),
+         {_, A1} = webrtc_dtls:handle_packet(Big, 0, C),
+         ?assertMatch([{failed, record_overflow}], [E || {event, E} <- A1]),
+         {ok, Odd, _} = Mod:encode_record(alert, Epoch, <<3, 0>>, S),
+         {_, A2} = webrtc_dtls:handle_packet(Odd, 0, C),
+         ?assertMatch([{failed, {bad_alert_level, 3}}], [E || {event, E} <- A2])
+     end)
+     || V <- [#{}, v12()]].

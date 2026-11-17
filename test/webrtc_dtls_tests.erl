@@ -175,6 +175,25 @@ replayed_flight_after_ccs_test() ->
     {Cl4, []} = feed(Cl3, [Ccs]),
     ?assertEqual({ok, []}, {ok, element(2, feed(Cl4, Flight2))}).
 
+%% Copies of the server's flight in the same burst (new record numbers,
+%% as a retransmission has) do not make the client resend its own (RFC
+%% 6347 §4.2.4); a copy of the HelloVerifyRequest never does (§4.2.1); a
+%% retransmission by the server's timer still does.
+copies_in_burst_test() ->
+    {Cl0, Sv0} = pair(#{versions => ['dtlsv1.2']}, #{}),
+    {Cl1, A0} = webrtc_dtls:start(0, Cl0),
+    {Sv1, Hvr} = feed(Sv0, sends(A0)),
+    {Cl2, Hello} = feed(Cl1, Hvr),
+    {_, Flight2} = feed(Sv1, Hello),
+    Copies = [iolist_to_binary([bump_seq(R) || R <- records(D)]) || D <- Flight2],
+    {Cl3, Once} = feed(Cl2, Flight2),
+    {_, Twice} = feed(Cl2, Flight2 ++ Copies),
+    ?assertEqual(length(Once), length(Twice)),
+    HvrCopy = [iolist_to_binary([bump_seq(R) || R <- records(D)]) || D <- Hvr],
+    ?assertEqual([], sends(element(2, webrtc_dtls:handle_packet(hd(HvrCopy), 1000, Cl2)))),
+    Late = [iolist_to_binary([bump_seq(bump_seq(R)) || R <- records(D)]) || D <- Flight2],
+    ?assertNotEqual([], sends(element(2, webrtc_dtls:handle_packet(hd(Late), 1000, Cl3)))).
+
 records(<<>>) -> [];
 records(<<H:11/binary, Len:16, Body:Len/binary, Rest/binary>>) -> [<<H/binary, Len:16, Body/binary>> | records(Rest)].
 
@@ -225,7 +244,9 @@ server_rejects_client_fingerprint_test() ->
     Sv = webrtc_dtls:new(#{role => server, cert => S, remote_fingerprints => [fp(Other)]}),
     #{ev := #{c := CE, s := SE}} = run(Cl, Sv),
     ?assertEqual([{failed, fingerprint_mismatch}], SE),
-    ?assertEqual([], connected(CE)).
+    %% A DTLS 1.3 client is connected once its Finished is sent (RFC 8446
+    %% §4.4.4); the server's alert then ends the connection.
+    ?assertMatch([{connected, _}, {failed, {alert, _}}], CE).
 
 sha1_fingerprint_not_accepted_test() ->
     {C, S} = certs(),

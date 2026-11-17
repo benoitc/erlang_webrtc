@@ -96,6 +96,10 @@
     rtx_count = 0 :: non_neg_integer(),
     rtx_limit :: non_neg_integer(),
     last_peer_rtx = undefined :: undefined | integer(),
+    %% When our last flight was sent or resent: copies of the peer's
+    %% flight arriving sooner are part of the burst we answered, not a
+    %% retransmission (RFC 6347 §4.2.4).
+    sent_at = undefined :: undefined | integer(),
     %% DTLS 1.3 timer (RFC 9147 §5.8.2): the value new flights start
     %% with, 1.5 times the RTT of a flight acknowledged without
     %% retransmission, and when the current flight was sent.
@@ -138,6 +142,13 @@
     rcv_recs = [] :: [{non_neg_integer(), non_neg_integer()}],
     ack_at = infinity :: integer() | infinity,
     ack_now = false :: boolean(),
+    %% Whether a record arrived since the last ACK: the ACK timer is
+    %% armed once per new record (RFC 9147 §7.1).
+    rcv_new = false :: boolean(),
+    %% After a KeyUpdate, when the previous read epoch stops being
+    %% accepted: one MSL after the first record of the new one (RFC 9147
+    %% §4.2.1, §8).
+    prev_epoch_until = undefined :: undefined | integer(),
     %% KeyUpdate (RFC 9147 §8): our KeyUpdate waiting for its ACK.
     ku_pending = false :: boolean(),
     rekey_records :: pos_integer(),

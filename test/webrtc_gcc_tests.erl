@@ -342,7 +342,7 @@ probing_application_limited_test_() ->
             link => bottleneck(3000000),
             flows => [#{media_cap => [{0, 400000}]}],
             events => [{2000, {capacity, 300000}}, {5000, {capacity, 3000000}}],
-            duration_ms => 27000
+            duration_ms => 32000
         }),
         Plateau = webrtc_cc_sim:average(S, 1, 19000, 22000),
         Peak = lists:max([hd(Ts) || {T, Ts, _} <- S, T >= 22000]),
@@ -352,20 +352,28 @@ probing_application_limited_test_() ->
         ?assert(Peak =< 1.05 * 3000000)
     end}.
 
-%% A short dip: once over-use ends a probe at 85% of the rate before the
-%% drop lifts the estimate at once instead of the 8% a second ramp.
+%% A short dip of an application limited flow: once over-use ends a
+%% probe at 85% of the rate before the drop lifts the estimate at once
+%% instead of the 8% a second ramp. A flow that fills its share does not
+%% probe after a drop (libwebrtc's RequestProbe): the drop is congestion.
 probing_after_drop_test_() ->
     {timeout, 120, fun() ->
-        #{samples := S} = sim(#{
-            link => bottleneck(3000000),
-            events => [{8000, {capacity, 800000}}, {9000, {capacity, 3000000}}],
-            duration_ms => 11000
-        }),
-        Low = webrtc_cc_sim:min_after(S, 1, 8500, 9400),
-        After = webrtc_cc_sim:min_after(S, 1, 10000, 11000),
-        ?debugFmt("dip to 800 kbps: low ~p, one second after ~p", [Low, After]),
-        ?assert(Low =< 900000),
-        ?assert(After >= 1.6 * Low)
+        Dip = fun(Flow) ->
+            #{samples := S} = sim(#{
+                link => bottleneck(3000000),
+                flows => [Flow],
+                events => [{8000, {capacity, 300000}}, {8500, {capacity, 3000000}}],
+                duration_ms => 11000
+            }),
+            {webrtc_cc_sim:min_after(S, 1, 8200, 8900), webrtc_cc_sim:min_after(S, 1, 9500, 10500)}
+        end,
+        {Low, After} = Dip(#{media_cap => [{0, 400000}]}),
+        ?debugFmt("application limited, dip to 300 kbps: low ~p, one second after ~p", [Low, After]),
+        ?assert(Low =< 400000),
+        ?assert(After >= 1.6 * Low),
+        {FullLow, FullAfter} = Dip(#{}),
+        ?debugFmt("full rate, dip to 300 kbps: low ~p, one second after ~p", [FullLow, FullAfter]),
+        ?assert(FullAfter < 1.6 * FullLow)
     end}.
 
 %% Media sent during a probe cluster is part of it: on a 3 Mbps link
@@ -375,8 +383,8 @@ probing_with_media_in_flight_test_() ->
     {timeout, 120, fun() ->
         Sim = webrtc_cc_sim:run(#{
             link => #{capacity => 3000000, delay_ms => 25, queue_ms => 300},
-            flows => [#{}],
-            events => [{8000, {capacity, 800000}}, {9000, {capacity, 3000000}}],
+            flows => [#{media_cap => [{0, 700000}]}],
+            events => [{8000, {capacity, 500000}}, {9000, {capacity, 3000000}}],
             duration_ms => 10000
         }),
         #{samples := S, flows := #{1 := #{cc := Cc}}} = Sim,

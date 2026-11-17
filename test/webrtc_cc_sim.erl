@@ -50,7 +50,8 @@ run(Opts) ->
         bins => #{},
         samples => [],
         trace_ms => maps:get(trace_ms, Opts, undefined),
-        trace => []
+        trace => [],
+        order => rand:seed_s(exsss, {Seed, 17, 23})
     },
     loop(maps:get(duration_ms, Opts), Sim).
 
@@ -101,12 +102,25 @@ loop(Duration, #{t := T} = Sim) when T > Duration ->
     Sim#{samples := lists:reverse(maps:get(samples, Sim)), trace := lists:reverse(maps:get(trace, Sim))};
 loop(Duration, #{t := T} = Sim0) ->
     Sim1 = apply_events(T, Sim0),
-    Sim2 = lists:foldl(fun(Id, S) -> sender_step(Id, T, S) end, Sim1, lists:sort(maps:keys(maps:get(flows, Sim1)))),
-    Sim3 = lists:foldl(fun(K, S) -> tcp_step(K, T, S) end, Sim2, lists:sort(maps:keys(maps:get(tcp, Sim2)))),
+    %% Senders take turns in a new order every millisecond: in a fixed
+    %% order the last one would always queue behind the packets the
+    %% others sent in the same millisecond, which biases its delay
+    %% signal (packets arriving together reach a real queue in no fixed
+    %% order).
+    {Steps, Order} = shuffle([{flow, Id} || Id <- lists:sort(maps:keys(maps:get(flows, Sim1)))] ++
+                                 [{tcp, K} || K <- lists:sort(maps:keys(maps:get(tcp, Sim1)))],
+                             maps:get(order, Sim1)),
+    Sim3 = lists:foldl(fun({flow, Id}, S) -> sender_step(Id, T, S); ({tcp, K}, S) -> tcp_step(K, T, S) end,
+                       Sim1#{order := Order}, Steps),
     Sim4 = deliver(rlink, T, deliver(link, T, Sim3)),
     Sim5 = receivers_step(T, Sim4),
     Sim6 = trace(T, sample(T, Sim5)),
     loop(Duration, Sim6#{t := T + 1}).
+
+shuffle(Xs, R0) ->
+    {Keyed, R} = lists:foldl(fun(X, {Acc, R1}) -> {U, R2} = rand:uniform_s(R1), {[{U, X} | Acc], R2} end,
+                             {[], R0}, Xs),
+    {[X || {_, X} <- lists:sort(Keyed)], R}.
 
 %% `trace_ms': every so often, the estimator state of each flow.
 trace(T, #{trace_ms := Every, flows := Fs} = Sim) when is_integer(Every), T rem Every =:= 0 ->

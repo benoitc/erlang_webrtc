@@ -7,13 +7,20 @@
 %%
 %% <ul>
 %% <li>Increase: multiplicative (at most 8% per second) while far from
-%%     convergence, additive (half an expected packet per response time,
-%%     response time = RTT + 100 ms) when the incoming rate R_hat is
-%%     within three standard deviations of the average rate measured at
-%%     the previous decreases (exponential average, smoothing 0.95). An
-%%     R_hat above that range resets the average, and so does one below
-%%     it at a decrease (as libwebrtc does: the capacity fell). The
-%%     estimate never goes above 1.5 R_hat + 10 kbps.</li>
+%%     convergence, additive (half an expected packet per response time)
+%%     when the incoming rate R_hat is within three standard deviations
+%%     of the average rate measured at the previous decreases
+%%     (exponential average, smoothing 0.95). An R_hat above that range
+%%     for a response time resets the average, and so does one below it
+%%     at a decrease (as libwebrtc does: the capacity fell). The estimate
+%%     never goes above 1.5 R_hat + 10 kbps.</li>
+%% <li>Response time: 300 ms whatever the RTT. The draft's RTT + 100 ms
+%%     makes a flow on a longer path gain rate more slowly, so flows of
+%%     different RTTs do not share a link fairly (RFC 8836 §2 item 2,
+%%     RFC 8867 §5.5); 300 ms is that formula at libwebrtc's default
+%%     RTT of 200 ms. Leaving the range on one high sample of R_hat sent
+%%     the flow that decreased least into multiplicative increase, so
+%%     R_hat must stay above it for a response time.</li>
 %% <li>Decrease: A_hat = beta R_hat with beta 0.85, never above the
 %%     current estimate, then Hold. A further decrease waits one RTT
 %%     (between 10 and 200 ms) unless R_hat fell below half the
@@ -33,6 +40,8 @@
 -define(BETA, 0.85).
 -define(GAIN, 1.08).
 
+-define(RESPONSE_MS, 300).
+
 -record(aimd, {
     rate :: pos_integer(),
     min :: pos_integer(),
@@ -44,6 +53,7 @@
     var_max = 0.4 :: float(),
     last_change :: undefined | integer(),
     last_decrease :: undefined | integer(),
+    above_since :: undefined | integer(),
     startup = true :: boolean(),
     startup_gain :: float()
 }).
@@ -95,7 +105,7 @@ update(Signal, RHat, Rtt, Now, A0) ->
         hold ->
             A#aimd{last_change = Now};
         increase ->
-            increase(RHat, Rtt, Dt, Now, A);
+            increase(RHat, Dt, Now, A);
         decrease ->
             case may_decrease(RHat, Rtt, Now, A) of
                 true -> decrease(RHat, Now, A);
@@ -109,11 +119,11 @@ transition(normal, decrease) -> hold;
 transition(normal, S) -> S;
 transition(underuse, _) -> hold.
 
-increase(RHat, Rtt, Dt, Now, #aimd{rate = R} = A0) ->
-    A = check_range(RHat, A0),
+increase(RHat, Dt, Now, #aimd{rate = R} = A0) ->
+    A = check_range(RHat, Now, A0),
     Inc =
         case A#aimd.region of
-            near_max -> additive(R, Rtt, Dt);
+            near_max -> additive(R, Dt);
             max_unknown -> multiplicative(R, Dt, A)
         end,
     New0 = R + Inc,
@@ -126,15 +136,17 @@ increase(RHat, Rtt, Dt, Now, #aimd{rate = R} = A0) ->
 
 %% R_hat above the average of the previous decreases: the congestion
 %% level changed, start over with multiplicative increase.
-check_range(undefined, A) ->
+check_range(undefined, _Now, A) ->
     A;
-check_range(_RHat, #aimd{avg_max = undefined} = A) ->
+check_range(_RHat, _Now, #aimd{avg_max = undefined} = A) ->
     A;
-check_range(RHat, #aimd{avg_max = Avg, var_max = Var} = A) ->
+check_range(RHat, Now, #aimd{avg_max = Avg, var_max = Var} = A) ->
     Std = math:sqrt(Var * Avg),
-    case RHat / 1000 > Avg + 3 * Std of
-        true -> A#aimd{avg_max = undefined, region = max_unknown};
-        false -> A
+    case {RHat / 1000 > Avg + 3 * Std, A#aimd.above_since} of
+        {true, undefined} -> A#aimd{above_since = Now};
+        {true, Since} when Now - Since >= ?RESPONSE_MS -> A#aimd{avg_max = undefined, region = max_unknown, above_since = undefined};
+        {true, _} -> A;
+        {false, _} -> A#aimd{above_since = undefined}
     end.
 
 %% R_hat at a decrease far below the average: the capacity fell, the
@@ -158,9 +170,8 @@ multiplicative(R, Dt, #aimd{startup = Startup, startup_gain = G}) ->
     Eta = math:pow(Gain, Dt / 1000),
     max(round(R * (Eta - 1)), 1000).
 
-additive(R, Rtt, Dt) ->
-    Response = 100 + Rtt,
-    Alpha = 0.5 * min(Dt / Response, 1.0),
+additive(R, Dt) ->
+    Alpha = 0.5 * min(Dt / ?RESPONSE_MS, 1.0),
     BitsPerFrame = R / 30,
     PacketsPerFrame = max(1, ceil(BitsPerFrame / (1200 * 8))),
     AvgPacketBits = BitsPerFrame / PacketsPerFrame,

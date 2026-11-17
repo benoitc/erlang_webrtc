@@ -127,6 +127,19 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTX-5 | 5.3 | Receiver associates the RTX SSRC with the original stream (apt, rid / repaired-rid) | webrtc_media, webrtc_media_rid | webrtc_media_tests:nack_rtx_test, webrtc_media_simulcast_tests:layer_nack_rtx_test | Unit tested: `ssrc-group:FID` when announced, repaired-rid otherwise |
 | RTX-6 | 6 | Sender keeps sent packets and avoids resending within one RTT | webrtc_nack_buffer | buffer_test, buffer_max_age_test | Unit tested |
 
+## RFC 2198 and RFC 8854: redundant audio and FEC
+
+| ID | Spec | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| RED-1 | 2198 §3 | Block headers: F = 1, payload type, 14-bit timestamp offset, 10-bit length for redundant blocks; F = 0 and the payload type for the primary; blocks in header order | webrtc_red | layout_test, two_blocks_test, primary_only_test | Unit tested |
+| RED-2 | 2198 §3 | Blocks the header cannot describe (offset above 14 bits, length above 10 bits) are not sent; headers that do not match the payload are refused | webrtc_red | limits_test_, malformed_test_, fuzz_test | Unit tested |
+| RED-3 | 2198 §4, 8854 §7 | Receiver: the primary block is delivered as the packet it carries; a redundant block repairs the packet it repeats (sequence number n before the primary, timestamp from the offset) only when that packet was lost | webrtc_media_in, webrtc_red | packets_test, webrtc_pc_SUITE:red_repairs_loss | E2E tested |
+| RED-4 | 8854 §4.2, 2198 §5 | audio/red offered after Opus with `fmtp` naming the primary payload types; answered with the offer's `fmtp` when all its payload types are kept | webrtc_jsep_caps | offered_test, answer_test_ | Interoperability tested (Chromium answers it) |
+| RED-5 | 8854 §4.1, §8 | Sender: with `red => true` on a send, the previous payload goes with the new one; used on demand, not by default (FEC SHOULD follow the observed loss) | webrtc_media | webrtc_pc_SUITE:red_repairs_loss, webrtc_pc_interop_SUITE:erlang_sends_red_audio | Interoperability tested (Chromium decodes it) |
+| RED-6 | 8854 §4.1 | RTP header parts not covered by redundancy (CSRCs, header extensions) approximated (RFC 2198 §4) | | | Non-compliant / known limitation: a repaired packet keeps the RED packet's CSRCs and extensions |
+| RED-7 | 8854 §5.1, §5.2, §7 | Video FEC: FlexFEC (RFC 8627) SHOULD be supported; ULPFEC (RFC 5109) MAY | | | Not implemented: video loss is repaired by NACK and RTX (RFC 4588), which §8 prefers when the RTT allows |
+| RED-8 | 8854 §4.1 | A send codec chosen by default is never a repair format (RED, RTX, ULPFEC, FlexFEC), whatever the offer's order | webrtc_media_out | default_send_codec_test | Unit tested |
+
 ## RFC 8852 and RFC 8853: RTP stream identifiers and simulcast
 
 | ID | Section | Requirement | Module | Test | Status |

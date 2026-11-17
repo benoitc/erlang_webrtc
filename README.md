@@ -56,6 +56,22 @@ Trickled candidates from the browser:
 ok = webrtc:add_ice_candidate(Pc, <<"candidate:1 1 udp 2122260223 192.0.2.10 54321 typ host">>).
 ```
 
+## Use STUN and TURN servers by URI
+
+You give the servers as a browser would, with `stun:`, `turn:` and `turns:` URIs. Names are resolved when the peer connection starts.
+
+```erlang
+{ok, Pc} = webrtc:new_peer_connection(#{ice_servers => [
+    #{urls => [<<"stun:stun.l.google.com:19302">>]},
+    #{urls => [<<"turn:turn.example.com?transport=udp">>, <<"turns:turn.example.com">>],
+      username => <<"user">>, credential => <<"secret">>}
+]}).
+```
+
+- A URI without a port is looked up with DNS SRV first (`_turn._udp`, `_turns._tcp`, ...), then A and AAAA on the default port.
+- A URI that cannot be used (a name that does not resolve, `stuns:`, TURN over DTLS) arrives as `{webrtc, Pc, {ice_server_error, Url, Reason}}`; the others are used.
+- For `turns:` with your own CA, add `tls_options => [{cacerts, [Der]}]` to the entry.
+
 ## Make an offer
 
 ```erlang

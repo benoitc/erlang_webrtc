@@ -56,6 +56,8 @@
 -define(MAX_EARLY_CANDIDATES, 64).
 %% Restarts tried for one incident before ICE is reported failed.
 -define(MAX_AUTO_RESTARTS, 3).
+%% The ICE agent's limit (webrtc_ice_agent).
+-define(MAX_ICE_SERVERS, 8).
 
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
@@ -64,8 +66,10 @@ start_link(Opts) ->
 %% gen_server
 %%====================================================================
 
-init(#{owner := App} = Opts) ->
+init(#{owner := App} = Opts0) ->
     process_flag(trap_exit, true),
+    {Opts, ServerErrors} = ice_servers(Opts0),
+    _ = [App ! {webrtc, self(), {ice_server_error, Url, Reason}} || {Url, Reason} <- ServerErrors],
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
     Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex, encrypt_header_extensions,
@@ -936,6 +940,25 @@ notify({ice_candidate, _, _} = Event, #st{app = App, signaler = S}) when is_pid(
 notify(Event, #st{app = App}) ->
     App ! {webrtc, self(), Event},
     ok.
+
+%% `ice_servers' URIs resolved and added to `stun_servers' and
+%% `turn_servers', within the ICE agent's limit of eight servers.
+ice_servers(#{ice_servers := List} = Opts) ->
+    {ok, Servers, Unsupported} = webrtc_ice_uri:servers(List),
+    {Found, Errors} = webrtc_ice_resolve:resolve(Servers, maps:filter(fun(_, V) -> V =/= undefined end, #{
+        timeout => maps:get(ice_server_timeout, Opts, undefined),
+        resolver => maps:get(ice_resolver, Opts, undefined)
+    })),
+    Stun0 = maps:get(stun_servers, Opts, []),
+    Turn0 = maps:get(turn_servers, Opts, []),
+    Room = max(0, ?MAX_ICE_SERVERS - length(Stun0) - length(Turn0)),
+    %% TURN first: a relay also gives the server reflexive address.
+    {In, Out} = lists:split(min(Room, length(Found)), [E || {_, {turn, _}} = E <- Found] ++ [E || {_, {stun, _}} = E <- Found]),
+    Dropped = lists:usort([{Url, too_many_servers} || {Url, _} <- Out]),
+    {Opts#{stun_servers => Stun0 ++ [A || {_, {stun, A}} <- In], turn_servers => Turn0 ++ [T || {_, {turn, T}} <- In]},
+     Unsupported ++ Errors ++ Dropped};
+ice_servers(Opts) ->
+    {Opts, []}.
 
 %% ICE ufrag/pwd: ice-char = ALPHA / DIGIT / "+" / "/" (RFC 8839 §5.4),
 %% ufrag at least 4 characters and pwd at least 22 (24 bits and 128 bits

@@ -135,6 +135,15 @@ new_peer_connection() ->
 %%     `hostname' (default: the IP address); `tls_options' (`ssl'
 %%     client options) replace these defaults, for example
 %%     `[{cacerts, [Der]}]'.</li>
+%% <li>`ice_servers': the W3C RTCIceServer list, `[#{urls => [Uri],
+%%     username => U, credential => C}]', with `stun:', `turn:' and
+%%     `turns:' URIs (RFC 7064, RFC 7065), for example
+%%     `<<"turn:turn.example.com?transport=tcp">>'. Names are resolved
+%%     when the peer connection starts (SRV records first when the URI
+%%     has no port, RFC 5928), within `ice_server_timeout' ms (default
+%%     2000); a URI that cannot be used is reported as
+%%     `{ice_server_error, Url, Reason}'. The servers are added to
+%%     `stun_servers' and `turn_servers', eight in all at most.</li>
 %% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
 %%     address).</li>
 %% <li>`rtcp_mux_policy': `negotiate' (default) or `require', which
@@ -225,20 +234,28 @@ new_peer_connection() ->
 %%     when every section of the connection negotiated it.</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
-new_peer_connection(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
+new_peer_connection(#{ice_servers := Servers} = Opts) ->
+    case webrtc_ice_uri:servers(Servers) of
+        {ok, _, _} -> new_pc(Opts);
+        {error, _} -> {error, {badarg, ice_servers}}
+    end;
+new_peer_connection(Opts) ->
+    new_pc(Opts).
+
+new_pc(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
     %% RFC 8841 §6 gives 0 the meaning "any size"; we always have a
     %% memory bound, so a positive limit is required.
     {error, {badarg, max_message_size}};
-new_peer_connection(#{congestion_control := C}) when not is_map(C) ->
+new_pc(#{congestion_control := C}) when not is_map(C) ->
     {error, {badarg, congestion_control}};
-new_peer_connection(#{codecs := Codecs} = Opts) when is_map(Codecs) ->
+new_pc(#{codecs := Codecs} = Opts) when is_map(Codecs) ->
     %% RFC 5761 §4: with RTP and RTCP on one port, payload types 64..95
     %% would read as RTCP packet types.
     case [Pt || _ := Cs <- Codecs, is_list(Cs), #{pt := Pt} <- Cs, Pt >= 64, Pt =< 95] of
         [] -> webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts));
         [Pt | _] -> {error, {badarg, {payload_type, Pt}}}
     end;
-new_peer_connection(Opts) ->
+new_pc(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 
 %% @doc Add a transceiver. `Opts': `direction' (default `sendrecv'),

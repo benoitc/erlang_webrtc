@@ -50,6 +50,9 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | mDNS ICE candidates | draft-ietf-mmusic-mdns-ice-candidates-03 | | [ice](compliance/ice.md) |
 | Multicast DNS | RFC 6762 | | [ice](compliance/ice.md) |
 | TURN | RFC 8656 | obsoletes RFC 5766 | [turn](compliance/turn.md) |
+| STUN URI | RFC 7064 | | [turn](compliance/turn.md) |
+| TURN URI | RFC 7065 | | [turn](compliance/turn.md) |
+| TURN server discovery | RFC 5928 | | [turn](compliance/turn.md) |
 | Multiplexing | RFC 7983 | updated by RFC 9443 | [transport](compliance/transport.md) |
 | DTLS 1.2 | RFC 6347 | | [dtls](compliance/dtls.md) |
 | DTLS 1.3 | RFC 9147 | | [dtls](compliance/dtls.md) |

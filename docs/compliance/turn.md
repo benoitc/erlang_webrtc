@@ -40,7 +40,7 @@ This page lists the client-side TURN requirements implemented by `webrtc_turn_cl
 | TURN-32 | 3.1 | TCP and TLS-over-TCP to the server (`transport` of `turn_servers`): STUN and ChannelData framed on the stream, ChannelData padded to 4 bytes, bytes out of step close the connection; no request retransmission on the stream (RFC 8489 §6.2.2, 39.5 s timeout); TLS server certificate verified against the system CA store and the host name or IP address | webrtc_turn_stream, webrtc_ice_relay, webrtc_transport_net | webrtc_turn_stream_tests, webrtc_ice_agent_tests:stream_turn_test, stream_turn_connect_failure_test, webrtc_turn_interop_SUITE:relayed_over_tcp, relayed_over_tls, untrusted_tls_no_relay | Interoperability tested (pion/turn) |
 | TURN-36 | 3.1 | DTLS-over-UDP to the server | | | Not implemented: not used by browsers |
 | TURN-33 | 7.1 | ADDITIONAL-ADDRESS-FAMILY, EVEN-PORT, RESERVATION-TOKEN, DONT-FRAGMENT | | | Not implemented (optional) |
-| TURN-34 | 4 | Server discovery through DNS | | | Not implemented: the owner gives IP addresses |
+| TURN-34 | 4, RFC 5928 | Server discovery through DNS: see URI-1 to URI-8 | webrtc_ice_resolve | webrtc_ice_uri_tests | Unit and interoperability tested |
 | TURN-35 | RFC 8489 9.2.2 | OpaqueString processing of the realm and password | | | Non-compliant / known limitation: used as given, see STUN-16 |
 
 ## ICE integration
@@ -57,6 +57,23 @@ The ICE agent owns one `webrtc_turn_client` per (host socket, TURN server) and a
 | TURN-I6 | | Allocations deleted when the agent closes | webrtc_ice_relay | webrtc_ice_net_tests:close_deletes_allocations_test | Unit tested |
 | TURN-I7 | RFC 8445 5.1.2.1 | A relay reached over TCP or TLS has a lower local preference than one reached over UDP, and its own foundation | webrtc_ice_relay | webrtc_ice_agent_tests:stream_turn_test | Unit tested |
 | TURN-I8 | | A stream that fails to open ends its gathering job; one that closes loses the allocation and its candidate (`{turn_error, Server, {stream, Reason}}`, `{allocation_lost, {stream, Reason}}`) | webrtc_ice_relay | webrtc_ice_agent_tests:stream_turn_test, stream_turn_connect_failure_test | Unit tested |
+
+## Server URIs and discovery
+
+The `ice_servers` option takes the W3C RTCIceServer list; its URIs are resolved when the peer connection starts (`webrtc_pc`), and the servers join `stun_servers` and `turn_servers`.
+
+| ID | Spec | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| URI-1 | RFC 7064 §3.1 | stun and stuns URIs: host (IPv4, IPv6 in brackets, registered name with percent-encoding), optional port, default 3478 and 5349; no query | webrtc_ice_uri | rfc_examples_test_, hosts_test_, refused_test_ | Unit tested |
+| URI-2 | RFC 7065 §3.1 | turn and turns URIs with `?transport=udp` or `tcp`; a transport-ext is refused as unsupported; default ports 3478 and 5349 | webrtc_ice_uri | rfc_examples_test_, unsupported_transport_test_ | Unit tested |
+| URI-3 | RFC 7065 §3, RFC 5928 §3 | A URI without transport: UDP for turn, TLS over TCP for turns | webrtc_ice_uri | rfc_examples_test_ | Non-compliant / known limitation: the NAPTR lookup (RFC 5928 step 1, S-NAPTR) is not done, as in browsers |
+| URI-4 | RFC 5928 §3 steps 1 to 3, RFC 8489 §8.1 | An IP address is used as is; a name with a port is looked up for A and AAAA (step 2); without a port, SRV `_turn._udp`, `_turn._tcp`, `_turns._tcp` or `_stun._udp` first (targets by priority, then weight), A and AAAA with the default port when there is none (step 3) | webrtc_ice_resolve | literal_test, explicit_port_test, srv_test, srv_names_test_ | Unit tested |
+| URI-5 | RFC 8489 §8.1, RFC 8445 §5.1.1.2 | Both A and AAAA queried; the addresses tried | webrtc_ice_resolve | explicit_port_test | Non-compliant / known limitation: the first address of each family is used, matched to the host candidates of that family, and the first SRV target only; there is no fall back to the next one when the server does not answer (the agent takes eight servers at most) |
+| URI-6 | RFC 8656 §3.1, RFC 6125 | turns: TLS to the server, the certificate checked against the name in the URI | webrtc_ice_resolve, webrtc_transport_net | webrtc_turn_interop_SUITE:relayed_by_uri_tls | Interoperability tested (pion/turn) |
+| URI-7 | W3C webrtc-pc RTCIceServer | `urls` (one or several), `username` and `credential` required for TURN; a malformed list refuses the peer connection (`{badarg, ice_servers}`); a URI that cannot be used is reported as `{ice_server_error, Url, Reason}` and the others kept; eight servers in all at most | webrtc, webrtc_pc, webrtc_ice_uri | servers_test_, peer_connection_test_ | Unit tested |
+| URI-8 | RFC 7064 §3.1, RFC 8489 §6.2.3 | stuns (STUN over TLS) | | servers_test_ | Not implemented: reported as unsupported; binding requests go over UDP |
+
+Names resolve in parallel within `ice_server_timeout` (default 2 s), so starting a peer connection waits at most that long. A server given in `stun_servers` or `turn_servers` must be an IP address (`{badarg, {server_address, A}}` otherwise).
 
 ## Notes
 

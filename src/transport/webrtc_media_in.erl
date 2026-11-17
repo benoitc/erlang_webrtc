@@ -16,6 +16,10 @@
     rtp_in/4
 ]).
 
+-ifdef(TEST).
+-export([path_rtt/2]).
+-endif.
+
 rtp_in(Bin, Now, M) ->
     rtp_in(Bin, Now, M, 0).
 
@@ -351,8 +355,9 @@ report_blocks(Rbs, Now, M) ->
                             {ok, Us} -> Us div 1000;
                             undefined -> undefined
                         end,
-                    {Events, Cc} = webrtc_cc:report(Mid, Rb, Rtt, Now, M1#media.cc),
-                    M2 = remote_inbound(Rb, Rtt, M1#media{cc = Cc}),
+                    M1b = path_rtt(Rtt, M1),
+                    {Events, Cc} = webrtc_cc:report(Mid, Rb, Rtt, Now, M1b#media.cc),
+                    M2 = remote_inbound(Rb, Rtt, M1b#media{cc = Cc}),
                     {M2, Acts ++ [{event, E} || E <- Events]};
                 error ->
                     {M1, Acts}
@@ -381,6 +386,18 @@ remote_inbound(#rtcp_rb{ssrc = Ssrc} = Rb, Rtt, M) ->
     end.
 
 stream(Dir, Ssrc, M) -> maps:get({Dir, Ssrc}, M#media.streams, #{}).
+
+%% The path's RTT from a report block (RFC 3550 §6.4.1) paces the NACK
+%% requests we repeat (RFC 4585 §3.4) and keeps a packet from being
+%% resent twice within one RTT (RFC 4588 §5).
+path_rtt(undefined, M) ->
+    M;
+path_rtt(Rtt, M) ->
+    Rs = maps:map(fun(_, #rcv{nack = undefined} = R) -> R;
+                     (_, #rcv{nack = N} = R) -> R#rcv{nack = webrtc_nack:set_rtt(Rtt, N)}
+                  end, M#media.receivers),
+    Ss = maps:map(fun(_, S) -> S#snd{buffer = webrtc_nack_buffer:set_rtt(Rtt, S#snd.buffer)} end, M#media.senders),
+    M#media{receivers = Rs, senders = Ss}.
 
 keyframe(Ssrc, M) ->
     case sender_by_ssrc(Ssrc, M) of

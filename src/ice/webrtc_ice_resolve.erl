@@ -6,8 +6,10 @@
 %% name without a port first for SRV records (`_turn._udp',
 %% `_turn._tcp', `_turns._tcp', `_stun._udp'), whose targets are taken
 %% in priority order, then for A and AAAA records with the default port
-%% when there are none. One address per family is kept for each URI:
-%% candidates are gathered per family (RFC 8445 §5.1.1.2).
+%% when there are none. Each URI gives, per family, every address found,
+%% SRV targets in order: the first is the server, the others are tried
+%% in turn when it does not answer (RFC 8489 §8.1, RFC 5928 §3).
+%% Candidates are gathered per family (RFC 8445 §5.1.1.2).
 %%
 %% Names are resolved in parallel within `timeout' (ms, default 2000).
 %% `resolver' replaces the lookups: `fun(srv | inet | inet6, Name)'
@@ -19,11 +21,13 @@
 
 -define(TIMEOUT, 2000).
 
-%% The result: for each address found, its URI and the server entry
-%% (`{stun, {IP, Port}}' or `{turn, Map}' as `turn_servers' takes it);
-%% the URIs that gave none, with the reason.
+%% The result: for each URI and family, its URI, the server entry
+%% (`{stun, {IP, Port}}' or `{turn, Map}' as `turn_servers' takes it)
+%% and the addresses to fall back to, in order; the URIs that gave none,
+%% with the reason.
+-type address() :: {inet:ip_address(), inet:port_number()}.
 -spec resolve([webrtc_ice_uri:server()], map()) ->
-    {[{binary(), {stun, {inet:ip_address(), inet:port_number()}} | {turn, map()}}], [{binary(), term()}]}.
+    {[{binary(), {stun, address()} | {turn, map()}, [address()]}], [{binary(), term()}]}.
 resolve(Servers, Opts) ->
     Timeout = maps:get(timeout, Opts, ?TIMEOUT),
     Resolver = maps:get(resolver, Opts, default_resolver(Timeout)),
@@ -31,7 +35,7 @@ resolve(Servers, Opts) ->
     Jobs = [{spawn_monitor(fun() -> Self ! {self(), addresses(S, Resolver)} end), S} || S <- Servers],
     Deadline = erlang:monotonic_time(millisecond) + Timeout,
     Results = [collect(Ref, Pid, S, Deadline) || {{Pid, Ref}, S} <- Jobs],
-    Found = [{Url, entry(S, A)} || {#{url := Url} = S, {ok, As}} <- Results, A <- As],
+    Found = [{Url, entry(S, A), Rest} || {#{url := Url} = S, {ok, Fams}} <- Results, [A | Rest] <- Fams],
     Errors = [{Url, R} || {#{url := Url}, {error, R}} <- Results],
     {Found, Errors}.
 
@@ -62,9 +66,9 @@ turn(#{uri := #{host := Host, transport := T}, username := U, credential := C} =
         false -> Base
     end.
 
-%% The addresses of one URI, at most one per family.
+%% The addresses of one URI, a list per family.
 addresses(#{uri := #{host := Host, port := Port}}, _Resolver) when is_tuple(Host) ->
-    {ok, [{Host, Port}]};
+    {ok, [[{Host, Port}]]};
 addresses(#{uri := #{host := Name, port := Port, explicit_port := true}}, Resolver) ->
     by_name([{Name, Port}], Resolver);
 addresses(#{uri := #{host := Name, port := Port} = Uri}, Resolver) ->
@@ -87,10 +91,12 @@ srv_name(#{scheme := turns}) -> "_turns._tcp.".
 by_name(Targets, Resolver) ->
     Found = [{Fam, {IP, Port}} || {Name, Port} <- Targets, Fam <- [inet, inet6],
                                   {ok, IPs} <- [Resolver(Fam, Name)], IP <- IPs],
-    case [A || Fam <- [inet, inet6], {F, A} <- [lists:keyfind(Fam, 1, Found)], F =:= Fam] of
+    case [L || Fam <- [inet, inet6], L <- [dedup([A || {F, A} <- Found, F =:= Fam])], L =/= []] of
         [] -> {error, nxdomain};
-        As -> {ok, As}
+        Fams -> {ok, Fams}
     end.
+
+dedup(L) -> lists:reverse(lists:foldl(fun(A, Acc) -> case lists:member(A, Acc) of true -> Acc; false -> [A | Acc] end end, [], L)).
 
 default_resolver(Timeout) ->
     fun

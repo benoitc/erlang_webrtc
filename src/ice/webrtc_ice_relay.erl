@@ -157,7 +157,7 @@ turn_event({Sock, Server} = Key, {allocated, #{relayed := {RIP, RPort}, mapped :
 turn_event(Key, {allocate_failed, Reason}, Now, S) ->
     case maps:take(Key, S#ice.turn) of
         {#{job := {relay, HostId, #{address := Server} = Cfg, Idx} = Job, transport := Tr}, Turn} ->
-            case retry(Reason, Server, Cfg, Tr) of
+            case retry(Reason, Server, Cfg, Tr, webrtc_ice_gather:fallback(Server, S)) of
                 {alternate, Alt} ->
                     %% RFC 8656 §7.4: the same job against the alternate.
                     Tried = [Server | maps:get(tried, Cfg, [])],
@@ -175,6 +175,9 @@ turn_event(Key, {allocate_failed, Reason}, Now, S) ->
                                streams = (S#ice.streams)#{Ref => {HostId, Next, webrtc_ice_gather:relay_opts(Cfg, S)}},
                                gather_pending = [Next | lists:delete(Job, S#ice.gather_pending)]},
                     {S1, [{open_udp, Ref, #{local => IP}}], []};
+                no when Reason =:= timeout ->
+                    {S1, A, D} = failed_job(Turn, Job, HostId, Server, Idx, Reason, Now, S),
+                    {S1, [{event, {server_unreachable, Server}} | A], D};
                 no ->
                     failed_job(Turn, Job, HostId, Server, Idx, Reason, Now, S)
             end;
@@ -193,18 +196,22 @@ turn_event(_Key, _Other, _Now, S) ->
 %% What a failed allocation leads to: an alternate server (at most three
 %% redirections, never back to one already tried), a new local port
 %% once after a 437 on UDP, or nothing.
-retry({try_alternate, Alt}, Server, Cfg, _Tr) ->
+retry({try_alternate, Alt}, Server, Cfg, _Tr, _Fallback) ->
     Tried = [Server | maps:get(tried, Cfg, [])],
     case length(Tried) =< 3 andalso not lists:member(Alt, Tried) of
         true -> {alternate, Alt};
         false -> no
     end;
-retry({error, 437}, _Server, Cfg, udp) ->
+retry({error, 437}, _Server, Cfg, udp, _Fallback) ->
     case maps:get(retried, Cfg, false) of
         true -> no;
         false -> new_socket
     end;
-retry(_Reason, _Server, _Cfg, _Tr) ->
+%% No answer at all: the next address of the URI (RFC 5928 §3). A server
+%% that answered with an error is not failed over (RFC 8656 §7.3).
+retry(timeout, _Server, _Cfg, _Tr, {ok, Next}) ->
+    {alternate, Next};
+retry(_Reason, _Server, _Cfg, _Tr, _Fallback) ->
     no.
 
 failed_job(Turn, Job, HostId, Server, Idx, Reason, _Now, S) ->
@@ -347,10 +354,18 @@ stream_up(Ref, Now, S) ->
 -spec stream_down({stream, pos_integer()}, term(), integer(), #ice{}) -> {#ice{}, [term()]}.
 stream_down(Ref, Reason, Now, S) ->
     case maps:take(Ref, S#ice.streams) of
-        {{_HostId, {relay, _, #{address := Server}, _} = Job, _}, Streams} ->
+        {{HostId, {relay, _, #{address := Server} = Cfg, Idx} = Job, _}, Streams} ->
             S1 = S#ice{streams = Streams, gather_pending = lists:delete(Job, S#ice.gather_pending)},
-            {S2, A} = webrtc_ice_gather:maybe_complete(S1),
-            {S2, A ++ [{event, {turn_error, Server, {stream, Reason}}}]};
+            case webrtc_ice_gather:fallback(Server, S) of
+                {ok, Next} ->
+                    %% The connection to this address failed: the next one
+                    %% of the URI (RFC 5928 §3).
+                    {S1#ice{gather_queue = S1#ice.gather_queue ++ [{relay, HostId, Cfg#{address => Next}, Idx}]},
+                     [{event, {turn_error, Server, {stream, Reason}}}]};
+                none ->
+                    {S2, A} = webrtc_ice_gather:maybe_complete(S1),
+                    {S2, A ++ [{event, {turn_error, Server, {stream, Reason}}}, {event, {server_unreachable, Server}}]}
+            end;
         error ->
             case [K || {R, _} = K <- maps:keys(S#ice.turn), R =:= Ref] of
                 [{_, Server} = Key] ->

@@ -170,12 +170,9 @@ multiplicative(R, Dt, #aimd{startup = Startup, startup_gain = G}) ->
     Eta = math:pow(Gain, Dt / 1000),
     max(round(R * (Eta - 1)), 1000).
 
-additive(R, Dt) ->
+additive(_R, Dt) ->
     Alpha = 0.5 * min(Dt / ?RESPONSE_MS, 1.0),
-    BitsPerFrame = R / 30,
-    PacketsPerFrame = max(1, ceil(BitsPerFrame / (1200 * 8))),
-    AvgPacketBits = BitsPerFrame / PacketsPerFrame,
-    max(1000, round(Alpha * AvgPacketBits)).
+    max(1000, round(Alpha * 1200 * 8)).
 
 may_decrease(_RHat, _Rtt, _Now, #aimd{last_decrease = undefined}) ->
     true;

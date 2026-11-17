@@ -143,3 +143,28 @@ requests(S) ->
     #{streams := St} = webrtc_media:stats(S),
     In = [V || {in, _} := V <- St],
     #{pli => lists:sum([maps:get(pli_count, V, 0) || V <- In]), fir => lists:sum([maps:get(fir_count, V, 0) || V <- In])}.
+
+%% send_frame/5: each codec's frames split by its payload format, put
+%% back together by the receiver.
+send_frame_test_() ->
+    [{atom_to_list(C), fun() ->
+        {SA0, SB0} = pair(#{}, #{frames => true}),
+        Frames = webrtc_test_frames:frames(C),
+        {_, _, Acts} = lists:foldl(
+            fun({I, #{data := D0, key := K}}, {SA, SB, Acc}) ->
+                D = case C of h264 -> iolist_to_binary([[<<0, 0, 0, 1>>, N] || N <- D0]); _ -> D0 end,
+                {ok, Out, SA1} = webrtc_media:send_frame(<<"1">>, D, #{timestamp => 1000 + I * 3000, keyframe => K,
+                                                                      codec => webrtc_test_frames:name(C)}, I * 33, SA),
+                {SB1, A} = run(I * 33, Out, SB),
+                {SA1, SB1, Acc ++ A}
+            end,
+            {SA0, SB0, []},
+            lists:enumerate(0, Frames)
+        ),
+        Got = [F || {event, {frame, <<"1">>, F}} <- Acts],
+        Same = fun(#{expect := E}, #{data := D}) ->
+                   case C of av1 -> webrtc_rtp_av1:obus(E) =:= webrtc_rtp_av1:obus(D); _ -> E =:= D end
+               end,
+        ?assertEqual(length(Frames), length(Got)),
+        ?assert(lists:all(fun({E, G}) -> Same(E, G) end, lists:zip(Frames, Got)))
+    end} || C <- [vp8, vp9, h264, av1]].

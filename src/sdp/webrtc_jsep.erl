@@ -27,6 +27,7 @@
     new/1,
     add_transceiver/3,
     frames_opts/1,
+    plugin_opts/2,
     set_direction/3,
     stop_transceiver/2,
     transceivers/1,
@@ -103,6 +104,7 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
                      {ok, F} -> F;
                      {error, E} -> error(E)
                  end,
+        codec_plugins = maps:get(codec_plugins, Opts, #{}),
         encrypt_offer = EncryptMode =:= offer,
         cryptex = maps:get(cryptex, Opts, true),
         rtcp_mux_only = maps:get(rtcp_mux_policy, Opts, negotiate) =:= require
@@ -131,7 +133,9 @@ add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
         {ok, Encs} ?= webrtc_jsep_simulcast:encodings(maps:get(send_encodings, Opts, []), {T#tr.ssrc, T#tr.rtx_ssrc}),
         {ok, Recv} ?= webrtc_jsep_simulcast:recv_rids(maps:get(recv_rids, Opts, [])),
         {ok, Frames} ?= frames_opts(maps:get(frames, Opts, T#tr.frames)),
+        {ok, Plugin} ?= plugin_opts(maps:get(codec_plugin, Opts, T#tr.codec_plugin), Frames),
         T1 = T#tr{
+            codec_plugin = Plugin,
             stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
             track_id = maps:get(track_id, Opts, T#tr.track_id),
             encodings = Encs,
@@ -158,10 +162,22 @@ frames_opts(#{} = O) ->
 frames_opts(Other) ->
     {error, {badarg, {frames, Other}}}.
 
-new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps, frames = Frames}) ->
+%% @doc Check the `codec_plugin' option: `{Module, Opts}', on frames.
+-spec plugin_opts(term(), false | map()) -> {ok, undefined | {module(), term()}} | {error, term()}.
+plugin_opts(undefined, _Frames) ->
+    {ok, undefined};
+plugin_opts({Mod, _} = P, Frames) when is_atom(Mod), Frames =/= false ->
+    {ok, P};
+plugin_opts({Mod, _}, false) when is_atom(Mod) ->
+    {error, {badarg, {codec_plugin, needs_frames}}};
+plugin_opts(Other, _Frames) ->
+    {error, {badarg, {codec_plugin, Other}}}.
+
+new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps, frames = Frames, codec_plugins = Plugins}) ->
     {Codecs, Exts} = maps:get(Kind, Caps),
     #tr{
         frames = Frames,
+        codec_plugin = case Frames of false -> undefined; _ -> maps:get(Kind, Plugins, undefined) end,
         id = Id,
         kind = Kind,
         direction = Dir,

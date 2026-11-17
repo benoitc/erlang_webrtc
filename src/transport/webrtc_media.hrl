@@ -49,7 +49,11 @@
     cycles = 0 :: non_neg_integer(),
     %% The previous payload sent, {Pt, Ts, Data}, repeated in the next
     %% RED packet (RFC 2198) when the send asks for redundancy.
-    red_prev :: undefined | {0..127, non_neg_integer(), binary()}
+    red_prev :: undefined | {0..127, non_neg_integer(), binary()},
+    %% The next VP8 and VP9 picture ID of send_frame, and the codec
+    %% plugin encoding what send_media gets.
+    picture_id = 0 :: 0..16#7FFF,
+    plugin :: undefined | {module(), term()} | {off, term()}
 }).
 
 -record(rcv, {
@@ -66,7 +70,10 @@
     %% Key frame requests the stream accepts (RFC 4585 PLI, RFC 5104
     %% FIR) and the sequence number of our next FIR (§4.3.1.2).
     keyframe = [] :: [pli | fir],
-    fir_seq = 0 :: 0..255
+    fir_seq = 0 :: 0..255,
+    %% The codec plugin decoding the frames, with the codec it was
+    %% started for.
+    plugin :: undefined | {module(), term(), binary()} | {off, term()}
 }).
 
 -record(media, {
@@ -118,6 +125,10 @@
     %% sent them: the middle 32 bits and when they came, answered with a
     %% DLRR block (§4.5) in the next regular report.
     xr_rrtr = #{} :: #{non_neg_integer() => {0..16#FFFFFFFF, integer()}},
+    %% W3C media-source and media-playout members reported by mid
+    %% (webrtc_media_report).
+    sources = #{} :: #{binary() => map()},
+    playouts = #{} :: #{binary() => map()},
     %% Per stream, for the W3C statistics: counters and the last reports
     %% by {in, RemoteSsrc} or {out, OurSsrc} (webrtc_stats).
     streams = #{} :: #{{in | out, non_neg_integer()} => map()}

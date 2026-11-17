@@ -11,9 +11,10 @@
 %% local-candidate, remote-candidate and certificate. Frame members of
 %% received streams come from the frame buffer (`frames' on the
 %% transceiver), those of sent streams from the packets sent. This
-%% library does not capture, encode, decode or play media, so
-%% media-source, media-playout and the encoder and decoder members are
-%% left out (docs/compliance/stats.md lists each member).
+%% library does not capture, encode, decode or play media: the decoder
+%% and encoder members, media-source and media-playout come from a
+%% codec plugin (webrtc_media_codec) or webrtc:report_media_stats/4
+%% (docs/compliance/stats.md lists each member).
 -module(webrtc_stats).
 
 -include("webrtc_ice.hrl").
@@ -201,10 +202,36 @@ rtp_objects(Tid, MediaStats, Kinds, Media) ->
     Streams = maps:get(streams, MediaStats, #{}),
     Senders = maps:get(senders, MediaStats, #{}),
     Receivers = maps:get(receivers, MediaStats, #{}),
-    Out = lists:append([outbound(Tid, Key, S, Streams, Kinds, Media) || Key := S <- Senders]),
-    In = lists:append([inbound(Tid, Ssrc, R, Streams, Kinds, Media) || Ssrc := R <- Receivers]),
+    Sources = [source(Tid, Mid, S, Kinds) || Mid := S <- maps:get(sources, MediaStats, #{})],
+    Playouts = [playout(Tid, Mid, P) || Mid := P <- maps:get(playouts, MediaStats, #{}), maps:get(Mid, Kinds, x) =:= audio],
+    Out0 = lists:append([outbound(Tid, Key, S, Streams, Kinds, Media) || Key := S <- Senders]),
+    In0 = lists:append([inbound(Tid, Ssrc, R, Streams, Kinds, Media) || Ssrc := R <- Receivers]),
+    %% Links to the media-source and media-playout objects of the mid.
+    Link = fun(Objs, Key, Type, Of) ->
+        Ids = maps:from_list([{M, Id} || #{id := Id, mid := M} <- Of]),
+        [case O of
+             #{type := Type, mid := M} when is_map_key(M, Ids) -> O#{Key => maps:get(M, Ids)};
+             _ -> O
+         end || O <- Objs]
+    end,
+    Out = Link(Out0, mediaSourceId, <<"outbound-rtp">>, Sources),
+    In = Link(In0, playoutId, <<"inbound-rtp">>, Playouts),
     Codecs = lists:usort([C || #{codec := C} <- Out ++ In, C =/= undefined]),
-    [maps:remove(codec, O) || O <- Out ++ In] ++ Codecs.
+    [maps:remove(codec, O) || O <- Out ++ In] ++ Codecs ++ [maps:remove(mid, O) || O <- Sources ++ Playouts].
+
+%% Reported by a codec plugin or webrtc:report_media_stats/4.
+source(Tid, Mid, S, Kinds) ->
+    Kind = maps:get(Mid, Kinds, undefined),
+    Allowed = case Kind of
+                  audio -> [audioLevel, totalAudioEnergy, totalSamplesDuration, echoReturnLoss, echoReturnLossEnhancement];
+                  _ -> [width, height, frames, framesPerSecond]
+              end,
+    _ = Tid,
+    (maps:with(Allowed, S))#{id => <<"S", Mid/binary>>, type => <<"media-source">>, trackIdentifier => Mid,
+                             kind => kind(Kind), mid => Mid}.
+
+playout(_Tid, Mid, P) ->
+    P#{id => <<"AP", Mid/binary>>, type => <<"media-playout">>, kind => <<"audio">>, mid => Mid}.
 
 outbound(Tid, Key, #{ssrc := Ssrc} = Tx, Streams, Kinds, Media) ->
     {Mid, Rid} = case Key of {M, R} -> {M, R}; M -> {M, undefined} end,
@@ -258,7 +285,7 @@ outbound(Tid, Key, #{ssrc := Ssrc} = Tx, Streams, Kinds, Media) ->
             _ ->
                 []
         end,
-    [Base | Remote].
+    [maps:merge(Base, maps:get(reported, S, #{})) | Remote].
 
 inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
     Mid = maps:get(mid, Rx, undefined),
@@ -309,7 +336,8 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
         remoteId => case Remote of [#{id := Rid}] -> Rid; [] -> undefined end,
         codec => Codec
     }),
-    [maps:merge(Base, compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined)))))
+    [maps:merge(maps:merge(Base, compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined))))),
+                maps:get(reported, S, #{}))
      | Remote].
 
 %% From the RFC 6464 level of each packet, when negotiated.

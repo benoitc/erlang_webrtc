@@ -62,21 +62,21 @@ Inherits RTCReceivedRtpStreamStats.
 | trackIdentifier | yes | Reported: the mid: there is no MediaStreamTrack |
 | mid |  | Reported |
 | remoteId |  | Reported |
-| framesDecoded |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| keyFramesDecoded |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| framesRendered |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| framesDecoded |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| keyFramesDecoded |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| framesRendered |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | framesDropped |  | Reported with `frames` on the transceiver, from the frame buffer: frames that missed packets or a frame they depend on |
 | frameWidth |  | Reported with `frames` on the transceiver, from the frame buffer: from the last key frame (VP8, VP9 headers, H.264 SPS, AV1 sequence header) |
 | frameHeight |  | Reported with `frames` on the transceiver, from the frame buffer: as frameWidth |
 | framesPerSecond |  | Reported with `frames` on the transceiver, from the frame buffer: frames released in the last second |
-| qpSum |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalDecodeTime |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalInterFrameDelay |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalSquaredInterFrameDelay |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| pauseCount |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalPausesDuration |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| freezeCount |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalFreezesDuration |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| qpSum |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalDecodeTime |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalInterFrameDelay |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalSquaredInterFrameDelay |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| pauseCount |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalPausesDuration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| freezeCount |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalFreezesDuration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | lastPacketReceivedTimestamp |  | Reported |
 | headerBytesReceived |  | Reported |
 | packetsDiscarded |  | Reported with `frames` on the transceiver, from the frame buffer: packets that came after their frame left |
@@ -87,34 +87,34 @@ Inherits RTCReceivedRtpStreamStats.
 | nackCount |  | Reported |
 | firCount |  | Reported |
 | pliCount |  | Reported |
-| totalProcessingDelay |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| estimatedPlayoutTimestamp |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| totalProcessingDelay |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| estimatedPlayoutTimestamp |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | jitterBufferDelay |  | Reported with `frames` on the transceiver, from the frame buffer |
 | jitterBufferTargetDelay |  | Reported with `frames` on the transceiver, from the frame buffer |
 | jitterBufferEmittedCount |  | Reported with `frames` on the transceiver, from the frame buffer |
 | jitterBufferMinimumDelay |  | Reported with `frames` on the transceiver, from the frame buffer: three times the jitter, before `min_delay` and the playout-delay extension |
-| totalSamplesReceived |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| concealedSamples |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| silentConcealedSamples |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| concealmentEvents |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| insertedSamplesForDeceleration |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| removedSamplesForAcceleration |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| totalSamplesReceived |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| concealedSamples |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| silentConcealedSamples |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| concealmentEvents |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| insertedSamplesForDeceleration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| removedSamplesForAcceleration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | audioLevel |  | Reported when the RFC 6464 extension is negotiated: the level the sender put in the last packet, not one measured on decoded audio |
 | totalAudioEnergy |  | Reported with audioLevel: the level squared times each packet's duration (Opus TOC, G.711 and G.722 size) |
 | totalSamplesDuration |  | Reported with audioLevel |
 | framesReceived |  | Reported with `frames` on the transceiver, from the frame buffer |
-| decoderImplementation |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| playoutId |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| powerEfficientDecoder |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| decoderImplementation |  | Reported by a codec plugin or `webrtc:report_media_stats/4`: the plugin's `info/1` |
+| playoutId |  | Reported when the transceiver's playout is reported (`media-playout`) |
+| powerEfficientDecoder |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | framesAssembledFromMultiplePackets |  | Reported with `frames` on the transceiver, from the frame buffer |
 | totalAssemblyTime |  | Reported with `frames` on the transceiver, from the frame buffer |
 | retransmittedPacketsReceived |  | Reported: RTX (RFC 4588) |
 | retransmittedBytesReceived |  | Reported |
 | rtxSsrc |  | Reported |
 | fecSsrc |  | Not reported: No FEC yet |
-| totalCorruptionProbability |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalSquaredCorruptionProbability |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| corruptionMeasurements |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| totalCorruptionProbability |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalSquaredCorruptionProbability |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| corruptionMeasurements |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 
 ## RTCRemoteInboundRtpStreamStats (`remote-inbound-rtp`)
 
@@ -145,7 +145,7 @@ Inherits RTCSentRtpStreamStats.
 | Member | Required | Status |
 |---|---|---|
 | mid |  | Reported |
-| mediaSourceId |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| mediaSourceId |  | Reported when the transceiver's source is reported (`media-source`) |
 | remoteId |  | Reported |
 | rid |  | Reported |
 | encodingIndex |  | Reported: the layer's place in the send encodings, 0 for a single stream |
@@ -153,30 +153,30 @@ Inherits RTCSentRtpStreamStats.
 | retransmittedPacketsSent |  | Reported |
 | retransmittedBytesSent |  | Reported: payload octets of RTX packets; a retransmission without RTX replays the protected packet and adds no bytes |
 | rtxSsrc |  | Reported when RTX is negotiated |
-| targetBitrate |  | Not reported: The target is per transport (candidate pair availableOutgoingBitrate), not per encoder |
-| totalEncodedBytesTarget |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| targetBitrate |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalEncodedBytesTarget |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | frameWidth |  | Reported: from the key frames sent (VP8, VP9 headers, H.264 SPS, AV1 sequence header) |
 | frameHeight |  | Reported: as frameWidth |
 | framesPerSecond |  | Reported: frames sent in the last second |
 | framesSent |  | Reported: video frames, by marker bit |
 | hugeFramesSent |  | Reported: frames of at least 2.5 times the average size of the frames sent before |
-| framesEncoded |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| keyFramesEncoded |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| qpSum |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| psnrSum |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| psnrMeasurements |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| totalEncodeTime |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| framesEncoded |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| keyFramesEncoded |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| qpSum |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| psnrSum |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| psnrMeasurements |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalEncodeTime |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | totalPacketSendDelay |  | Reported: the time packets wait in the pacer |
-| qualityLimitationReason |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| qualityLimitationDurations |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| qualityLimitationResolutionChanges |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| qualityLimitationReason |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| qualityLimitationDurations |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| qualityLimitationResolutionChanges |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | nackCount |  | Reported |
 | firCount |  | Reported |
 | pliCount |  | Reported |
-| encoderImplementation |  | Not reported: No media capture, encoding, decoding or playout in this library |
-| powerEfficientEncoder |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| encoderImplementation |  | Reported by a codec plugin or `webrtc:report_media_stats/4`: the plugin's `info/1` |
+| powerEfficientEncoder |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | active |  | Reported |
-| scalabilityMode |  | Not reported: No media capture, encoding, decoding or playout in this library |
+| scalabilityMode |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | packetsSentWithEct1 |  | Not reported: L4S (ECT(1)) not used |
 
 ## RTCRemoteOutboundRtpStreamStats (`remote-outbound-rtp`)
@@ -192,32 +192,57 @@ Inherits RTCSentRtpStreamStats.
 | totalRoundTripTime |  | Reported: as roundTripTime |
 | roundTripTimeMeasurements |  | Reported: as roundTripTime |
 
-## RTCMediaSourceStats
+## RTCMediaSourceStats (`media-source`)
 
 Inherits RTCStats.
 
-Not reported: No media capture, encoding, decoding or playout in this library.
+Reported when a codec plugin or `webrtc:report_media_stats/4` (`source`) reports the transceiver's source; the outbound stream then names it in `mediaSourceId`.
+
+| Member | Required | Status |
+|---|---|---|
+| trackIdentifier | yes | Reported: the mid |
+| kind | yes | Reported |
 
 
 ## RTCAudioSourceStats
 
 Inherits RTCMediaSourceStats.
 
-Not reported: No media capture, encoding, decoding or playout in this library.
+| Member | Required | Status |
+|---|---|---|
+| audioLevel |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalAudioEnergy |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalSamplesDuration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| echoReturnLoss |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| echoReturnLossEnhancement |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 
 
 ## RTCVideoSourceStats
 
 Inherits RTCMediaSourceStats.
 
-Not reported: No media capture, encoding, decoding or playout in this library.
+| Member | Required | Status |
+|---|---|---|
+| width |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| height |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| frames |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| framesPerSecond |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 
 
-## RTCAudioPlayoutStats
+## RTCAudioPlayoutStats (`media-playout`)
 
 Inherits RTCStats.
 
-Not reported: No media capture, encoding, decoding or playout in this library.
+Reported when `webrtc:report_media_stats/4` (`playout`) reports the playout of a received audio transceiver; the inbound stream then names it in `playoutId`.
+
+| Member | Required | Status |
+|---|---|---|
+| kind | yes | Reported: audio |
+| synthesizedSamplesDuration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| synthesizedSamplesEvents |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalSamplesDuration |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalPlayoutDelay |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| totalSamplesCount |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 
 
 ## RTCPeerConnectionStats (`peer-connection`)

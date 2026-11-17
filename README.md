@@ -118,6 +118,44 @@ To decode or record what a peer sends, ask for frames instead of packets. The pa
 
 `data` is a VP8 or VP9 frame, an H.264 access unit in Annex B, or an AV1 temporal unit; audio frames are the payloads. `#{min_delay => Ms, max_delay => Ms}` instead of `true` bounds the delay.
 
+Send an encoded frame the same way; it is split into RTP payloads for its codec:
+
+```erlang
+ok = webrtc:send_frame(Pc, <<"1">>, Vp8Frame, #{timestamp => Ts, keyframe => true}).
+```
+
+## Decode and encode with a codec plugin
+
+The library does no media coding. A codec plugin, a module with the `webrtc_media_codec` behaviour, usually a separate package with native code, decodes the frames a transceiver receives and encodes what you send, and reports the W3C decoder and encoder statistics.
+
+```erlang
+-module(my_vp8).
+-behaviour(webrtc_media_codec).
+-export([init/3, decode/2, encode/2, info/1]).
+
+init(video, #{name := <<"VP8">>}, Opts) -> {ok, my_vp8_nif:new(Opts)}.
+decode(#{data := Frame}, D) -> {ok, [my_vp8_nif:decode(D, Frame)], #{framesDecoded => 1}, D}.
+encode({Picture, Ts}, E) ->
+    {Frame, Key} = my_vp8_nif:encode(E, Picture),
+    {ok, [#{data => Frame, keyframe => Key, timestamp => Ts}], #{framesEncoded => 1}, E}.
+info(_) -> #{implementation => <<"libvpx">>}.
+```
+
+```erlang
+{ok, _} = webrtc:add_transceiver(Pc, video, #{frames => true, codec_plugin => {my_vp8, #{}}}),
+ok = webrtc:send_media(Pc, <<"1">>, {Picture, Ts}),
+{webrtc, Pc, {decoded, _Mid, Picture}} -> show(Picture).
+```
+
+`codec_plugins => #{video => {my_vp8, #{}}}` with `frames => true` on `new_peer_connection/1` sets it for transceivers a remote offer creates. A plugin that raises is turned off for its transceiver and you get `{codec_plugin_error, Mid, Reason}`.
+
+If you code media yourself, report the statistics instead; counters add up, other members replace:
+
+```erlang
+webrtc:report_media_stats(Pc, <<"1">>, inbound, #{framesDecoded => 1, totalDecodeTime => 0.004}),
+webrtc:report_media_stats(Pc, <<"1">>, source, #{width => 1280, height => 720, frames => 1}).
+```
+
 ## Read the statistics
 
 You get the W3C statistics, the ones a browser's `getStats()` returns, as a map from stats id to the members of each dictionary.
@@ -127,7 +165,7 @@ Report = webrtc:get_stats(Pc, #{format => w3c}),
 [#{packetsSent := Sent}] = [S || _ := #{type := <<"outbound-rtp">>} = S <- Report].
 ```
 
-The frame members of received streams come from the frame buffer when you ask for frames; media is not encoded or decoded here, so the encoder and decoder members are absent. [docs/compliance/stats.md](docs/compliance/stats.md) lists every member.
+The frame members of received streams come from the frame buffer when you ask for frames; the decoder, encoder, media-source and media-playout members from a codec plugin or `report_media_stats/4`. [docs/compliance/stats.md](docs/compliance/stats.md) lists every member.
 
 ## Documentation
 

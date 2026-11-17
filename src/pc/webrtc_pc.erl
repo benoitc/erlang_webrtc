@@ -148,6 +148,19 @@ handle_call(signaling_state, _From, St) ->
     {reply, webrtc_jsep:signaling_state(St#st.jsep), St};
 handle_call(connection_state, _From, St) ->
     {reply, St#st.connection, St};
+handle_call({get_stats, w3c}, _From, St) ->
+    Transports =
+        [{K, webrtc_transport:stats(T)} || {K, T} <- [{0, St#st.transport} || is_pid(St#st.transport)]] ++
+            [{K, webrtc_transport:stats(P)} || K := #{pid := P} <- St#st.extra],
+    Neg = case webrtc_jsep:negotiated(St#st.jsep) of #{media := Ms} -> Ms; _ -> [] end,
+    {Ufrag, _} = webrtc_jsep:local_ice(St#st.jsep),
+    {reply, webrtc_stats:report(#{
+        timestamp => erlang:system_time(millisecond),
+        certificate => maps:get(der, St#st.cert),
+        ufrag => Ufrag,
+        media => Neg,
+        transports => Transports
+    }), St};
 handle_call(get_stats, _From, St) ->
     Transport =
         case St#st.transport of

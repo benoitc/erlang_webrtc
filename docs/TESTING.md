@@ -72,6 +72,7 @@ Each independent implementation runs behind the same line-delimited JSON protoco
 make -C interop pion          # Go toolchain
 make -C interop aiortc        # Python 3
 make -C interop bogo          # BoringSSL's test runner (Go), see interop/bogo/README.md
+brew install gstreamer        # RED against GStreamer (webrtc_red_gst_SUITE); apt: gstreamer1.0-plugins-good
 make -C interop dtlsfuzzer    # DTLS-Fuzzer (Java 21, Maven), see interop/dtlsfuzzer/README.md
 (cd interop/browser && npm ci && npx playwright install chromium firefox)
 ```

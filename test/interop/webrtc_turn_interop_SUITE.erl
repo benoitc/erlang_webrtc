@@ -12,13 +12,15 @@
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([relay_only_datachannel/1, relay_only_media/1, wrong_credentials_no_relay/1, one_side_relayed/1,
          relayed_spoofing_dropped/1, relayed_over_tcp/1, relayed_over_tls/1, untrusted_tls_no_relay/1,
-         relayed_by_uri_udp/1, relayed_by_uri_tcp/1, relayed_by_uri_tls/1]).
+         relayed_by_uri_udp/1, relayed_by_uri_tcp/1, relayed_by_uri_tls/1,
+         srv_fallback_tcp/1, srv_fallback_tls/1]).
 
 -define(S, webrtc_test_signal).
 
 all() -> [relay_only_datachannel, relay_only_media, wrong_credentials_no_relay, one_side_relayed,
           relayed_spoofing_dropped, relayed_over_tcp, relayed_over_tls, untrusted_tls_no_relay,
-          relayed_by_uri_udp, relayed_by_uri_tcp, relayed_by_uri_tls].
+          relayed_by_uri_udp, relayed_by_uri_tcp, relayed_by_uri_tls,
+          srv_fallback_tcp, srv_fallback_tls].
 
 init_per_suite(Config) ->
     Bin = filename:join([root(), "interop", "turn", "bin", "turn-server"]),
@@ -155,6 +157,44 @@ relayed_by_uri_tls(Config) ->
 
 by_uri(Scheme, {_, Port}, Query) ->
     <<Scheme/binary, ":localhost:", (integer_to_binary(Port))/binary, Query/binary>>.
+
+%% RFC 5928 §3: the first SRV target refuses the connection (a port
+%% nobody listens on), the second is the Pion server: the relay comes
+%% from it. Over UDP the same fallback follows the 39.5 s transaction
+%% timeout; webrtc_ice_agent_tests:turn_udp_fallback_test covers it.
+srv_fallback_tcp(Config) ->
+    srv_relay(<<"turn:localhost?transport=tcp">>, "_turn._tcp.localhost", dead_port(tcp), ?config(turn_tcp, Config), #{}, []).
+
+srv_fallback_tls(Config) ->
+    srv_relay(<<"turns:localhost">>, "_turns._tcp.localhost", dead_port(tcp), ?config(turn_tls, Config),
+              #{tls_options => [{cacerts, [?config(turn_ca, Config)]}]}, []).
+
+dead_port(tcp) ->
+    {ok, L} = gen_tcp:listen(0, []), {ok, P} = inet:port(L), gen_tcp:close(L), P.
+
+srv_relay(Url, Srv, DeadPort, {_, LivePort}, Extra, OnlyTo) ->
+    Dns = fun
+        (srv, Name) when Name =:= Srv -> {ok, [{10, 0, DeadPort, "dead.localhost"}, {20, 0, LivePort, "live.localhost"}]};
+        (srv, _) -> {ok, []};
+        (inet, N) when N =:= "dead.localhost"; N =:= "live.localhost" -> {ok, [{127, 0, 0, 1}]};
+        (_, _) -> {error, nxdomain}
+    end,
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        ice_resolver => Dns,
+        ice_servers => [maps:merge(#{urls => [Url], username => <<"alice">>, credential => <<"wonderland">>}, Extra)],
+        outbound_filter => webrtc_impair:filter(#{only_to => OnlyTo})
+    }),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    ok = webrtc:create_data_channel(A, <<"f">>, #{}),
+    connect(A, B),
+    {ok, {datachannel_open, Id, _, _, _}} =
+        ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 60000),
+    ok = webrtc:send_data(A, Id, text, Url),
+    {ok, _} = ?S:wait(B, fun({channel_message, _, text, U}) -> U =:= Url; (_) -> false end, 15000),
+    ?assertMatch([{relay, _}], selected_types(A)),
+    webrtc:close(A),
+    webrtc:close(B).
 
 uri_relay(Url, Extra, OnlyTo) ->
     {ok, A} = webrtc:new_peer_connection(#{

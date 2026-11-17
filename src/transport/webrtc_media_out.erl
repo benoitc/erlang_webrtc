@@ -129,8 +129,9 @@ red_pt(#snd{codecs = Cs}) ->
 %% Queue packets in the pacer, then protect and send what it releases.
 pace(Class, Items, Now, M) ->
     {Out, Cc} = lists:foldl(
-        fun({_, P, _} = Item, {Acc, C}) ->
-            {O, C1} = webrtc_cc:enqueue({Class, wire_size(P), Item}, Now, C),
+        fun({K, P, R}, {Acc, C}) ->
+            %% The time it was queued, for totalPacketSendDelay.
+            {O, C1} = webrtc_cc:enqueue({Class, wire_size(P), {K, P, R, Now}}, Now, C),
             {Acc ++ O, C1}
         end,
         {[], M#media.cc},
@@ -145,7 +146,8 @@ wire_size(#rtp{payload = P, csrcs = Cs}) -> 12 + 4 * length(Cs) + byte_size(P) +
 %% Add the transport-wide sequence number, protect and count.
 egress(Items, Now, M0) ->
     {Sends, M} = lists:foldl(
-        fun({Key, Pkt0, Rtx}, {Acc, M1}) ->
+        fun(Item, {Acc, M1}) ->
+            {Key, Pkt0, Rtx, Queued} = case Item of {Ki, Pi, Ri} -> {Ki, Pi, Ri, Now}; {_, _, _, _} -> Item end,
             {Twcc, Mid, Kind} =
                 case maps:find(Key, M1#media.senders) of
                     {ok, #snd{twcc_ext = Id, mid = Mi, kind = K}} -> {Id, Mi, K};
@@ -164,14 +166,22 @@ egress(Items, Now, M0) ->
                     {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
                 false ->
                     Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
-                    case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), M1#media.out) of
+                    Plain = webrtc_rtp:encode(Pkt),
+                    case webrtc_srtp:protect_rtp(Plain, M1#media.out) of
                         {ok, Srtp, Out} ->
                             %% Circuit breakers work per transceiver: all
                             %% simulcast layers of a mid share the flow.
                             Cc0 = webrtc_cc:sent_rtp(Mid, Pkt#rtp.ssrc, Pkt#rtp.seq, byte_size(Srtp), Now, M1#media.cc),
                             Cc = case Kind of video -> webrtc_cc:video_sent(Now, Cc0); _ -> Cc0 end,
                             M2 = keep_wire(Key, Pkt, Srtp, Rtx, Now, M1#media{out = Out, cc = Cc}),
-                            {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt, Rtx, M2)};
+                            Ssrc = Pkt#rtp.ssrc,
+                            M3 = scount(out, Ssrc, header_bytes_sent, byte_size(Plain) - byte_size(Pkt#rtp.payload),
+                                        scount(out, Ssrc, total_packet_send_delay_ms, Now - Queued, M2)),
+                            M4 = case Rtx of
+                                     false when Kind =:= video -> frame_sent(Key, Pkt, Now, M3);
+                                     _ -> M3
+                                 end,
+                            {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt, Rtx, M4)};
                         {error, _} ->
                             {Acc, count(srtp_failed, M1)}
                     end
@@ -181,6 +191,40 @@ egress(Items, Now, M0) ->
         Items
     ),
     {lists:reverse(Sends), M}.
+
+%% The frames of a video stream, by marker bit (W3C framesSent,
+%% hugeFramesSent: at least 2.5 times the average frame size so far),
+%% and the size of its key frames from the bitstream.
+frame_sent(Key, #rtp{ssrc = Ssrc, pt = Pt, payload = P, marker = Marker}, Now, M) ->
+    S = maps:get({out, Ssrc}, M#media.streams, #{}),
+    Size =
+        case maps:find(Key, M#media.senders) of
+            {ok, #snd{codecs = Cs}} ->
+                case [N || #{pt := X, name := N} <- Cs, X =:= Pt] of
+                    [Name | _] -> webrtc_frame_codec:payload_size(webrtc_frame_codec:codec(video, Name), P);
+                    [] -> error
+                end;
+            error ->
+                error
+        end,
+    S1 = case Size of
+             {ok, {W, H}} -> S#{frame_width => W, frame_height => H};
+             error -> S
+         end,
+    Bytes = maps:get(frame_bytes, S1, 0) + byte_size(P),
+    S2 =
+        case Marker of
+            false ->
+                S1#{frame_bytes => Bytes};
+            true ->
+                Frames = maps:get(frames_sent, S1, 0),
+                Total = maps:get(frames_bytes, S1, 0),
+                Huge = Frames > 0 andalso Bytes * Frames >= 2.5 * Total,
+                S1#{frame_bytes => 0, frames_sent => Frames + 1, frames_bytes => Total + Bytes,
+                    huge_frames_sent => maps:get(huge_frames_sent, S1, 0) + case Huge of true -> 1; false -> 0 end,
+                    frame_times => [Now | [T || T <- maps:get(frame_times, S1, []), T > Now - 1000]]}
+        end,
+    M#media{streams = (M#media.streams)#{{out, Ssrc} => S2}}.
 
 %% RTP goes out ECT(0) while ECN is in use (RFC 6679, RFC 8888 §6).
 out(Bin, #media{cc = Cc}) ->
@@ -409,8 +453,9 @@ reports(Now, Feedback, M) ->
             _ -> [{S#snd.ssrc, [Cname | layer_sdes(S)]} || S <- Senders]
         end,
     Sdes = #rtcp_sdes{chunks = Chunks},
-    Fixed = byte_size(webrtc_rtcp:encode(Heads ++ [Sdes | Feedback])),
-    {Picked, M1} = pick_sources(blocks_fitting(?RTCP_BUDGET - Fixed), M),
+    {Xr, M0} = xr(Reporter, Ntp, M),
+    Fixed = byte_size(webrtc_rtcp:encode(Heads ++ [Sdes | Xr ++ Feedback])),
+    {Picked, M1} = pick_sources(blocks_fitting(?RTCP_BUDGET - Fixed), M0),
     {Blocks, M2} = lists:foldl(
         fun(Ssrc, {Bs, Acc}) ->
             R = maps:get(Ssrc, Acc#media.receivers),
@@ -425,7 +470,17 @@ reports(Now, Feedback, M) ->
     Reports =
         [with_blocks(Head, InHead) | Others] ++
             [#rtcp_rr{ssrc = Reporter, reports = Bs} || Bs <- chunks(Extra, 31)],
-    send_regular(Reports ++ [Sdes | Feedback], Now, M2).
+    send_regular(Reports ++ [Sdes | Xr ++ Feedback], Now, M2).
+
+%% RFC 3611: a Receiver Reference Time block while we receive streams
+%% (their senders answer with DLRR, which gives the round trip time of
+%% remote-outbound-rtp), and a DLRR block answering each one received.
+xr(Reporter, Ntp, #media{receivers = Rs, xr_rrtr = Got} = M) ->
+    NowUs = erlang:system_time(microsecond),
+    Rrtr = [{rrtr, Ntp} || map_size(Rs) > 0],
+    Dlrr = [{S, Lrr, (NowUs - At) * 65536 div 1000000} || S := {Lrr, At} <- Got],
+    Blocks = Rrtr ++ [{dlrr, Dlrr} || Dlrr =/= []],
+    {[#rtcp_xr{ssrc = Reporter, blocks = Blocks} || Blocks =/= []], M#media{xr_rrtr = #{}}}.
 
 %% A regular compound: it resets the report timer.
 send_regular(Pkts, Now, M) ->
@@ -469,6 +524,7 @@ send_feedback(Pkts, Now, #media{rtcp = R} = M0) ->
 feedback_sent(#rtcp_nack{media_ssrc = S}, M) -> scount(in, S, nack_count, 1, M);
 feedback_sent(#rtcp_pli{media_ssrc = S}, M) -> scount(in, S, pli_count, 1, M);
 feedback_sent(#rtcp_fir{entries = Es}, M) -> lists:foldl(fun({S, _}, Acc) -> scount(in, S, fir_count, 1, Acc) end, M, Es);
+feedback_sent(#rtcp_ccfb{}, M) -> count(ccfb_sent, M);
 feedback_sent(_, M) -> M.
 
 with_blocks(#rtcp_sr{} = SR, Bs) -> SR#rtcp_sr{reports = Bs};

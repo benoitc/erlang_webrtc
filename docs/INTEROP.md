@@ -64,6 +64,24 @@ Erlang peers against the pion/turn v5 server (`interop/turn`). A filter drops ev
 | The same over TLS, server certificate verified against the suite's CA | relay (TLS to the server) / host | Pass |
 | TLS server certificate not trusted: no relay candidate | | Pass |
 
+## Redundant audio against GStreamer (webrtc_red_gst_SUITE)
+
+RED (RFC 2198) is an RTP payload format, so the suite exchanges it with GStreamer's `rtpredenc` and `rtpreddec` over plain RTP on UDP, without a WebRTC stack around them. GStreamer is the one RED implementation independent of libwebrtc: Firefox, Pion and aiortc have no audio RED. Install it with `brew install gstreamer` or `apt-get install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good`; without it the suite is skipped.
+
+- GStreamer encodes Opus in RED with `distance` 1 and 2; every redundant block matches the primary it repeats, and with every third packet lost we get 59 of 60 packets back (the last one has no later packet).
+- We encode, with every third packet lost: `rtpreddec` and `opusdec` decode 226560 bytes of audio, against 230400 with no loss and 153600 without redundancy.
+
+Running it found that a redundant block was taken for the previous packet, as libwebrtc sends it, when GStreamer's `distance` 2 repeats the one before; blocks are now placed by their timestamp.
+
+## Frames against GStreamer and ffmpeg (webrtc_frames_gst_SUITE)
+
+GStreamer encodes 90 frames of 320 x 240 and packetizes them with its own payloaders (`rtpvp8pay`, `rtpvp9pay`, `rtph264pay`, `rtpav1pay`, 600 byte MTU) over plain RTP on UDP; our frame buffer puts the frames together; ffmpeg decodes them. Install them with `brew install gstreamer ffmpeg`, or `apt-get install gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad ffmpeg`; a codec whose elements are missing is skipped with their names (`rtpav1pay` comes from gst-plugins-rs, which Ubuntu does not package).
+
+- In order: every frame comes out, ffmpeg decodes each one without an error, at 320 x 240, with the same key frames.
+- One packet in 40 lost and packets reordered by up to 30 ms (no PLI reaches GStreamer, which sends a key frame every 30 frames): what comes out decodes without an error. AV1 46 of 90 frames, VP8 45, VP9 29, H.264 15.
+
+Running it, and the property test with the same frames, found an IDR slice taken for the start of its access unit while the packet with its SPS and PPS was still on its way, and a frame put together with parameter sets that came after it.
+
 ## Harness control (webrtc_harness_SUITE)
 
 These runs connect independent implementations to each other through the controller, to prove the harness before it is used against this stack.
@@ -107,6 +125,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | ICE-TCP, Erlang offers: no UDP leaves Erlang, data channel echo, selected pair TCP | | | Pass (6) | Pass (6) |
 | ICE-TCP, peer offers: the same, the peer sends | | | Pass (6) | Pass (6) |
 | Erlang offers without BUNDLE (`bundle => false`): audio, video and data each on their own ICE and DTLS transport, data channel echo and Opus received | Skipped (7) | Skipped (8) | Pass (9) | Pass |
+| The peer sends VP8, VP9, H.264 and AV1 in turn, Erlang receives frames (`frames => true`): each one parses, as many frames and key frames as the peer encoded | Skipped (15) | Skipped (15) | Pass | Pass (16) |
 
 1. Firefox is the installed release (160 on the development machine), driven over WebDriver BiDi with puppeteer-core. On macOS it is started through launchd: a Firefox started from a terminal inherits the terminal's privacy restrictions and cannot read its profile. Without an installed Firefox the suite falls back to Playwright's build.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
@@ -121,6 +140,8 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 12. The peer answers without `a=cryptex`.
 13. aiortc 1.16 cannot parse an `a=extmap` line with an extension attribute (see the findings).
 14. Chromium 149 answers without the audio level at all when it is offered in both forms.
+15. Only the browsers are given a codec to send.
+16. VP8, VP9 and AV1. Firefox lists H.264 but encodes nothing without its OpenH264 plugin, which a fresh profile has not downloaded.
 5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 
 ### Interoperability findings

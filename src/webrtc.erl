@@ -90,6 +90,10 @@
     add_ice_candidate/3,
     restart_ice/1,
     send_rtp/4,
+    send_frame/4,
+    send_media/3,
+    send_media/4,
+    report_media_stats/4,
     send_rtp_packet/3,
     send_rtp_packet/4,
     request_keyframe/2,
@@ -233,14 +237,33 @@ new_peer_connection() ->
 %% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
 %%     extensions (RFC 9335), default `true'. Media is sent that way
 %%     when every section of the connection negotiated it.</li>
+%% <li>`frames': the `frames' option of transceivers added without it,
+%%     those a remote offer creates included (see
+%%     `add_transceiver/3'), default `false'.</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
-new_peer_connection(#{ice_servers := Servers} = Opts) ->
+new_peer_connection(Opts) ->
+    maybe
+        {ok, Frames} ?= webrtc_jsep:frames_opts(maps:get(frames, Opts, false)),
+        ok ?= plugins(maps:get(codec_plugins, Opts, #{}), Frames),
+        servers(Opts)
+    end.
+
+plugins(#{} = Ps, Frames) ->
+    case [P || K := P <- Ps, not lists:member(K, [audio, video]) orelse
+                                 element(1, webrtc_jsep:plugin_opts(P, Frames)) =/= ok] of
+        [] -> ok;
+        [Bad | _] -> {error, {badarg, {codec_plugins, Bad}}}
+    end;
+plugins(Other, _Frames) ->
+    {error, {badarg, {codec_plugins, Other}}}.
+
+servers(#{ice_servers := Servers} = Opts) ->
     case webrtc_ice_uri:servers(Servers) of
         {ok, _, _} -> new_pc(Opts);
         {error, _} -> {error, {badarg, ice_servers}}
     end;
-new_peer_connection(Opts) ->
+servers(Opts) ->
     new_pc(Opts).
 
 new_pc(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
@@ -270,6 +293,15 @@ new_pc(Opts) ->
 %% (resume it with `request_resume/3'). A transceiver without
 %% `send_encodings' answering an offer that asks to receive simulcast
 %% sends the offered layers.
+%%
+%% `frames': `true' or `#{min_delay => Ms, max_delay => Ms}' delivers
+%% `{frame, Mid, Frame}' (`{frame, Mid, Rid, Frame}' for a simulcast
+%% layer) instead of `{rtp, Mid, Packet}': the packets of each frame put
+%% in order, joined and released at their playout time, a key frame
+%% asked for when one is lost (see `webrtc_frame_buffer'). `Frame' is
+%% `#{timestamp, keyframe, data, codec}', with `width' and `height' for
+%% video. `data' is the encoded frame: VP8 and VP9 frames, H.264 in
+%% Annex B, AV1 temporal units in the low overhead bitstream format.
 -spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).
@@ -342,6 +374,47 @@ restart_ice(Pc) ->
 -spec send_rtp(pc(), binary(), binary(), map()) -> ok | {error, term()}.
 send_rtp(Pc, Mid, Payload, Opts) ->
     transport(Pc, Mid, fun(T) -> webrtc_transport:send_rtp(T, Mid, Payload, Opts) end).
+
+%% @doc Send an encoded frame on a transceiver: split into RTP payloads
+%% by the codec's payload format, the marker bit on the last. `Frame' is
+%% a VP8 or VP9 frame, an H.264 access unit in Annex B, an AV1 temporal
+%% unit, or an audio payload. `Opts': `timestamp', `keyframe' (VP9 and
+%% AV1 signal it in the payload), `codec', `rid'.
+-spec send_frame(pc(), binary(), binary(), map()) -> ok | {error, term()}.
+send_frame(Pc, Mid, Frame, Opts) ->
+    transport(Pc, Mid, fun(T) -> webrtc_transport:send_frame(T, Mid, Frame, Opts) end).
+
+%% @equiv send_media(Pc, Mid, Raw, #{})
+-spec send_media(pc(), binary(), term()) -> ok | {error, term()}.
+send_media(Pc, Mid, Raw) ->
+    send_media(Pc, Mid, Raw, #{}).
+
+%% @doc Encode raw media with the transceiver's codec plugin
+%% (`codec_plugin', see `webrtc_media_codec') and send the frames.
+%% `Opts': `rid'.
+-spec send_media(pc(), binary(), term(), map()) -> ok | {error, term()}.
+send_media(Pc, Mid, Raw, Opts) ->
+    transport(Pc, Mid, fun(T) -> webrtc_transport:send_media(T, Mid, Raw, Opts) end).
+
+%% @doc Report W3C statistics of media you code yourself: `inbound'
+%% (decoder members of the transceiver's received streams, such as
+%% `framesDecoded' or `totalDecodeTime'), `outbound' (encoder members
+%% such as `framesEncoded' or `qualityLimitationReason'), `source' (the
+%% media-source object: `audioLevel', `width', `frames', ...) or
+%% `playout' (the media-playout object of received audio). Keys are W3C
+%% member names; counters add up across reports, other members replace
+%% the previous value; an unknown member or a value of the wrong type
+%% is dropped. Any process can call it; it does not wait.
+-spec report_media_stats(pc(), binary(), inbound | outbound | source | playout, map()) -> ok.
+report_media_stats(Pc, Mid, Dir, Report) when Dir =:= inbound; Dir =:= outbound; Dir =:= source; Dir =:= playout ->
+    case ets:lookup(webrtc_transports, {Pc, Mid}) of
+        [{_, T}] -> webrtc_transport:report_media_stats(T, Mid, Dir, Report);
+        [] ->
+            case ets:lookup(webrtc_transports, Pc) of
+                [{_, T}] -> webrtc_transport:report_media_stats(T, Mid, Dir, Report);
+                [] -> ok
+            end
+    end.
 
 %% @doc Forward an RTP packet (`#rtp{}') on a transceiver: SSRC and
 %% sequence number are replaced by the transceiver's.

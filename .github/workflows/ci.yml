@@ -126,6 +126,15 @@ jobs:
           cp build/programs/ssl/ssl_server2 build/programs/ssl/ssl_client2 $HOME/mbedtls/
       - name: Point the suites at mbedTLS
         run: echo "MBEDTLS_PROGRAMS=$HOME/mbedtls" >> "$GITHUB_ENV"
+      # GStreamer's rtpredenc and rtpreddec (RED, RFC 2198) and its video
+      # encoders and payloaders, independent of libwebrtc; ffmpeg decodes
+      # the frames we put together.
+      - name: Install GStreamer and ffmpeg
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad ffmpeg
+          gst-inspect-1.0 rtpredenc | head -1
       - name: Build peer adapters
         run: make -C interop all
       - name: Install headless browsers

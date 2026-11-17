@@ -46,6 +46,12 @@
     clear_srtp/1,
     ready/1,
     send/5,
+    send_frame/5,
+    send_media/5,
+    report_stats/4,
+    report_stream/5,
+    plugin_call/1,
+    plugin_info/3,
     send_packet/4,
     resume/3,
     request_keyframe/3,
@@ -210,6 +216,175 @@ send(Mid0, Payload, Opts, Now, M) ->
             end
     end.
 
+%% @doc Send an encoded frame: split into payloads by the codec's
+%% payload format (VP8, VP9 with picture IDs, H.264 in Annex B, AV1
+%% temporal units; one payload for audio), the marker bit on the last.
+%% `Opts': `timestamp', `keyframe', `codec', `rid'.
+-spec send_frame(binary(), binary(), map(), integer(), state()) ->
+    {ok, [{send, binary()}], state()} | {error, term()}.
+send_frame(Mid0, Frame, Opts, Now, M) when is_binary(Frame), byte_size(Frame) > 0 ->
+    Key = case Opts of #{rid := Rid} -> {Mid0, Rid}; _ -> Mid0 end,
+    case maps:find(Key, M#media.senders) of
+        error ->
+            {error, not_sending};
+        {ok, #snd{kind = Kind, codecs = Cs, picture_id = Pic} = S} ->
+            Named = [C || #{name := N} = C <- Cs, not webrtc_media_out:is_repair(N),
+                          string:lowercase(N) =:= string:lowercase(maps:get(codec, Opts, N))],
+            case Named of
+                [] ->
+                    {error, unknown_codec};
+                [#{name := Name} | _] ->
+                    Key0 = maps:get(keyframe, Opts, false),
+                    Payloads = payloads(webrtc_frame_codec:codec(Kind, Name), Frame, Key0, Pic),
+                    M1 = M#media{senders = (M#media.senders)#{Key := S#snd{picture_id = (Pic + 1) band 16#7FFF}}},
+                    N = length(Payloads),
+                    Base = maps:with([timestamp, rid, audio_level], Opts),
+                    lists:foldl(
+                        fun({I, P}, {ok, Acc, MA}) ->
+                                case send(Mid0, P, Base#{marker => I =:= N, codec => Name}, Now, MA) of
+                                    {ok, Out, MB} -> {ok, Acc ++ Out, MB};
+                                    {error, _} = E -> E
+                                end;
+                           (_, E) ->
+                                E
+                        end,
+                        {ok, [], M1},
+                        lists:enumerate(Payloads)
+                    )
+            end
+    end;
+send_frame(_Mid, _Frame, _Opts, _Now, _M) ->
+    {error, empty_frame}.
+
+%% Payloads of at most 1100 bytes: the RTP header, extensions and the
+%% SRTP tag fit within a 1200 byte path MTU.
+-define(PAYLOAD_MTU, 1100).
+payloads(vp8, F, _Key, Pic) -> webrtc_rtp_vp8:packetize(F, ?PAYLOAD_MTU, #{picture_id => Pic});
+payloads(vp9, F, Key, Pic) -> webrtc_rtp_vp9:packetize(F, ?PAYLOAD_MTU, #{picture_id => Pic, inter_predicted => not Key});
+payloads(h264, F, _Key, _Pic) -> webrtc_rtp_h264:packetize(webrtc_rtp_h264:split_annexb(F), ?PAYLOAD_MTU);
+payloads(av1, F, Key, _Pic) -> webrtc_rtp_av1:packetize(F, ?PAYLOAD_MTU, #{new_sequence => Key});
+payloads(_, F, _Key, _Pic) -> [F].
+
+%% @doc Encode raw media with the transceiver's codec plugin and send the
+%% frames it returns.
+-spec send_media(binary(), term(), map(), integer(), state()) ->
+    {ok, [{send, binary()} | {event, term()}], state()} | {error, term()}.
+send_media(Mid0, Raw, Opts, Now, M) ->
+    Key = case Opts of #{rid := Rid} -> {Mid0, Rid}; _ -> Mid0 end,
+    Config = maps:get(codec_plugin, maps:get(Mid0, M#media.recv, #{}), undefined),
+    case {maps:find(Key, M#media.senders), Config} of
+        {error, _} ->
+            {error, not_sending};
+        {_, undefined} ->
+            {error, no_codec_plugin};
+        {{ok, #snd{plugin = {off, R}}}, _} ->
+            {error, {codec_plugin, R}};
+        {{ok, #snd{ssrc = Ssrc, kind = Kind, codecs = Cs} = S0}, {Mod, POpts}} ->
+            case plugin_start(S0#snd.plugin, Mod, Kind, [C || #{name := N} = C <- Cs, not webrtc_media_out:is_repair(N)], POpts) of
+                {ok, {Mod, PSt}} ->
+                    case plugin_call(fun() -> Mod:encode(Raw, PSt) end) of
+                        {ok, Frames, Stats, PSt1} ->
+                            M1 = M#media{senders = (M#media.senders)#{Key := S0#snd{plugin = {Mod, PSt1}}}},
+                            M2 = report_stream(out, Ssrc, outbound, maps:merge(Stats, plugin_info(encoder, Mod, PSt1)), M1),
+                            lists:foldl(
+                                fun(#{data := D} = F, {ok, Acc, MA}) ->
+                                        case send_frame(Mid0, D, maps:merge(maps:with([rid], Opts), maps:with([timestamp, keyframe], F)), Now, MA) of
+                                            {ok, Out, MB} -> {ok, Acc ++ Out, MB};
+                                            {error, _} = E -> E
+                                        end;
+                                   (_, E) ->
+                                        E
+                                end,
+                                {ok, [], M2},
+                                Frames
+                            );
+                        {error, R} ->
+                            plugin_off(Key, Mid0, R, M)
+                    end;
+                {error, R} ->
+                    plugin_off(Key, Mid0, R, M)
+            end
+    end.
+
+plugin_off(Key, Mid, R, M) ->
+    S = maps:get(Key, M#media.senders),
+    {ok, [{event, {codec_plugin_error, Mid, R}}], M#media{senders = (M#media.senders)#{Key := S#snd{plugin = {off, R}}}}}.
+
+plugin_start({Mod, _} = P, Mod, _Kind, _Codecs, _Opts) ->
+    {ok, P};
+plugin_start(_, Mod, Kind, [Codec | _], Opts) ->
+    case plugin_call(fun() -> Mod:init(Kind, Codec, Opts) end) of
+        {ok, St} -> {ok, {Mod, St}};
+        {error, R} -> {error, R}
+    end;
+plugin_start(_, _Mod, _Kind, [], _Opts) ->
+    {error, no_codec}.
+
+%% @doc Run a plugin callback: a raise becomes an error.
+-spec plugin_call(fun(() -> term())) -> term().
+plugin_call(F) ->
+    try F() of
+        {ok, _} = R -> R;
+        {ok, _, _, _} = R -> R;
+        {error, _} = E -> E;
+        Other -> {error, {bad_return, Other}}
+    catch
+        C:R:St -> {error, {C, R, St}}
+    end.
+
+%% @doc decoderImplementation or encoderImplementation and the power
+%% efficiency member from the plugin's info/1.
+-spec plugin_info(encoder | decoder, module(), term()) -> map().
+plugin_info(Role, Mod, St) ->
+    case plugin_call(fun() -> {ok, Mod:info(St)} end) of
+        {ok, #{} = I} ->
+            {Impl, Power} = case Role of
+                                encoder -> {encoderImplementation, powerEfficientEncoder};
+                                decoder -> {decoderImplementation, powerEfficientDecoder}
+                            end,
+            maps:from_list([{Impl, V} || {implementation, V} <- maps:to_list(I)] ++
+                           [{Power, V} || {power_efficient, V} <- maps:to_list(I)]);
+        _ ->
+            #{}
+    end.
+
+%% @doc W3C members reported for a transceiver's streams (`inbound',
+%% `outbound'), its media source or its audio playout (see
+%% webrtc_media_report). Returns the members dropped.
+-spec report_stats(binary(), webrtc_media_report:dir(), map(), state()) -> {[{term(), term()}], state()}.
+report_stats(Mid, inbound, Report, M) ->
+    Ssrcs = [S || S := #rcv{mid = X} <- M#media.receivers, X =:= Mid],
+    report_streams(in, inbound, Ssrcs, Report, M);
+report_stats(Mid, outbound, Report, M) ->
+    Ssrcs = [S || #snd{mid = X, ssrc = S} <- maps:values(M#media.senders), X =:= Mid],
+    report_streams(out, outbound, Ssrcs, Report, M);
+report_stats(Mid, source, Report, M) ->
+    {Kept, Bad} = webrtc_media_report:merge(source, Report, maps:get(Mid, M#media.sources, #{})),
+    {Bad, M#media{sources = (M#media.sources)#{Mid => Kept}}};
+report_stats(Mid, playout, Report, M) ->
+    {Kept, Bad} = webrtc_media_report:merge(playout, Report, maps:get(Mid, M#media.playouts, #{})),
+    {Bad, M#media{playouts = (M#media.playouts)#{Mid => Kept}}}.
+
+report_streams(_Dir, _Kind, [], Report, M) ->
+    {_, Bad} = webrtc_media_report:merge(inbound, Report, #{}),
+    {Bad ++ [{no_stream, Report}], M};
+report_streams(Dir, Kind, Ssrcs, Report, M) ->
+    lists:foldl(fun(Ssrc, {_, MA}) ->
+                    {Bad, MB} = report_stream1(Dir, Ssrc, Kind, Report, MA),
+                    {Bad, MB}
+                end, {[], M}, Ssrcs).
+
+%% @doc Merge reported members into one stream's.
+-spec report_stream(in | out, non_neg_integer(), webrtc_media_report:dir(), map(), #media{}) -> #media{}.
+report_stream(Dir, Ssrc, Kind, Report, M) ->
+    element(2, report_stream1(Dir, Ssrc, Kind, Report, M)).
+
+report_stream1(Dir, Ssrc, Kind, Report, M) ->
+    S = maps:get({Dir, Ssrc}, M#media.streams, #{}),
+    {Kept, Bad} = webrtc_media_report:merge(Kind, Report, maps:get(reported, S, #{})),
+    M1 = case Bad of [] -> M; _ -> webrtc_media_out:count(media_stats_rejected, length(Bad), M) end,
+    {Bad, M1#media{streams = (M1#media.streams)#{{Dir, Ssrc} => S#{reported => Kept}}}}.
+
 %% With `red => true' and RED negotiated, the payload goes in a RED
 %% packet with the previous one as its redundant block (RFC 2198, RFC
 %% 8854 §4.1), so a single loss is repaired at the receiver without a
@@ -271,16 +446,20 @@ resume(Mid, Now, M) ->
         {error, _} = E -> E
     end.
 
-%% @doc Ask the remote sender of a transceiver for a keyframe (PLI), on
-%% every stream of the mid or on one simulcast layer with `{Mid, Rid}'.
+%% @doc Ask the remote sender of a transceiver for a keyframe, on every
+%% stream of the mid or on one simulcast layer with `{Mid, Rid}': PLI
+%% when negotiated, otherwise FIR.
 -spec request_keyframe(sender_key(), integer(), state()) -> {[{send, binary()}], state()}.
 request_keyframe({Mid, Rid}, Now, M) ->
-    Ssrcs = [S || {ok, S} <- [webrtc_media_rid:source(Mid, Rid, M#media.rids)]],
-    Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
-    webrtc_media_out:send_feedback(Pkts, Now, M);
+    keyframe_requests([S || {ok, S} <- [webrtc_media_rid:source(Mid, Rid, M#media.rids)]], Now, M);
 request_keyframe(Mid, Now, M) ->
-    Ssrcs = [S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid],
-    Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
+    keyframe_requests([S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid], Now, M).
+
+keyframe_requests(Ssrcs, Now, M0) ->
+    {Pkts, M} = lists:foldl(fun(S, {Acc, MA}) ->
+                                {P, MA1} = webrtc_media_in:keyframe_feedback(S, MA),
+                                {Acc ++ P, MA1}
+                            end, {[], M0}, Ssrcs),
     webrtc_media_out:send_feedback(Pkts, Now, M).
 
 %% @doc Ask the remote sender of a transceiver, or of one simulcast
@@ -329,9 +508,9 @@ next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc} = M) ->
             _ -> webrtc_rtcp_sched:next_timeout(Rtcp)
         end,
     lists:foldl(
-        fun
-            (#rcv{nack = undefined}, Acc) -> Acc;
-            (#rcv{nack = N}, Acc) -> webrtc_media_out:tmin(webrtc_nack:next_timeout(N), Acc)
+        fun(#rcv{nack = N, frames = Fb}, Acc) ->
+            Acc1 = case N of undefined -> Acc; _ -> webrtc_media_out:tmin(webrtc_nack:next_timeout(N), Acc) end,
+            case Fb of undefined -> Acc1; _ -> webrtc_media_out:tmin(webrtc_frame_buffer:next_timeout(Fb), Acc1) end
         end,
         webrtc_media_out:tmin(webrtc_media_out:tmin(R, webrtc_cc:next_timeout(Cc)), webrtc_media_pause:next_timeout(M)),
         maps:values(Rs)
@@ -343,7 +522,9 @@ handle_timeout(Now, #media{out = undefined} = M) ->
     {M, []};
 handle_timeout(Now, M0) ->
     {Fb, A0, M1} = webrtc_media_out:cc_timeouts(Now, M0),
-    {M2, A1} = webrtc_media_out:nack_timeouts(Now, M1),
+    {M2b, A1a} = webrtc_media_out:nack_timeouts(Now, M1),
+    {M2, A1b} = webrtc_media_in:frame_timeouts(Now, M2b),
+    A1 = A1a ++ A1b,
     {PauseFb, PauseEvents, M2a} = webrtc_media_pause:timeouts(Now, M2),
     M3 = rtcp_session(Now, M2a),
     Pending = M3#media.pending_fb ++ Fb ++ PauseFb,
@@ -381,17 +562,41 @@ stats(#media{} = M) ->
         counters => M#media.counters,
         congestion_control => webrtc_cc:stats(M#media.cc),
         senders => maps:map(
-            fun(_Mid, S) -> (webrtc_rtp_stats:tx_info(S#snd.tx))#{ssrc => S#snd.ssrc} end,
+            fun(Key, S) ->
+                (webrtc_rtp_stats:tx_info(S#snd.tx))#{
+                    ssrc => S#snd.ssrc,
+                    %% The RTX stream, when RTX is negotiated.
+                    rtx_ssrc => case map_size(S#snd.rtx) of 0 -> undefined; _ -> S#snd.rtx_ssrc end,
+                    encoding_index => encoding_index(Key, M)
+                }
+            end,
             M#media.senders
         ),
+        sources => M#media.sources,
+        playouts => M#media.playouts,
         receivers => maps:map(
             fun(Ssrc, R) ->
-                (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)}
+                Info = (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)},
+                case R#rcv.frames of
+                    undefined -> Info;
+                    Fb -> Info#{frames => webrtc_frame_buffer:stats(Fb)}
+                end
             end,
             M#media.receivers
         ),
         streams => M#media.streams
     }.
+
+%% The place of a simulcast layer in the section's send encodings
+%% (W3C encodingIndex), 0 for a single stream.
+encoding_index({Mid, Rid}, M) ->
+    Rids = [R || #{rid := R} <- maps:get(send_rids, maps:get(Mid, M#media.recv, #{}), [])],
+    case lists:search(fun({_, R}) -> R =:= Rid end, lists:enumerate(0, Rids)) of
+        {value, {I, _}} -> I;
+        false -> undefined
+    end;
+encoding_index(_Mid, _M) ->
+    0.
 
 rand32() ->
     <<S:32>> = crypto:strong_rand_bytes(4),

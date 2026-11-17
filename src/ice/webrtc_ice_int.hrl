@@ -27,6 +27,10 @@
     generated_by :: {pos_integer(), pos_integer()} | undefined,
     txid :: binary() | undefined,
     rtt :: non_neg_integer() | undefined,
+    %% Every round trip measured (W3C totalRoundTripTime) and the
+    %% consent requests sent (RFC 7675).
+    total_rtt = 0 :: non_neg_integer(),
+    consent_requests = 0 :: non_neg_integer(),
     requests_sent = 0 :: non_neg_integer(),
     responses_received = 0 :: non_neg_integer(),
     requests_received = 0 :: non_neg_integer(),
@@ -81,6 +85,9 @@
     %% candidate equal to its host is kept (draft-ietf-mmusic-mdns-ice-candidates §3.1.2.2).
     hidden_hosts = false :: boolean(),
     turn_servers = [] :: [map()],
+    %% Per server address, the addresses of the same URI to try in turn
+    %% when it does not answer (RFC 8489 §8.1, RFC 5928 §3).
+    fallbacks = #{} :: #{{inet:ip_address(), inet:port_number()} => [{inet:ip_address(), inet:port_number()}]},
     %% Credentials.
     ufrag :: binary(),
     pwd :: binary(),

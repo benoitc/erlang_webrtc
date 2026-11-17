@@ -23,7 +23,12 @@
     stream_id :: binary(),
     track_id :: binary(),
     %% Created by applying a remote offer (RFC 9429 §5.10).
-    from_remote = false :: boolean()
+    from_remote = false :: boolean(),
+    %% Deliver assembled frames (webrtc_frame_buffer) instead of packets:
+    %% false, or the buffer options.
+    frames = false :: false | map(),
+    %% A codec plugin (webrtc_media_codec) for the frames: {Module, Opts}.
+    codec_plugin :: undefined | {module(), term()}
 }).
 
 -record(jsep, {
@@ -73,6 +78,10 @@
     %% Offer one BUNDLE group (RFC 9143); false gives every section its
     %% own transport.
     bundle = true :: boolean(),
+    %% `frames' of transceivers created without the option, those of a
+    %% remote offer included, and their codec plugin by kind.
+    frames = false :: false | map(),
+    codec_plugins = #{} :: #{audio | video => {module(), term()}},
     %% ICE credentials and local candidates of the transports after the
     %% first (which uses ice_ufrag, ice_pwd and local_candidates), by
     %% transport key (webrtc_jsep_transport).

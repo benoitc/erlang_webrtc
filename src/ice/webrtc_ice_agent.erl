@@ -146,7 +146,7 @@
     {consent, #ice.consent}, {consent_interval, #ice.consent_interval},
     {consent_expiry, #ice.consent_expiry}, {disconnect_timeout, #ice.disconnect_timeout},
     {keepalive_interval, #ice.keepalive_interval}, {stun_keepalive, #ice.stun_keepalive},
-    {stun_servers, #ice.stun_servers}, {turn_servers, #ice.turn_servers},
+    {stun_servers, #ice.stun_servers}, {turn_servers, #ice.turn_servers}, {server_fallbacks, #ice.fallbacks},
     {components, #ice.components}, {hidden_hosts, #ice.hidden_hosts}
 ]).
 
@@ -218,6 +218,7 @@ new(Opts) ->
     %% (webrtc_ice_resolve) before the agent exists.
     _ = [error({badarg, {server_address, A}}) || A <- S1#ice.stun_servers ++ [maps:get(address, Srv, undefined) || Srv <- S1#ice.turn_servers],
                                                 not ip_port(A)],
+    _ = [error({badarg, {server_address, A}}) || K := V <- S1#ice.fallbacks, A <- [K | V], not ip_port(A)],
     S1#ice{tx = webrtc_stun_tx:new(#{rto => S1#ice.min_rto, min_rto => S1#ice.min_rto,
                                     rc => S1#ice.rc, rm => S1#ice.rm, max_rto => S1#ice.max_rto})}.
 

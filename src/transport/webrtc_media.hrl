@@ -6,6 +6,7 @@
 -define(URI_RID, <<"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id">>).
 -define(URI_RRID, <<"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
+-define(URI_PLAYOUT_DELAY, <<"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay">>).
 %% Feedback packets kept while the RTCP bandwidth does not allow them.
 -define(MAX_PENDING_FEEDBACK, 32).
 -define(BUFFER_SIZE, 512).
@@ -48,7 +49,11 @@
     cycles = 0 :: non_neg_integer(),
     %% The previous payload sent, {Pt, Ts, Data}, repeated in the next
     %% RED packet (RFC 2198) when the send asks for redundancy.
-    red_prev :: undefined | {0..127, non_neg_integer(), binary()}
+    red_prev :: undefined | {0..127, non_neg_integer(), binary()},
+    %% The next VP8 and VP9 picture ID of send_frame, and the codec
+    %% plugin encoding what send_media gets.
+    picture_id = 0 :: 0..16#7FFF,
+    plugin :: undefined | {module(), term()} | {off, term()}
 }).
 
 -record(rcv, {
@@ -56,12 +61,20 @@
     clock_rate :: pos_integer(),
     rx :: term(),
     nack :: undefined | term(),
-    %% The last sequence numbers received, newest first (at most
-    %% ?RECENT): a redundant block repairs only a packet not among them.
-    recent = [] :: [0..65535]
+    %% The last {Seq, Ts} received, newest first (at most 64): a
+    %% redundant block repairs only a packet not among them, and their
+    %% timestamps give the packet a block repeats.
+    recent = [] :: webrtc_red:history(),
+    %% Frame assembly when the transceiver asked for frames.
+    frames :: undefined | webrtc_frame_buffer:state(),
+    %% Key frame requests the stream accepts (RFC 4585 PLI, RFC 5104
+    %% FIR) and the sequence number of our next FIR (§4.3.1.2).
+    keyframe = [] :: [pli | fir],
+    fir_seq = 0 :: 0..255,
+    %% The codec plugin decoding the frames, with the codec it was
+    %% started for.
+    plugin :: undefined | {module(), term(), binary()} | {off, term()}
 }).
-
--define(RECENT, 64).
 
 -record(media, {
     cname :: binary(),
@@ -108,6 +121,14 @@
     %% Our PAUSE and RESUME requests by remote SSRC (RFC 7728).
     pause_req = #{} :: #{non_neg_integer() => webrtc_rtp_pause:requester()},
     counters = #{} :: map(),
+    %% RFC 3611 §4.4 Receiver Reference Times received, by the SSRC that
+    %% sent them: the middle 32 bits and when they came, answered with a
+    %% DLRR block (§4.5) in the next regular report.
+    xr_rrtr = #{} :: #{non_neg_integer() => {0..16#FFFFFFFF, integer()}},
+    %% W3C media-source and media-playout members reported by mid
+    %% (webrtc_media_report).
+    sources = #{} :: #{binary() => map()},
+    playouts = #{} :: #{binary() => map()},
     %% Per stream, for the W3C statistics: counters and the last reports
     %% by {in, RemoteSsrc} or {out, OurSsrc} (webrtc_stats).
     streams = #{} :: #{{in | out, non_neg_integer()} => map()}

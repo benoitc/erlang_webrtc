@@ -36,6 +36,9 @@
     configure/2,
     restart_ice/3,
     send_rtp/4,
+    send_frame/4,
+    send_media/4,
+    report_media_stats/4,
     send_rtp_packet/3,
     request_keyframe/2,
     request_pause/3,
@@ -73,6 +76,9 @@ restart_ice(T, U, P) -> gen_server:call(T, {restart_ice, U, P}).
 %% Media sends are calls so the application gets errors and is paced by
 %% the transport process.
 send_rtp(T, Mid, Payload, Opts) -> gen_server:call(T, {send_rtp, Mid, Payload, Opts}).
+send_frame(T, Mid, Frame, Opts) -> gen_server:call(T, {send_frame, Mid, Frame, Opts}).
+send_media(T, Mid, Raw, Opts) -> gen_server:call(T, {send_media, Mid, Raw, Opts}).
+report_media_stats(T, Mid, Dir, Report) -> gen_server:cast(T, {report_media_stats, Mid, Dir, Report}).
 send_rtp_packet(T, Mid, Pkt) -> gen_server:call(T, {send_rtp_packet, Mid, Pkt}).
 request_keyframe(T, Mid) -> gen_server:call(T, {request_keyframe, Mid}).
 request_pause(T, Key, Type) -> gen_server:call(T, {request_pause, Key, Type}).
@@ -94,7 +100,7 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
     %% reason it went away.
     _ = monitor(process, Pc),
     IceOpts = (maps:with(
-        [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, consent, nomination], Opts
+        [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, server_fallbacks, consent, nomination], Opts
     ))#{hidden_hosts => maps:get(mdns_host_candidates, Opts, false)},
     Addrs = maps:get(addresses, Opts, webrtc_transport_net:local_addresses(Opts)),
     Sockets = [S || A <- Addrs, {ok, S} <- [webrtc_transport_net:open_socket(A)]],
@@ -170,6 +176,8 @@ handle_call({configure, Neg}, _From, St) ->
     {reply, ok, arm(St1)};
 handle_call(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= send_rtp;
+    element(1, Msg) =:= send_frame;
+    element(1, Msg) =:= send_media;
     element(1, Msg) =:= send_rtp_packet;
     element(1, Msg) =:= request_keyframe;
     element(1, Msg) =:= request_pause;
@@ -181,6 +189,14 @@ handle_call(Msg, _From, #st{finished = true} = St) when
     {reply, {error, closed}, St};
 handle_call({send_rtp, Mid, Payload, Opts}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send(Mid, Payload, Opts, Now, M) end, St);
+handle_call({send_frame, Mid, Frame, Opts}, _From, St) ->
+    media_send(fun(Now, M) -> webrtc_media:send_frame(Mid, Frame, Opts, Now, M) end, St);
+handle_call({send_media, Mid, Raw, Opts}, _From, St) ->
+    %% The plugin may report an error: events go to the owner.
+    case webrtc_media:send_media(Mid, Raw, Opts, now_ms(), St#st.media) of
+        {ok, Acts, M1} -> {reply, ok, arm(webrtc_transport_secure:media_actions(Acts, St#st{media = M1}))};
+        {error, _} = E -> {reply, E, St}
+    end;
 handle_call({send_rtp_packet, Mid, Pkt}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send_packet(Mid, Pkt, Now, M) end, St);
 handle_call({request_keyframe, Mid}, _From, St) ->
@@ -239,6 +255,10 @@ handle_call(stats, _From, St) ->
     },
     {reply, Stats, St}.
 
+handle_cast({report_media_stats, Mid, Dir, Report}, St) ->
+    {Bad, M} = webrtc_media:report_stats(Mid, Dir, Report, St#st.media),
+    _ = [logger:debug("webrtc: media stats dropped for ~s: ~p", [Mid, B]) || B <- Bad],
+    {noreply, St#st{media = M}};
 handle_cast(_Msg, St) ->
     {noreply, St}.
 

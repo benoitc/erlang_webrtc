@@ -73,7 +73,7 @@ init(#{owner := App} = Opts0) ->
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
     Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex, encrypt_header_extensions,
-                                                 rtcp_mux_policy], Opts), #{
+                                                 rtcp_mux_policy, frames, codec_plugins], Opts), #{
         ice_ufrag => ice_string(8),
         ice_pwd => ice_string(24),
         fingerprints => [FP],
@@ -163,7 +163,8 @@ handle_call({get_stats, w3c}, _From, St) ->
         certificate => maps:get(der, St#st.cert),
         ufrag => Ufrag,
         media => Neg,
-        transports => Transports
+        transports => Transports,
+        servers => stats_servers(St#st.opts)
     }), St};
 handle_call(get_stats, _From, St) ->
     Transport =
@@ -483,7 +484,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     {ok, #{ufrag := U, pwd := P}} = webrtc_sdp_media:ice_credentials(M, Local),
     TOpts = maps:merge(
         maps:with(
-            [stun_servers, turn_servers, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
+            [stun_servers, turn_servers, server_fallbacks, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
                 rtcp_report_interval, ice_tcp,
                 mdns_host_candidates, mdns_expose_public, dtls, srtp_profiles],
             St#st.opts
@@ -699,6 +700,22 @@ transport_event({datachannel, {closed, R}}, St) ->
     St#st{sctp_up = false};
 transport_event({datachannel, _Other}, St) ->
     St;
+%% Every address of an ICE server URI failed to answer: reported once
+%% per URI.
+transport_event({server_unreachable, Addr}, #st{opts = Opts} = St) ->
+    case maps:find(Addr, maps:get(server_urls, Opts, #{})) of
+        {ok, Url} ->
+            Down = maps:get(servers_down, Opts, []),
+            case lists:member(Url, Down) of
+                true ->
+                    St;
+                false ->
+                    notify({ice_server_error, Url, unreachable}, St),
+                    St#st{opts = Opts#{servers_down => [Url | Down]}}
+            end;
+        error ->
+            St
+    end;
 transport_event(_Other, St) ->
     St.
 
@@ -955,6 +972,15 @@ notify(Event, #st{app = App}) ->
     ok.
 
 %% `ice_servers' URIs resolved and added to `stun_servers' and
+%% The STUN and TURN servers by address: the URI they came from and,
+%% for TURN, how they are reached (W3C candidate url, relayProtocol).
+stats_servers(Opts) ->
+    Urls = maps:get(server_urls, Opts, #{}),
+    Stun = maps:from_list([{A, #{url => maps:get(A, Urls, undefined)}} || A <- maps:get(stun_servers, Opts, [])]),
+    Turn = maps:from_list([{A, #{url => maps:get(A, Urls, undefined), protocol => maps:get(transport, T, udp)}}
+                           || #{address := A} = T <- maps:get(turn_servers, Opts, [])]),
+    maps:merge(Stun, Turn).
+
 %% `turn_servers', within the ICE agent's limit of eight servers.
 ice_servers(#{ice_servers := List} = Opts) ->
     {ok, Servers, Unsupported} = webrtc_ice_uri:servers(List),
@@ -966,12 +992,26 @@ ice_servers(#{ice_servers := List} = Opts) ->
     Turn0 = maps:get(turn_servers, Opts, []),
     Room = max(0, ?MAX_ICE_SERVERS - length(Stun0) - length(Turn0)),
     %% TURN first: a relay also gives the server reflexive address.
-    {In, Out} = lists:split(min(Room, length(Found)), [E || {_, {turn, _}} = E <- Found] ++ [E || {_, {stun, _}} = E <- Found]),
-    Dropped = lists:usort([{Url, too_many_servers} || {Url, _} <- Out]),
-    {Opts#{stun_servers => Stun0 ++ [A || {_, {stun, A}} <- In], turn_servers => Turn0 ++ [T || {_, {turn, T}} <- In]},
+    {In, Out} = lists:split(min(Room, length(Found)),
+                            [E || {_, {turn, _}, _} = E <- Found] ++ [E || {_, {stun, _}, _} = E <- Found]),
+    Dropped = lists:usort([{Url, too_many_servers} || {Url, _, _} <- Out]),
+    %% Each address falls back to the ones after it (RFC 8489 §8.1); the
+    %% URI of every address names it when all of them fail.
+    Chains = [[address(E) | Rest] || {_, E, Rest} <- In],
+    Fallbacks = maps:from_list([{A, After} || C <- Chains, {A, After} <- tails(C)]),
+    Urls = maps:from_list([{A, Url} || {Url, E, Rest} <- In, A <- [address(E) | Rest]]),
+    {Opts#{stun_servers => Stun0 ++ [A || {_, {stun, A}, _} <- In],
+           turn_servers => Turn0 ++ [T || {_, {turn, T}, _} <- In],
+           server_fallbacks => Fallbacks, server_urls => Urls},
      Unsupported ++ Errors ++ Dropped};
 ice_servers(Opts) ->
     {Opts, []}.
+
+address({stun, A}) -> A;
+address({turn, #{address := A}}) -> A.
+
+tails([]) -> [];
+tails([A | Rest]) -> [{A, Rest} | tails(Rest)].
 
 %% ICE ufrag/pwd: ice-char = ALPHA / DIGIT / "+" / "/" (RFC 8839 §5.4),
 %% ufrag at least 4 characters and pwd at least 22 (24 bits and 128 bits

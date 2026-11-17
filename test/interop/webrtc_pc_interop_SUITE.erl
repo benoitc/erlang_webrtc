@@ -35,7 +35,9 @@
     cryptex_echo/1,
     erlang_sends_audio_level/1,
     erlang_offers_encrypted_audio_level/1,
-    peer_sends_audio_level/1
+    peer_sends_audio_level/1,
+    peer_sends_frames/1,
+    video_stats_agree/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -62,7 +64,9 @@ cases() ->
         cryptex_echo,
         erlang_sends_audio_level,
         erlang_offers_encrypted_audio_level,
-        peer_sends_audio_level
+        peer_sends_audio_level,
+        peer_sends_frames,
+        video_stats_agree
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -379,6 +383,161 @@ stats_agree1(Config) ->
     ?assert(Got >= Echoed andalso Got - Echoed =< 50),
     ?assert(GotBytes >= EchoBytes andalso GotBytes - EchoBytes =< (Got - Echoed) * 1275),
     put(peer, P4).
+
+%% The browser sends VP8, VP9, H.264 and AV1 in turn, packetized by its
+%% own payloaders; with `frames' we deliver frames. Each one parses, and
+%% we see as many frames and key frames as the browser encoded.
+peer_sends_frames(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox ->
+            Results = [{C, frames_from(Config, C)} || C <- [<<"VP8">>, <<"VP9">>, <<"H264">>, <<"AV1">>]],
+            ct:log("~p", [Results]),
+            case [C || {C, ok} <- Results] of
+                [] -> {skip, "the browser sends none of the codecs"};
+                _ -> ok
+            end;
+        _ ->
+            {skip, "only the browsers are given a codec to send"}
+    end.
+
+frames_from(Config, Codec) ->
+    {Pc, P0} = start(Config, #{frames => true}),
+    P1 = ?P:cmd(P0, #{cmd => init, media => [<<"video">>], codec => Codec}),
+    {ok, P2, Ev} = ?P:wait_event(P1, <<"codec">>, #{}),
+    Result =
+        case Ev of
+            #{<<"supported">> := true} -> frames_from(Pc, consume(P2, Ev), Codec);
+            _ -> unsupported
+        end,
+    ?P:stop(get(peer)),
+    webrtc:close(Pc),
+    erase(peer),
+    erase(pc),
+    flush(),
+    Result.
+
+frames_from(Pc, P0, Codec) ->
+    P1 = ?P:cmd(P0, #{cmd => create_offer}),
+    {ok, P2, #{<<"sdp">> := Offer} = Ev} = ?P:wait_event(P1, <<"local_description">>, #{}),
+    ok = webrtc:set_remote_description(Pc, offer, Offer),
+    {ok, Answer} = webrtc:create_answer(Pc, #{}),
+    ok = webrtc:set_local_description(Pc, answer, Answer),
+    P3 = connected(Pc, ?P:cmd(consume(P2, Ev), #{cmd => remote_description, type => answer, sdp => Answer})),
+    put(peer, P3),
+    %% Two seconds of frames, then what the browser has encoded: we get
+    %% all of those within a second. What we got by then was encoded
+    %% before the browser's count 200 ms later.
+    First = frames(Pc, 2000, []),
+    {Before, P4} = encoded(P3),
+    Frames = First ++ frames(Pc, 1000, []),
+    timer:sleep(200),
+    {After, P5} = encoded(P4),
+    put(peer, P5),
+    ct:log("~s: ~b frames, ~b key; the browser encoded ~p then ~p", [Codec, length(Frames),
+           length([x || #{keyframe := true} <- Frames]), Before, After]),
+    case After of
+        {0, _} ->
+            %% Listed but not encoded: Firefox has no H.264 encoder
+            %% until it downloads OpenH264, which a fresh profile has not.
+            not_encoded;
+        _ ->
+            check_frames(Pc, Codec, Frames, Before, After)
+    end.
+
+check_frames(Pc, Codec, Frames, Before, After) ->
+    ?assert(length(Frames) >= 20),
+    ?assert(lists:all(fun(#{codec := C}) -> string:lowercase(C) =:= string:lowercase(Codec) end, Frames)),
+    [#{keyframe := true} | _] = Frames,
+    lists:foreach(fun(F) -> parses(Codec, F) end, Frames),
+    {FramesBefore, KeysBefore} = Before,
+    {FramesAfter, KeysAfter} = After,
+    Keys = length([x || #{keyframe := true} <- Frames]),
+    ?assert(length(Frames) >= FramesBefore andalso length(Frames) =< FramesAfter),
+    %% Playwright's Firefox build has no keyFramesEncoded.
+    ?assert(KeysAfter =:= undefined orelse (Keys >= KeysBefore andalso Keys =< KeysAfter)),
+    #{frames_dropped := 0} = frame_stats(Pc),
+    ok.
+
+%% The frames that arrive within `Wait' ms, then those already queued.
+frames(Pc, Wait, Acc) ->
+    frames_until(Pc, erlang:monotonic_time(millisecond) + Wait, Acc).
+
+frames_until(Pc, Deadline, Acc) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {webrtc, Pc, {frame, _Mid, F}} -> frames_until(Pc, Deadline, [F | Acc])
+    after Left ->
+        lists:reverse(Acc)
+    end.
+
+%% framesEncoded and keyFramesEncoded of the browser's video stream.
+encoded(P0) ->
+    P1 = ?P:cmd(P0, #{cmd => stats}),
+    {ok, P2, #{<<"stats">> := S} = Ev} = ?P:wait_event(P1, <<"stats">>, #{}),
+    [Out | _] = [X || X <- maps:values(S), is_map(X), maps:get(<<"type">>, X, x) =:= <<"outbound-rtp">>,
+                      maps:get(<<"kind">>, X, x) =:= <<"video">>],
+    {{maps:get(<<"framesEncoded">>, Out, 0), maps:get(<<"keyFramesEncoded">>, Out, undefined)}, consume(P2, Ev)}.
+
+frame_stats(Pc) ->
+    #{transport := #{media := #{receivers := Rs}}} = webrtc:get_stats(Pc),
+    hd([F || #{frames := F} <- maps:values(Rs)]).
+
+%% The frame is well formed for its format; key frames give the size.
+parses(Codec, #{data := D, keyframe := Key, width := W, height := H}) ->
+    ?assert(is_integer(W) andalso is_integer(H)),
+    case string:lowercase(Codec) of
+        <<"vp8">> when Key -> {ok, {W, H}} = webrtc_rtp_vp8:frame_size(D);
+        <<"vp8">> -> <<_:7, 1:1, _/binary>> = D;
+        <<"vp9">> -> ?assert(byte_size(D) > 0);
+        <<"h264">> ->
+            Types = [webrtc_rtp_h264:nal_type(N) || N <- webrtc_rtp_h264:split_annexb(D)],
+            ?assert(Types =/= [] andalso lists:all(fun(T) -> T >= 1 andalso T =< 23 end, Types)),
+            ?assertEqual(Key, lists:member(5, Types)),
+            Key andalso ?assert(lists:member(7, Types) andalso lists:member(8, Types));
+        <<"av1">> ->
+            {ok, [{2, <<>>} | _]} = webrtc_rtp_av1:obus(D)
+    end.
+
+%% Erlang sends VP8 frames: the frames, their size and the header bytes
+%% we count as sent are those the browser counts as received.
+video_stats_agree(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox -> video_stats_agree1(Config);
+        _ -> {skip, "the peer's statistics are not W3C ones"}
+    end.
+
+video_stats_agree1(Config) ->
+    %% No probe padding: Chromium counts the RTX stream's packets, padding
+    %% included, in the media stream's packetsReceived.
+    {Pc, P0} = start(Config, #{congestion_control => #{probing => false}}),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{direction => sendonly}),
+    P1 = erlang_offer(Pc, P0, #{}),
+    Frames = webrtc_test_frames:frames(vp8),
+    [begin
+         Ps = webrtc_rtp_vp8:packetize(D, 1000, #{picture_id => I}),
+         N = length(Ps),
+         [ok = webrtc:send_rtp(Pc, <<"0">>, X, #{timestamp => 1000 + I * 3000, marker => J =:= N, codec => <<"VP8">>})
+          || {J, X} <- lists:enumerate(Ps)],
+         timer:sleep(33)
+     end || {I, #{data := D}} <- lists:enumerate(0, Frames)],
+    {ok, P2, _} = ?P:wait(P1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>, <<"count">> := C}) -> C >= 10;
+                                 (_) -> false end, 20000),
+    timer:sleep(1000),
+    P3 = ?P:cmd(P2, #{cmd => stats}),
+    {ok, P4, #{<<"stats">> := Theirs0}} = ?P:wait_event(P3, <<"stats">>, #{}),
+    put(peer, P4),
+    [In | _] = [S || S <- maps:values(Theirs0), is_map(S), maps:get(<<"type">>, S, x) =:= <<"inbound-rtp">>,
+                     maps:get(<<"kind">>, S, x) =:= <<"video">>],
+    [Out] = [S || _ := #{type := <<"outbound-rtp">>, kind := <<"video">>} = S <- webrtc:get_stats(Pc, #{format => w3c})],
+    ct:log("ours ~p~ntheirs ~p", [Out, In]),
+    #{framesSent := 12, frameWidth := 176, frameHeight := 144, headerBytesSent := Hs, packetsSent := Sent} = Out,
+    ?assertEqual(Sent, maps:get(<<"packetsReceived">>, In)),
+    ?assertEqual(12, maps:get(<<"framesReceived">>, In)),
+    ?assertEqual({176, 144}, {maps:get(<<"frameWidth">>, In), maps:get(<<"frameHeight">>, In)}),
+    case maps:find(<<"headerBytesReceived">>, In) of
+        {ok, Hr} -> ?assertEqual(Hs, Hr);
+        error -> ct:log("no headerBytesReceived")
+    end.
 
 %% Without BUNDLE (RFC 9143) audio, video and data each get their own
 %% ICE and DTLS transport, and all of them carry their traffic.

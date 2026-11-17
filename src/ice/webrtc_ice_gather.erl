@@ -19,6 +19,7 @@
     base_by_via/2,
     srflx_response/6,
     srflx_timeout/3,
+    fallback/2,
     stun_refresh/2,
     next_timeout/1,
     maybe_complete/1,
@@ -287,9 +288,27 @@ add_derived(Cand, BaseId, S) ->
 hidden(#ice_cand{type = srflx}, #ice_cand{type = host}, #ice{hidden_hosts = true}) -> true;
 hidden(_Cand, _Other, _S) -> false.
 
+%% A STUN server that does not answer: the same job against the next
+%% address of its URI (RFC 8489 §8.1), or the server is reported
+%% unreachable once none is left.
 -spec srflx_timeout(tuple(), integer(), #ice{}) -> {#ice{}, [term()]}.
-srflx_timeout(Job, _Now, S) ->
-    job_done(Job, S).
+srflx_timeout({srflx, HostId, Server, Idx} = Job, _Now, S) ->
+    S1 = S#ice{gather_pending = lists:delete(Job, S#ice.gather_pending)},
+    case fallback(Server, S) of
+        {ok, Next} ->
+            {S1#ice{gather_queue = S1#ice.gather_queue ++ [{srflx, HostId, Next, Idx}]}, []};
+        none ->
+            {S2, A} = maybe_complete(S1),
+            {S2, [{event, {server_unreachable, Server}} | A]}
+    end.
+
+%% @doc The next address to try after `Server', if any.
+-spec fallback(webrtc_ice_candidate:address(), #ice{}) -> {ok, webrtc_ice_candidate:address()} | none.
+fallback(Server, #ice{fallbacks = F}) ->
+    case maps:get(Server, F, []) of
+        [Next | _] -> {ok, Next};
+        [] -> none
+    end.
 
 %% @doc Keep server-reflexive bindings alive until ICE completes
 %% (RFC 8445 §5.1.1.4).

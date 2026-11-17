@@ -131,14 +131,16 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 
 | ID | Spec | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
-| RED-1 | 2198 §3 | Block headers: F = 1, payload type, 14-bit timestamp offset, 10-bit length for redundant blocks; F = 0 and the payload type for the primary; blocks in header order | webrtc_red | layout_test, two_blocks_test, primary_only_test | Unit tested |
+| RED-1 | 2198 §3 | Block headers: F = 1, payload type, 14-bit timestamp offset, 10-bit length for redundant blocks; F = 0 and the payload type for the primary; blocks in header order | webrtc_red | layout_test, two_blocks_test, primary_only_test, webrtc_red_gst_SUITE | Interoperability tested (GStreamer rtpredenc and rtpreddec) |
 | RED-2 | 2198 §3 | Blocks the header cannot describe (offset above 14 bits, length above 10 bits) are not sent; headers that do not match the payload are refused | webrtc_red | limits_test_, malformed_test_, fuzz_test | Unit tested |
-| RED-3 | 2198 §4, 8854 §7 | Receiver: the primary block is delivered as the packet it carries; a redundant block repairs the packet it repeats (sequence number n before the primary, timestamp from the offset) only when that packet was lost | webrtc_media_in, webrtc_red | packets_test, webrtc_pc_SUITE:red_repairs_loss | E2E tested |
-| RED-4 | 8854 §4.2, 2198 §5 | audio/red offered after Opus with `fmtp` naming the primary payload types; answered with the offer's `fmtp` when all its payload types are kept | webrtc_jsep_caps | offered_test, answer_test_ | Interoperability tested (Chromium answers it) |
-| RED-5 | 8854 §4.1, §8 | Sender: with `red => true` on a send, the previous payload goes with the new one; used on demand, not by default (FEC SHOULD follow the observed loss) | webrtc_media | webrtc_pc_SUITE:red_repairs_loss, webrtc_pc_interop_SUITE:erlang_sends_red_audio | Interoperability tested (Chromium decodes it) |
+| RED-3 | 2198 §3, §4, 8854 §7 | Receiver: the primary block is delivered as the packet it carries; a redundant block repairs the packet it repeats only when that packet was lost. A block carries no sequence number, so it is placed between the latest packet received before its timestamp and the RED packet (a sender may repeat an older packet than the previous one) | webrtc_red, webrtc_media_in | packets_test, repair_distance_two_test, repair_without_duration_test, webrtc_pc_SUITE:red_repairs_loss, webrtc_red_gst_SUITE:gst_red_distance_1, gst_red_distance_2 | Interoperability tested (GStreamer, distance 1 and 2) |
+| RED-4 | 8854 §4.2, 2198 §5 | audio/red offered after Opus with `fmtp` naming the primary payload types; answered with the offer's `fmtp` when all its payload types are kept | webrtc_jsep_caps | offered_test, answer_test_ | Interoperability tested (Chromium answers it; Firefox, Pion and aiortc have no audio/red, see below) |
+| RED-5 | 8854 §4.1, §8 | Sender: with `red => true` on a send, the previous payload goes with the new one; used on demand, not by default (FEC SHOULD follow the observed loss) | webrtc_media | webrtc_pc_SUITE:red_repairs_loss, webrtc_pc_interop_SUITE:erlang_sends_red_audio, webrtc_red_gst_SUITE:gst_decodes_our_red | Interoperability tested (Chromium and GStreamer decode it) |
 | RED-6 | 8854 §4.1 | RTP header parts not covered by redundancy (CSRCs, header extensions) approximated (RFC 2198 §4) | | | Non-compliant / known limitation: a repaired packet keeps the RED packet's CSRCs and extensions |
 | RED-7 | 8854 §5.1, §5.2, §7 | Video FEC: FlexFEC (RFC 8627) SHOULD be supported; ULPFEC (RFC 5109) MAY | | | Not implemented: video loss is repaired by NACK and RTX (RFC 4588), which §8 prefers when the RTT allows |
 | RED-8 | 8854 §4.1 | A send codec chosen by default is never a repair format (RED, RTX, ULPFEC, FlexFEC), whatever the offer's order | webrtc_media_out | default_send_codec_test | Unit tested |
+
+Audio RED among WebRTC implementations (checked on 2026-11-17): libwebrtc implements it (Chromium). Firefox offers RED and ULPFEC for video only (`JsepCodecDescription.h`, `media.navigator.video.red_ulpfec_enabled`), Pion v4 has no RED payload type, and aiortc lists none. GStreamer's `rtpredenc` and `rtpreddec` are the independent implementation the format is checked against, over plain RTP.
 
 ## RFC 8852 and RFC 8853: RTP stream identifiers and simulcast
 
@@ -212,6 +214,8 @@ No independent implementation answers these messages (browsers, Pion and aiortc 
 | XR-1 | RFC 3611 §4.4 | Receiver Reference Time report block | webrtc_rtcp_xr | webrtc_rtcp_xr_tests:xr_test, xr_errors_test_ | Unit tested |
 | XR-2 | RFC 3611 §4.5 | DLRR report block with sub-blocks | webrtc_rtcp_xr | xr_test, xr_errors_test_ | Unit tested |
 | XR-3 | RFC 3611 §3 | Other block types kept with their type-specific byte | webrtc_rtcp_xr | xr_unknown_block_test | Unit tested |
+| XR-4 | RFC 3611 §4.4 | A Receiver Reference Time block in each regular report while we receive streams | webrtc_media_out | webrtc_stats_SUITE:derived_members | E2E tested |
+| XR-5 | RFC 3611 §4.5 | A DLRR block answering each Receiver Reference Time received (at most 16 sources), its delay in 1/65536 s; the answer to ours gives the round trip time of the streams we receive | webrtc_media_out, webrtc_media_in | derived_members | E2E tested |
 
 ## Congestion control (RFC 8836, draft-ietf-rmcat-gcc-02)
 
@@ -331,6 +335,34 @@ Every case runs on six seeds by default and on 24 with `RMCAT_SEEDS=24` (the see
 | OPUS-3 | RFC 6716 §3.1, §3.2 | Packet duration from the TOC byte and frame count, at most 120 ms | webrtc_rtp_opus | opus_test_ | Unit tested |
 | VP9-1 | RFC 9628 §4.2 | Key frame: P = 0, B = 1, spatial layer 0 | webrtc_rtp_vp9 | webrtc_rtp_vp9_tests:vp9_test_ | Unit tested |
 | AV1-1 | AV1 RTP v1.0.0 §4.4 | Aggregation header; key frame by N = 1 | webrtc_rtp_av1 | webrtc_rtp_av1_tests:av1_test_ | Unit tested |
+| VP8-5 | RFC 7741 §4.4, §4.5 | Depacketization: descriptors removed, the VP8 data of the frame's packets joined | webrtc_frame_codec | webrtc_frame_buffer_tests:in_order_test_, webrtc_frames_gst_SUITE, webrtc_pc_interop_SUITE:peer_sends_frames | Unit and interoperability tested: GStreamer's rtpvp8pay, Chromium and Firefox, decoded by ffmpeg |
+| VP8-6 | RFC 6386 §9.1 | Width and height of a key frame: frame tag, start code 9d 01 2a, 14 bit sizes | webrtc_rtp_vp8 | frame_size_test_, no_size_in_delta_test | Unit and interoperability tested |
+| VP8-7 | RFC 7741 §4.2 | Packetizer sets the temporal layer index and layer sync bit (T, TID, Y) | webrtc_rtp_vp8 | temporal_layers_test | Unit tested |
+| VP9-2 | RFC 9628 §4.2, §4.2.1 | Descriptor: picture ID, layer indices with TL0PICIDX in non-flexible mode, up to three P_DIFF in flexible mode, scalability structure (layer sizes, picture group) | webrtc_rtp_vp9 | vp9_descriptor_test, webrtc_corpus_tests | Unit tested |
+| VP9-3 | RFC 9628 §4.3 | Packetizer: B on the first and E on the last payload of a layer frame, scalability structure in the first | webrtc_rtp_vp9 | vp9_descriptor_test, in_order_test_ | Unit tested |
+| VP9-4 | RFC 9628 §4.4 | Depacketization: the layer frames of a picture (one timestamp, marker on the last) joined | webrtc_frame_codec | in_order_test_, webrtc_frames_gst_SUITE, peer_sends_frames | Unit and interoperability tested: rtpvp9pay, Chromium and Firefox |
+| VP9-5 | VP9 bitstream §6.2 | Key frame size from the uncompressed header (frame marker, profile, sync code, color config), or the highest layer of the scalability structure | webrtc_rtp_vp9 | frame_size_test_ | Unit and interoperability tested |
+| H264-11 | RFC 6184 §8.4, ITU-T H.264 §7.4.1.2.3 | Depacketization to Annex B; an access unit starts with an AUD, SPS, SEI or the slice of macroblock 0, taken as the first packet only once the packets before it are given up; the last SPS and PPS before the frame, in sequence order, put before an IDR that lacks them; an IDR without them is not decodable | webrtc_frame_codec | h264_parameter_sets_test, prop_webrtc_frames:prop_frames_survive_network, webrtc_frames_gst_SUITE, peer_sends_frames | Unit, property and interoperability tested: rtph264pay with `config-interval=-1`, Chromium; libwebrtc's SPS/PPS tracker refuses such an IDR too |
+| H264-12 | ITU-T H.264 §7.3.2.1.1, §7.4.2.1.1 | Picture size from the SPS: exp-Golomb fields, high profile chroma and scaling lists, cropping | webrtc_rtp_h264 | frame_size_test_ (174 x 130, cropped) | Unit and interoperability tested |
+| AV1-2 | AV1 RTP v1.0.0 §4.4, §4.5 | Depacketization: OBU elements with or without length fields (W), fragments continued with Z and Y, a temporal unit in the low overhead format: a temporal delimiter, then every OBU with its size field (AV1 §5.2, §7.5) | webrtc_rtp_av1 | av1_fragments_test, av1_obu_count_test, webrtc_corpus_tests (libwebrtc's assemble-frame corpus), webrtc_frames_gst_SUITE, peer_sends_frames | Unit and interoperability tested: rtpav1pay, Chromium and Firefox, decoded by ffmpeg |
+| AV1-3 | AV1 RTP v1.0.0 §5 | Packetizer: temporal delimiters and tile lists left out, OBUs without size fields, every element with a length (W = 0), N on the first payload of a coded video sequence | webrtc_rtp_av1 | av1_fragments_test, in_order_test_ | Unit tested |
+| AV1-4 | AV1 §5.5 | Maximum frame size from the sequence header (timing, decoder model and operating points skipped) | webrtc_rtp_av1 | frame_size_test_ | Unit and interoperability tested |
+
+## Frame assembly and jitter buffer
+
+With `frames` on a transceiver, `webrtc_frame_buffer` turns the packets of each received stream into frames.
+
+| ID | Section | Requirement | Module | Test | Status |
+|---|---|---|---|---|---|
+| FRAME-1 | RFC 3550 §A.1 | Packets in extended sequence order, duplicates dropped, packets of a frame already gone discarded (`packets_discarded`) | webrtc_frame_buffer | reorder_and_duplicates_test_, late_packet_test, prop_webrtc_frames | Unit and property tested |
+| FRAME-2 | RFC 3550 §5.1 | A frame is the packets of one timestamp, complete from its first packet (marked by the format, or after a packet of another frame) to the one with the marker bit | webrtc_frame_buffer | in_order_test_, prop_frames_survive_network | Unit and property tested; timestamps must rise with sequence numbers, so H.264 with B frames (not used by WebRTC encoders) is not supported |
+| FRAME-3 | RFC 7741 §4.2, RFC 9628 §4.2 | A frame leaves once decodable: a key frame; VP8 and non-flexible VP9 base frames after the previous base frame (TL0PICIDX), higher layer frames after their base frame and every frame between, or when layer sync; VP9 flexible frames once every referenced picture left; other video in sequence after a key frame; audio always | webrtc_frame_buffer | temporal_layers_test, vp9_flexible_test, loss_breaks_chain_test_, join_late_test_, audio_test | Unit tested |
+| FRAME-4 | RFC 3550 §6.4.1 | Playout time: timestamp plus the smallest transit of the last 10 s plus the target delay, three times the interarrival jitter of frames within `min_delay` and `max_delay` | webrtc_frame_buffer | playout_time_test | Unit tested; libwebrtc also weighs frame sizes, not done here |
+| FRAME-5 | playout-delay extension | The sender's minimum and maximum delay bound the target delay when negotiated | webrtc_frame_buffer, webrtc_media_in | playout_delay_extension_test | Unit tested |
+| FRAME-6 | RFC 4585 §6.2.1 | A frame missing packets waits for a later frame's playout time plus 100 ms, or three round trips when NACK repairs the stream, or until NACK gives up on a missing packet; then it and the frames that need it are dropped (`frames_dropped`) | webrtc_frame_buffer | retransmission_test_, lost_report_test, loss_breaks_chain_test_ | Unit tested and interoperability tested against GStreamer with loss and reordering |
+| FRAME-7 | RFC 4585 §6.3.1, RFC 5104 §4.3.1 | After a drop, a key frame request: PLI when negotiated, otherwise FIR with a new sequence number for each request; at most one per round trip and five a second. `webrtc:request_keyframe/2` and NACK use the same choice | webrtc_media_in | webrtc_media_frames_tests:pli_on_loss_test, fir_only_test, application_request_fir_test | Unit tested |
+| FRAME-8 | | Bounded: 2048 packets and 3 s per stream | webrtc_frame_buffer | bound_test, prop_garbage_never_crashes | Unit and property tested |
+| FRAME-9 | | Frames of independent packetizers decode: GStreamer (VP8, VP9, H.264, AV1, in order and with one packet in 40 lost and reordering), Chromium (VP8, VP9, H.264, AV1) and Firefox (VP8, VP9, AV1), with as many frames and key frames as the browser encoded | webrtc_frame_buffer | webrtc_frames_gst_SUITE, webrtc_pc_interop_SUITE:peer_sends_frames | Interoperability tested; ffmpeg decodes what GStreamer sent without an error, at the encoded size and with the same key frames |
 
 ## Known limitations
 

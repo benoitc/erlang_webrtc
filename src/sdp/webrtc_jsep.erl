@@ -26,6 +26,8 @@
 -export([
     new/1,
     add_transceiver/3,
+    frames_opts/1,
+    plugin_opts/2,
     set_direction/3,
     stop_transceiver/2,
     transceivers/1,
@@ -98,6 +100,11 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         sctp_port = maps:get(sctp_port, Opts, 5000),
         max_message_size = maps:get(max_message_size, Opts, 262144),
         bundle = maps:get(bundle, Opts, true),
+        frames = case frames_opts(maps:get(frames, Opts, false)) of
+                     {ok, F} -> F;
+                     {error, E} -> error(E)
+                 end,
+        codec_plugins = maps:get(codec_plugins, Opts, #{}),
         encrypt_offer = EncryptMode =:= offer,
         cryptex = maps:get(cryptex, Opts, true),
         rtcp_mux_only = maps:get(rtcp_mux_policy, Opts, negotiate) =:= require
@@ -116,24 +123,61 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
 %%
 %% A transceiver without `send_encodings' that answers an offer asking
 %% to receive simulcast sends the offered layers (RFC 9429 §5.10).
+%%
+%% `frames': `true', or `#{min_delay => Ms, max_delay => Ms}', delivers
+%% assembled frames instead of packets (see `webrtc_frame_buffer').
 -spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()} | {error, term()}.
 add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
     T = new_tr(Kind, maps:get(direction, Opts, sendrecv), J),
     maybe
         {ok, Encs} ?= webrtc_jsep_simulcast:encodings(maps:get(send_encodings, Opts, []), {T#tr.ssrc, T#tr.rtx_ssrc}),
         {ok, Recv} ?= webrtc_jsep_simulcast:recv_rids(maps:get(recv_rids, Opts, [])),
+        {ok, Frames} ?= frames_opts(maps:get(frames, Opts, T#tr.frames)),
+        {ok, Plugin} ?= plugin_opts(maps:get(codec_plugin, Opts, T#tr.codec_plugin), Frames),
         T1 = T#tr{
+            codec_plugin = Plugin,
             stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
             track_id = maps:get(track_id, Opts, T#tr.track_id),
             encodings = Encs,
-            recv_rids = Recv
+            recv_rids = Recv,
+            frames = Frames
         },
         {ok, T1#tr.id, J#jsep{transceivers = J#jsep.transceivers ++ [T1], next_id = T1#tr.id + 1}}
     end.
 
-new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps}) ->
+%% @doc Check the `frames' option: false, true, or the buffer delays.
+-spec frames_opts(term()) -> {ok, false | map()} | {error, {badarg, {frames, term()}}}.
+frames_opts(false) ->
+    {ok, false};
+frames_opts(true) ->
+    {ok, #{}};
+frames_opts(#{} = O) ->
+    Min = maps:get(min_delay, O, 0),
+    Max = maps:get(max_delay, O, 10000),
+    case maps:keys(maps:without([min_delay, max_delay], O)) =:= [] andalso is_integer(Min) andalso
+             is_integer(Max) andalso Min >= 0 andalso Max >= Min of
+        true -> {ok, maps:with([min_delay, max_delay], O)};
+        false -> {error, {badarg, {frames, O}}}
+    end;
+frames_opts(Other) ->
+    {error, {badarg, {frames, Other}}}.
+
+%% @doc Check the `codec_plugin' option: `{Module, Opts}', on frames.
+-spec plugin_opts(term(), false | map()) -> {ok, undefined | {module(), term()}} | {error, term()}.
+plugin_opts(undefined, _Frames) ->
+    {ok, undefined};
+plugin_opts({Mod, _} = P, Frames) when is_atom(Mod), Frames =/= false ->
+    {ok, P};
+plugin_opts({Mod, _}, false) when is_atom(Mod) ->
+    {error, {badarg, {codec_plugin, needs_frames}}};
+plugin_opts(Other, _Frames) ->
+    {error, {badarg, {codec_plugin, Other}}}.
+
+new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps, frames = Frames, codec_plugins = Plugins}) ->
     {Codecs, Exts} = maps:get(Kind, Caps),
     #tr{
+        frames = Frames,
+        codec_plugin = case Frames of false -> undefined; _ -> maps:get(Kind, Plugins, undefined) end,
         id = Id,
         kind = Kind,
         direction = Dir,

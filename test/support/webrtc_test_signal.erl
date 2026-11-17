@@ -2,7 +2,7 @@
 %% connections owned by the calling process.
 -module(webrtc_test_signal).
 
--export([negotiate/2, connect/2, connect/3, wait/3, wait_connected/2, wait_pairs_connected/2, flush/0]).
+-export([negotiate/2, connect/2, connect/3, wait/3, collect/3, wait_connected/2, wait_pairs_connected/2, flush/0]).
 
 %% @doc Offer from A, answer from B, without waiting for connectivity.
 negotiate(A, B) ->
@@ -56,6 +56,25 @@ relay(Peer, Pcs, Done, Deadline) ->
     end.
 
 %% @doc Wait for an event of Pc matching Pred.
+%% Every event of Pc satisfying Pred, queued or arriving within Timeout
+%% ms, in order; the others stay queued.
+collect(Pc, Pred, Timeout) ->
+    Deadline = erlang:monotonic_time(millisecond) + Timeout,
+    collect_loop(Pc, Pred, Deadline, [], []).
+
+collect_loop(Pc, Pred, Deadline, Got, Skipped) ->
+    Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
+    receive
+        {webrtc, Pc, E} = Msg ->
+            case Pred(E) of
+                true -> collect_loop(Pc, Pred, Deadline, [E | Got], Skipped);
+                false -> collect_loop(Pc, Pred, Deadline, Got, [Msg | Skipped])
+            end
+    after Left ->
+        requeue(Skipped),
+        lists:reverse(Got)
+    end.
+
 wait(Pc, Pred, Timeout) ->
     Deadline = erlang:monotonic_time(millisecond) + Timeout,
     wait_loop(Pc, Pred, Deadline, []).

@@ -63,6 +63,9 @@ default_codecs(audio) ->
             %% transport-cc.
             ?FB(<<"ack">>, <<"ccfb">>)
         ]),
+        %% RFC 8854 §4.2: redundant audio (RFC 2198), received and
+        %% used (§7), sent when a send asks for it.
+        codec(63, <<"red">>, 48000, 2, [<<"111/111">>], []),
         codec(0, <<"PCMU">>, 8000, 1, [], []),
         codec(8, <<"PCMA">>, 8000, 1, [], []),
         codec(126, <<"telephone-event">>, 8000, 1, [<<"0-15">>], [])
@@ -146,12 +149,28 @@ answer_codecs(Offered0, Local) ->
         answer_codec(O, L)
      || O <- Offered, not is_rtx(O), {ok, L} <- [find_match(O, Local)]
     ],
-    Kept = [Pt || #{pt := Pt} <- Primary],
+    %% RED is kept with the offer's fmtp, which names the offer's
+    %% payload types, and only when all of those are kept.
+    Kept0 = [Pt || #{pt := Pt, name := N} <- Primary, string:lowercase(N) =/= <<"red">>],
+    Primary1 = [case string:lowercase(N) of <<"red">> -> red_answer(C, Offered, Kept0); _ -> C end
+                || #{name := N} = C <- Primary],
+    Primary2 = [C || C <- Primary1, C =/= drop],
+    Kept = [Pt || #{pt := Pt} <- Primary2],
     Rtx = [
         O#{fmtp => [{<<"apt">>, integer_to_binary(Apt)}]}
      || O <- Offered, is_rtx(O), {ok, Apt} <- [apt(O)], lists:member(Apt, Kept), has_rtx(Local)
     ],
-    order_like(Offered, Primary ++ Rtx).
+    order_like(Offered, Primary2 ++ Rtx).
+
+red_answer(#{pt := Pt} = C, Offered, Kept) ->
+    [O] = [O || #{pt := P} = O <- Offered, P =:= Pt],
+    Fmtp = maps:get(fmtp, O, []),
+    Pts = lists:append([[binary_to_integer(P) || P <- binary:split(F, <<"/">>, [global]), P =/= <<>>]
+                        || F <- Fmtp, is_binary(F)]),
+    case Pts =/= [] andalso lists:all(fun(P) -> lists:member(P, Kept) end, Pts) of
+        true -> C#{fmtp => Fmtp};
+        false -> drop
+    end.
 
 answer_codec(#{name := N} = O, L) ->
     Fmtp =

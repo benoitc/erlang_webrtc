@@ -100,7 +100,7 @@ answer_creates_recvonly_transceiver_test() ->
 
 codec_intersection_test() ->
     Opus = hd(webrtc_jsep_caps:default_codecs(audio)),
-    Pcmu = lists:nth(2, webrtc_jsep_caps:default_codecs(audio)),
+    [Pcmu] = [C || #{name := <<"PCMU">>} = C <- webrtc_jsep_caps:default_codecs(audio)],
     {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
     B0 = new(#{codecs => #{audio => [Pcmu]}}),
     {A, _, _, Answer} = exchange(A0, B0),
@@ -110,7 +110,7 @@ codec_intersection_test() ->
     _ = Opus.
 
 no_common_codec_rejects_section_test() ->
-    Pcmu = lists:nth(2, webrtc_jsep_caps:default_codecs(audio)),
+    [Pcmu] = [C || #{name := <<"PCMU">>} = C <- webrtc_jsep_caps:default_codecs(audio)],
     Opus = hd(webrtc_jsep_caps:default_codecs(audio)),
     {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, new(#{codecs => #{audio => [Opus]}})),
     {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{}, A0),

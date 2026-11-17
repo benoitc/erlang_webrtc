@@ -49,20 +49,22 @@ Apple M-series laptop, 14 schedulers, OTP 29.1.2, OpenSSL 4.1, loopback UDP. Tre
 
 ### Congestion control (RFC 8867)
 
-The RMCAT cases run in simulation (`rebar3 eunit --module=webrtc_rmcat_tests`, about 20 s). Rates are averages from 10 s after each change; see the RMCAT rows of [compliance/rtp.md](compliance/rtp.md) for the bounds.
+The RMCAT cases run in simulation on six seeds (`rebar3 eunit --module=webrtc_rmcat_tests`, about 45 s). Rates are averages from 10 s after each change; see the RMCAT rows of [compliance/rtp.md](compliance/rtp.md) for the bounds. The ranges are over the six seeds.
 
 | Case | Result |
 |---|---|
-| 5.1, one flow, capacity 1, 2.5, 0.6, 1 Mbps | 0.93 to 1.00 of the available rate, queue p95 at most 72 ms |
-| 5.2, two flows, capacity 4 to 1 Mbps | together 0.92 to 1.00 of the available rate |
-| 5.3, media both ways | 0.92 to 1.00 of the share in each direction |
-| 5.4, three flows joining | Jain index 0.99, 0.93 of the link |
-| 5.5, RTT fairness | Jain index 0.79 to 0.91 over six seeds (not met) |
-| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 175 / 394 kbps, TCP 1737 / 1538 kbps |
-| 5.7, against ten short TCP flows | media 360 and 391 kbps, never below the minimum |
-| 5.8, pause and resume | Jain index 0.98 after the resume |
-| 6.2, ECN (CoDel marking), one flow | 0.95 to 0.96 of the available rate, queue p95 at most 45 ms |
-| 6.2, ECN (CoDel marking), three flows | Jain index 0.995 |
+| 5.1, one flow, capacity 1, 2.5, 0.6, 1 Mbps | 0.78 to 1.00 of the available rate, queue p95 at most 82 ms |
+| 5.2, two flows, capacity 4 to 1 Mbps | together 0.86 to 1.00 of the available rate, queue p95 at most 78 ms |
+| 5.3, media both ways | 0.88 to 1.00 of the share in each direction |
+| 5.4, three flows joining | Jain index 0.930 to 0.998, 0.93 to 0.95 of the link |
+| 5.5, RTT fairness | Jain index 0.951 to 0.985 |
+| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 171 to 204 / 326 to 390 kbps, TCP 1708 to 1740 / 1529 to 1575 kbps |
+| 5.7, against ten short TCP flows | media 297 to 385 kbps, never below the minimum |
+| 5.8, pause and resume | Jain index 0.940 to 0.989 after the resume |
+| 6.2, ECN (CoDel marking), one flow | 0.80 to 0.99 of the available rate, queue p95 at most 51 ms |
+| 6.2, ECN (CoDel marking), three flows | Jain index 0.902 to 0.999 |
+
+Over 24 seeds, two runs out of 288 miss a bound by a small margin: a 5.3 phase with a queue p95 of 129 ms and a 5.4 Jain index of 0.898. Before these changes, 5.5 missed on 22 of the 24 seeds, 5.2 on 3 and 5.3 on 1.
 
 ## Where the time goes
 

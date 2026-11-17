@@ -271,16 +271,20 @@ resume(Mid, Now, M) ->
         {error, _} = E -> E
     end.
 
-%% @doc Ask the remote sender of a transceiver for a keyframe (PLI), on
-%% every stream of the mid or on one simulcast layer with `{Mid, Rid}'.
+%% @doc Ask the remote sender of a transceiver for a keyframe, on every
+%% stream of the mid or on one simulcast layer with `{Mid, Rid}': PLI
+%% when negotiated, otherwise FIR.
 -spec request_keyframe(sender_key(), integer(), state()) -> {[{send, binary()}], state()}.
 request_keyframe({Mid, Rid}, Now, M) ->
-    Ssrcs = [S || {ok, S} <- [webrtc_media_rid:source(Mid, Rid, M#media.rids)]],
-    Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
-    webrtc_media_out:send_feedback(Pkts, Now, M);
+    keyframe_requests([S || {ok, S} <- [webrtc_media_rid:source(Mid, Rid, M#media.rids)]], Now, M);
 request_keyframe(Mid, Now, M) ->
-    Ssrcs = [S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid],
-    Pkts = [#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = S} || S <- Ssrcs],
+    keyframe_requests([S || {S, #rcv{mid = Mi}} <- maps:to_list(M#media.receivers), Mi =:= Mid], Now, M).
+
+keyframe_requests(Ssrcs, Now, M0) ->
+    {Pkts, M} = lists:foldl(fun(S, {Acc, MA}) ->
+                                {P, MA1} = webrtc_media_in:keyframe_feedback(S, MA),
+                                {Acc ++ P, MA1}
+                            end, {[], M0}, Ssrcs),
     webrtc_media_out:send_feedback(Pkts, Now, M).
 
 %% @doc Ask the remote sender of a transceiver, or of one simulcast
@@ -329,9 +333,9 @@ next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc} = M) ->
             _ -> webrtc_rtcp_sched:next_timeout(Rtcp)
         end,
     lists:foldl(
-        fun
-            (#rcv{nack = undefined}, Acc) -> Acc;
-            (#rcv{nack = N}, Acc) -> webrtc_media_out:tmin(webrtc_nack:next_timeout(N), Acc)
+        fun(#rcv{nack = N, frames = Fb}, Acc) ->
+            Acc1 = case N of undefined -> Acc; _ -> webrtc_media_out:tmin(webrtc_nack:next_timeout(N), Acc) end,
+            case Fb of undefined -> Acc1; _ -> webrtc_media_out:tmin(webrtc_frame_buffer:next_timeout(Fb), Acc1) end
         end,
         webrtc_media_out:tmin(webrtc_media_out:tmin(R, webrtc_cc:next_timeout(Cc)), webrtc_media_pause:next_timeout(M)),
         maps:values(Rs)
@@ -343,7 +347,9 @@ handle_timeout(Now, #media{out = undefined} = M) ->
     {M, []};
 handle_timeout(Now, M0) ->
     {Fb, A0, M1} = webrtc_media_out:cc_timeouts(Now, M0),
-    {M2, A1} = webrtc_media_out:nack_timeouts(Now, M1),
+    {M2b, A1a} = webrtc_media_out:nack_timeouts(Now, M1),
+    {M2, A1b} = webrtc_media_in:frame_timeouts(Now, M2b),
+    A1 = A1a ++ A1b,
     {PauseFb, PauseEvents, M2a} = webrtc_media_pause:timeouts(Now, M2),
     M3 = rtcp_session(Now, M2a),
     Pending = M3#media.pending_fb ++ Fb ++ PauseFb,
@@ -386,7 +392,11 @@ stats(#media{} = M) ->
         ),
         receivers => maps:map(
             fun(Ssrc, R) ->
-                (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)}
+                Info = (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)},
+                case R#rcv.frames of
+                    undefined -> Info;
+                    Fb -> Info#{frames => webrtc_frame_buffer:stats(Fb)}
+                end
             end,
             M#media.receivers
         ),

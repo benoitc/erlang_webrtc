@@ -73,7 +73,7 @@ init(#{owner := App} = Opts0) ->
     Cert = maps:get(certificate, Opts, webrtc_dtls_cert:generate()),
     FP = webrtc_dtls_cert:fingerprint(sha256, maps:get(der, Cert)),
     Jsep = webrtc_jsep:new(maps:merge(maps:with([codecs, extensions, bundle, cryptex, encrypt_header_extensions,
-                                                 rtcp_mux_policy], Opts), #{
+                                                 rtcp_mux_policy, frames], Opts), #{
         ice_ufrag => ice_string(8),
         ice_pwd => ice_string(24),
         fingerprints => [FP],

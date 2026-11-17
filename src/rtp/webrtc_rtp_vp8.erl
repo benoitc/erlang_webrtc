@@ -7,10 +7,11 @@
 %% picture ID and TL0PICIDX in place, keeping the 7 or 15 bit picture ID
 %% width of the packet, which is what a forwarding unit needs to keep
 %% these fields continuous when it switches between simulcast layers.
-%% `packetize/3' splits an encoded frame into payloads.
+%% `packetize/3' splits an encoded frame into payloads; `frame_size/1'
+%% reads the size of a key frame.
 -module(webrtc_rtp_vp8).
 
--export([parse/1, is_keyframe/1, rewrite/2, packetize/3]).
+-export([parse/1, is_keyframe/1, rewrite/2, packetize/3, frame_size/1]).
 
 -export_type([descriptor/0]).
 
@@ -96,6 +97,17 @@ is_keyframe(Payload) ->
         _ -> false
     end.
 
+%% @doc Width and height of a key frame, from the start of its VP8 data
+%% (the payload of its first packet after the descriptor): the 3 byte
+%% frame tag, the start code 9d 01 2a, then the 14 bit width and height
+%% (RFC 6386 §9.1).
+-spec frame_size(binary()) -> {ok, {pos_integer(), pos_integer()}} | error.
+frame_size(<<_:7, 0:1, _:16, 16#9d, 16#01, 16#2a, W:16/little, H:16/little, _/binary>>)
+  when W band 16#3FFF > 0, H band 16#3FFF > 0 ->
+    {ok, {W band 16#3FFF, H band 16#3FFF}};
+frame_size(_) ->
+    error.
+
 %% @doc Rewrite `picture_id' and / or `tl0picidx' in a payload. The new
 %% picture ID is truncated to the width used by the packet. Fails when a
 %% field to rewrite is not present.
@@ -139,13 +151,15 @@ set_tl0(P, PicId, {ok, V}) when is_integer(V), V >= 0, V =< 255 ->
 
 %% @doc Split an encoded VP8 frame into RTP payloads of at most `Mtu'
 %% bytes, each with a payload descriptor. Options: `picture_id' (15-bit),
-%% `tl0picidx', `non_reference'. The first payload has S = 1; the
-%% caller sets the RTP marker bit on the last one.
+%% `tl0picidx', `tid' and `layer_sync' (the temporal layer and the Y
+%% bit), `non_reference'. The first payload has S = 1; the caller sets
+%% the RTP marker bit on the last one.
 -spec packetize(binary(), pos_integer(), #{
-    picture_id => 0..16#7FFF, tl0picidx => 0..255, non_reference => boolean()
+    picture_id => 0..16#7FFF, tl0picidx => 0..255, tid => 0..3, layer_sync => boolean(),
+    non_reference => boolean()
 }) -> [binary()].
 packetize(Frame, Mtu, Opts) when is_binary(Frame), byte_size(Frame) > 0 ->
-    Ext = maps:is_key(picture_id, Opts) orelse maps:is_key(tl0picidx, Opts),
+    Ext = maps:is_key(picture_id, Opts) orelse maps:is_key(tl0picidx, Opts) orelse maps:is_key(tid, Opts),
     N =
         case maps:get(non_reference, Opts, false) of
             true -> 1;
@@ -162,6 +176,7 @@ ext_bytes(false, _) ->
 ext_bytes(true, Opts) ->
     I = maps:is_key(picture_id, Opts),
     L = maps:is_key(tl0picidx, Opts),
+    Tb = maps:is_key(tid, Opts),
     Pic =
         case Opts of
             #{picture_id := V} -> <<1:1, V:15>>;
@@ -172,7 +187,12 @@ ext_bytes(true, Opts) ->
             #{tl0picidx := T} -> <<T>>;
             _ -> <<>>
         end,
-    <<(bool(I)):1, (bool(L)):1, 0:6, Pic/binary, Tl0/binary>>.
+    Tk =
+        case Opts of
+            #{tid := Tid} -> <<Tid:2, (bool(maps:get(layer_sync, Opts, false))):1, 0:5>>;
+            _ -> <<>>
+        end,
+    <<(bool(I)):1, (bool(L)):1, (bool(Tb)):1, 0:5, Pic/binary, Tl0/binary, Tk/binary>>.
 
 chunks(Bin, Max, Hdr, S) when byte_size(Bin) =< Max ->
     [<<(Hdr(S))/binary, Bin/binary>>];

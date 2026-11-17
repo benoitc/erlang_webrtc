@@ -151,6 +151,7 @@ media_params(T, L, R, {Local, Remote, J}) ->
         recv_encrypted => webrtc_jsep_caps:encrypted_ids(Recv),
         ssrc => T#tr.ssrc,
         rtx_ssrc => T#tr.rtx_ssrc,
+        frames => T#tr.frames,
         cname => undefined,
         remote_ssrcs => remote_ssrcs(R),
         rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true},

@@ -44,6 +44,7 @@
 -define(URI_ABS_SEND_TIME, <<"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
 -define(URI_TOFFSET, <<"urn:ietf:params:rtp-hdrext:toffset">>).
+-define(URI_PLAYOUT_DELAY, <<"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay">>).
 -define(URI_ORIENTATION, <<"urn:3gpp:video-orientation">>).
 
 %%====================================================================
@@ -128,7 +129,8 @@ default_extensions(video) ->
         #{id => 10, uri => ?URI_RID},
         #{id => 11, uri => ?URI_RRID},
         #{id => 13, uri => ?URI_ORIENTATION},
-        #{id => 14, uri => ?URI_TOFFSET}
+        #{id => 14, uri => ?URI_TOFFSET},
+        #{id => 12, uri => ?URI_PLAYOUT_DELAY}
     ].
 
 %%====================================================================

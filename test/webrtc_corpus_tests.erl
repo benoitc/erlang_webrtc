@@ -129,12 +129,14 @@ consumers(rtp) ->
 consumers('sctp-packet') ->
     [fun webrtc_sctp_chunk:decode/1, fun sctp_engine/1, fun(B) -> sctp_engine(fix_checksum(B)) end];
 consumers(mdns) -> [fun webrtc_mdns_msg:decode/1, fun mdns_resolver/1, fun mdns_responder/1];
-consumers(K) when K =:= h264; K =:= av1 -> [fun h264_reassembly/1 | payload()].
+consumers(K) when K =:= h264; K =:= av1 -> [fun h264_reassembly/1, fun av1_assembly/1, fun frame_assembly/1 | payload()].
 
 payload() ->
     [fun webrtc_rtp_h264:depacketize/1, fun webrtc_rtp_av1:aggregation_header/1, fun webrtc_rtp_av1:is_keyframe/1,
      fun webrtc_rtp_vp8:parse/1, fun webrtc_rtp_vp8:is_keyframe/1, fun webrtc_rtp_vp9:parse/1,
-     fun webrtc_rtp_vp9:is_keyframe/1, fun webrtc_rtp_opus:depacketize/1].
+     fun webrtc_rtp_vp9:is_keyframe/1, fun webrtc_rtp_opus:depacketize/1, fun webrtc_rtp_vp8:frame_size/1,
+     fun webrtc_rtp_vp9:frame_size/1, fun webrtc_rtp_vp9:parse_payload/1, fun webrtc_rtp_av1:frame_size/1,
+     fun webrtc_rtp_av1:obus/1, fun webrtc_rtp_h264:sps_size/1, fun(B) -> webrtc_rtp_av1:depacketize([B]) end].
 
 rtp_payload(B) ->
     case webrtc_rtp:decode(B) of
@@ -174,6 +176,30 @@ h264_reassembly(B) ->
     Parts = [P || P <- binary:split(B, <<0, 0, 1>>, [global]), P =/= <<>>],
     lists:foldl(fun({Seq, P}, D) -> element(3, webrtc_rtp_h264:depacketizer_push(Seq, P, D)) end,
                 webrtc_rtp_h264:depacketizer_new(), lists:enumerate(Parts)).
+
+%% libwebrtc's AV1 assemble-frame fuzzer cuts its input into payloads,
+%% each after a 16 bit little endian size taken modulo 1200.
+fuzz_payloads(<<Size:16/little, Rest/binary>>) ->
+    N = min(Size rem 1200, byte_size(Rest)),
+    <<P:N/binary, Rest1/binary>> = Rest,
+    [P | fuzz_payloads(Rest1)];
+fuzz_payloads(_) ->
+    [].
+
+av1_assembly(B) ->
+    webrtc_rtp_av1:depacketize(fuzz_payloads(B)).
+
+%% The same payloads as the packets of one frame, for every format.
+frame_assembly(B) ->
+    Pkts = lists:enumerate(fuzz_payloads(B)),
+    [webrtc_frame_codec:assemble(C, Pkts, 1, #{}) || C <- [vp8, vp9, h264, av1, video]],
+    [webrtc_frame_codec:packet(C, P) || C <- [vp8, vp9, h264, av1], {_, P} <- Pkts],
+    Fb = webrtc_frame_buffer:new(#{codecs => [#{pt => 96, name => <<"H264">>}, #{pt => 97, name => <<"AV1">>},
+                                              #{pt => 98, name => <<"VP9">>}, #{pt => 99, name => <<"VP8">>}]}),
+    lists:foldl(fun({I, P}, F) ->
+                    Rtp = #rtp{pt = 96 + I rem 4, seq = I, ts = I div 3, ssrc = 1, marker = I rem 3 =:= 0, payload = P},
+                    element(2, webrtc_frame_buffer:push(Rtp, I, #{}, F))
+                end, Fb, Pkts).
 
 %% The captures carry their peer's checksum; recompute it so the engine
 %% looks past the CRC check (RFC 9260 Appendix A).

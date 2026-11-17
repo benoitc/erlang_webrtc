@@ -372,7 +372,8 @@ stats(#media{} = M) ->
                 (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)}
             end,
             M#media.receivers
-        )
+        ),
+        streams => M#media.streams
     }.
 
 rand32() ->

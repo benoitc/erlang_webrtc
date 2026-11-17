@@ -176,7 +176,7 @@ transmit_dtls(Acts, St) ->
 dtls_send(Bin, St) ->
     case webrtc_ice_agent:send(Bin, webrtc_transport:now_ms(), St#st.ice) of
         {ok, I1, Acts} ->
-            webrtc_transport_net:ice_actions(Acts, St#st{ice = I1});
+            webrtc_transport_net:ice_actions(Acts, webrtc_transport_net:io(sent, Bin, St#st{ice = I1}));
         {error, no_valid_pair} when length(St#st.dtls_out) < ?MAX_EARLY_DTLS ->
             St#st{dtls_out = St#st.dtls_out ++ [Bin]};
         {error, _} ->

@@ -123,8 +123,10 @@ ice_action({open_udp, Ref, #{local := IP}}, St) ->
 ice_action({close_stream, Ref}, St) ->
     close_stream(Ref, St);
 ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
-    _ = gen_udp:send(Sock, IP, Port, Bin),
-    St;
+    case gen_udp:send(Sock, IP, Port, Bin) of
+        ok -> St;
+        {error, _} -> io(discarded, Bin, St)
+    end;
 ice_action({send_ect, Sock, {IP, Port} = Dest, Bin}, #st{filter = undefined} = St) when is_port(Sock) ->
     %% ECT(0) in the IP header (RFC 3168 §5).
     Anc = case tuple_size(IP) of 4 -> [{tos, 2}]; 8 -> [{tclass, 2}] end,
@@ -176,11 +178,16 @@ local_candidate(C, St) ->
     St#st{mdns = M}.
 
 %% @doc Count an application datagram sent or received.
--spec io(sent | received, binary(), #st{}) -> #st{}.
+-spec io(sent | received | discarded, binary(), #st{}) -> #st{}.
 io(sent, Bin, #st{io = #{packets_sent := P, bytes_sent := B} = Io} = St) ->
-    St#st{io = Io#{packets_sent := P + 1, bytes_sent := B + byte_size(Bin)}};
+    St#st{io = Io#{packets_sent := P + 1, bytes_sent := B + byte_size(Bin), last_sent => erlang:system_time(millisecond)}};
 io(received, Bin, #st{io = #{packets_received := P, bytes_received := B} = Io} = St) ->
-    St#st{io = Io#{packets_received := P + 1, bytes_received := B + byte_size(Bin)}}.
+    St#st{io = Io#{packets_received := P + 1, bytes_received := B + byte_size(Bin),
+                   last_received => erlang:system_time(millisecond)}};
+%% A send the socket refused (W3C packetsDiscardedOnSend).
+io(discarded, Bin, #st{io = Io} = St) ->
+    St#st{io = Io#{packets_discarded_on_send => maps:get(packets_discarded_on_send, Io, 0) + 1,
+                   bytes_discarded_on_send => maps:get(bytes_discarded_on_send, Io, 0) + byte_size(Bin)}}.
 
 udp_send(Sock, {IP, Port}, Bin) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),

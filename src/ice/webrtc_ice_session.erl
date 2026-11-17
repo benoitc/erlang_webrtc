@@ -282,6 +282,7 @@ stats(S) ->
         remote_candidates => map_size(S#ice.remote),
         pairs => lists:sort(fun(A, B) -> maps:get(priority, A) >= maps:get(priority, B) end, Pairs),
         counters => S#ice.counters,
+        remote_ufrag => S#ice.remote_ufrag,
         transactions => webrtc_stun_tx:size(S#ice.tx)
     }.
 
@@ -297,6 +298,8 @@ pair_stats(#pair{} = P, S) ->
         nominated => P#pair.nominated,
         selected => lists:member(P#pair.id, maps:values(S#ice.selected)),
         rtt => P#pair.rtt,
+        total_rtt => P#pair.total_rtt,
+        consent_requests_sent => P#pair.consent_requests,
         requests_sent => P#pair.requests_sent,
         responses_received => P#pair.responses_received,
         requests_received => P#pair.requests_received,

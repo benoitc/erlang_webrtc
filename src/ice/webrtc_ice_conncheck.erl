@@ -137,6 +137,8 @@ handle_response(TxId, {check, Id, Info}, Via, From, Msg, Bin, Now, S) ->
                     P = P0#pair{
                         responses_received = P0#pair.responses_received + 1,
                         rtt = pick_rtt(Rtt, P0#pair.rtt),
+                        %% No round trip for a retransmitted request.
+                        total_rtt = P0#pair.total_rtt + case Rtt of undefined -> 0; _ -> Rtt end,
                         txid = clear_txid(TxId, P0#pair.txid)
                     },
                     S2 = webrtc_ice_checklist:put_pair(P, S1),
@@ -357,13 +359,18 @@ select(#pair{id = VId, component = Comp} = V, Now, S) ->
                            error -> false
                        end],
     Selected = (S#ice.selected)#{Comp => VId},
+    Changed = maps:get(Comp, S#ice.selected, undefined) =/= VId,
     Done = lists:all(fun(C) -> maps:is_key(C, Selected) end, S#ice.components),
     Prev =
         case S#ice.prev of
             #prev{pairs = PP} = Pv when not Done -> Pv#prev{pairs = maps:remove(Comp, PP)};
             _ -> undefined
         end,
-    S1 = S#ice{
+    S0 = case Changed of
+             true -> S#ice{counters = maps:update_with(selected_changes, fun(N) -> N + 1 end, 1, S#ice.counters)};
+             false -> S
+         end,
+    S1 = S0#ice{
         pairs = Pairs#{VId => V1},
         tx = Tx,
         triggered = Triggered,

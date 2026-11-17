@@ -174,6 +174,21 @@ const pageScript = () => {
         }
       }
     }
+    // A video codec to send: first in the preferences of every video
+    // transceiver, when the browser can send it.
+    if (c.codec) {
+      const want = 'video/' + c.codec.toLowerCase();
+      const send = (RTCRtpSender.getCapabilities('video') || { codecs: [] }).codecs;
+      const all = (RTCRtpReceiver.getCapabilities('video') || { codecs: [] }).codecs;
+      const pref = all.filter((x) => x.mimeType.toLowerCase() === want);
+      const ok = pref.length > 0 && send.some((x) => x.mimeType.toLowerCase() === want);
+      if (ok) {
+        for (const t of pc.getTransceivers()) {
+          if (t.receiver.track.kind === 'video') t.setCodecPreferences([...pref, ...all.filter((x) => !pref.includes(x))]);
+        }
+      }
+      window.emit({ event: 'codec', codec: c.codec, supported: ok });
+    }
     for (const spec of c.channels || []) window.makeChannel(spec);
   };
 };

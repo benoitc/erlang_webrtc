@@ -9,11 +9,12 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([members_follow_the_dictionaries/1, references_resolve/1, counters_agree/1, internal_format_unchanged/1,
-         derived_members/1]).
+         derived_members/1, plugin_and_reported_members/1, crashing_plugin/1]).
 
 -define(S, webrtc_test_signal).
 
-all() -> [members_follow_the_dictionaries, references_resolve, counters_agree, internal_format_unchanged, derived_members].
+all() -> [members_follow_the_dictionaries, references_resolve, counters_agree, internal_format_unchanged, derived_members,
+          plugin_and_reported_members, crashing_plugin].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -25,6 +26,12 @@ end_per_suite(_Config) ->
 init_per_testcase(derived_members, Config) ->
     ?S:flush(),
     [{call, frames_call()} | Config];
+init_per_testcase(plugin_and_reported_members, Config) ->
+    ?S:flush(),
+    [{call, plugin_call(#{})} | Config];
+init_per_testcase(crashing_plugin, Config) ->
+    ?S:flush(),
+    [{call, plugin_call(#{crash => 5})} | Config];
 init_per_testcase(_TC, Config) ->
     ?S:flush(),
     [{call, call()} | Config].
@@ -77,6 +84,12 @@ dictionary(<<"outbound-rtp">>) ->
 dictionary(<<"remote-outbound-rtp">>) ->
     extend(sent(), [localId, remoteTimestamp, reportsSent, roundTripTime, totalRoundTripTime,
                     roundTripTimeMeasurements], []);
+dictionary(<<"media-source">>) ->
+    extend(stats(), [trackIdentifier, kind, audioLevel, totalAudioEnergy, totalSamplesDuration, echoReturnLoss,
+                     echoReturnLossEnhancement, width, height, frames, framesPerSecond], [trackIdentifier, kind]);
+dictionary(<<"media-playout">>) ->
+    extend(stats(), [kind, synthesizedSamplesDuration, synthesizedSamplesEvents, totalSamplesDuration,
+                     totalPlayoutDelay, totalSamplesCount], [kind]);
 dictionary(<<"peer-connection">>) ->
     extend(stats(), [dataChannelsOpened, dataChannelsClosed], []);
 dictionary(<<"data-channel">>) ->
@@ -112,7 +125,7 @@ strings() ->
 %% Members naming another stats object.
 references() ->
     [transportId, codecId, remoteId, localId, localCandidateId, remoteCandidateId, selectedCandidatePairId,
-     localCertificateId, remoteCertificateId, issuerCertificateId].
+     localCertificateId, remoteCertificateId, issuerCertificateId, mediaSourceId, playoutId].
 
 %%====================================================================
 %% A call: audio, video and a data channel, both ways
@@ -213,6 +226,59 @@ counters_agree(Config) ->
     %% DTLS 1.3 with AES-GCM and the SRTP profile it negotiated.
     [#{dtlsState := <<"connected">>, tlsVersion := <<"FEFC">>, srtpCipher := _}] =
         [O || _ := #{type := <<"transport">>} = O <- RA].
+
+%% A sends the VP8 frames of the corpus through its codec plugin
+%% (send_media/3), B receives them as frames and decodes them with its
+%% own: the plugin's members on both sides.
+plugin_call(BPlugin) ->
+    Plugin = {webrtc_test_codec, #{}},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true,
+                                           codec_plugins => #{video => {webrtc_test_codec, BPlugin}}}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{frames => true, codec_plugin => Plugin}),
+    ?S:connect(A, B),
+    [ok = webrtc:send_rtp(A, <<"0">>, <<16#F8, 16#FF, 16#FE>>, #{timestamp => N * 960}) || N <- lists:seq(1, 5)],
+    [begin
+         ok = webrtc:send_media(A, <<"1">>, {frame, D, K, 1000 + I * 3000}),
+         timer:sleep(33)
+     end || {I, #{data := D, key := K}} <- lists:enumerate(0, webrtc_test_frames:frames(vp8))],
+    {ok, _} = ?S:wait(B, fun({frame, <<"1">>, #{timestamp := Ts}}) -> Ts =:= 1000 + 11 * 3000; (_) -> false end, 10000),
+    {A, B, undefined, undefined}.
+
+plugin_and_reported_members(Config) ->
+    {A, B, _, _} = ?config(call, Config),
+    Decoded = ?S:collect(B, fun({decoded, <<"1">>, {size, _}}) -> true; (_) -> false end, 1000),
+    ?assertEqual(12, length(Decoded)),
+    %% Members the application reports: a source on A, a playout on B,
+    %% and members that do not belong or have the wrong type.
+    webrtc:report_media_stats(A, <<"1">>, source, #{width => 176, height => 144, frames => 12, framesPerSecond => 30}),
+    webrtc:report_media_stats(A, <<"1">>, outbound, #{totalEncodeTime => 0.5, bogus => 1, framesEncoded => <<"x">>}),
+    webrtc:report_media_stats(B, <<"0">>, playout, #{totalSamplesCount => 960, totalSamplesDuration => 0.02}),
+    webrtc:report_media_stats(B, <<"0">>, playout, #{totalSamplesCount => 960}),
+    timer:sleep(200),
+    RA = report(A),
+    RB = report(B),
+    [check_dictionary(R) || R <- [RA, RB]],
+    [#{framesEncoded := 12, keyFramesEncoded := 2, encoderImplementation := <<"test VP8">>, totalEncodeTime := 0.5,
+       qualityLimitationReason := <<"none">>, mediaSourceId := Src, framesSent := 12}] =
+        [O || _ := #{type := <<"outbound-rtp">>, kind := <<"video">>} = O <- RA],
+    #{type := <<"media-source">>, kind := <<"video">>, width := 176, frames := 12} = maps:get(Src, RA),
+    [#{framesDecoded := 12, keyFramesDecoded := 2, decoderImplementation := <<"test VP8">>, framesReceived := 12}] =
+        [O || _ := #{type := <<"inbound-rtp">>, kind := <<"video">>} = O <- RB],
+    [#{playoutId := Ap}] = [O || _ := #{type := <<"inbound-rtp">>, kind := <<"audio">>} = O <- RB],
+    #{type := <<"media-playout">>, totalSamplesCount := 1920, totalSamplesDuration := 0.02} = maps:get(Ap, RB).
+
+%% The plugin raises at its fifth frame: the owner is told once, frames
+%% keep coming, the members counted so far stay.
+crashing_plugin(Config) ->
+    {_, B, _, _} = ?config(call, Config),
+    Decoded = ?S:collect(B, fun({decoded, <<"1">>, _}) -> true; (_) -> false end, 1000),
+    ?assertEqual(5, length(Decoded)),
+    [{codec_plugin_error, <<"1">>, {error, crash, _}}] =
+        ?S:collect(B, fun({codec_plugin_error, _, _}) -> true; (_) -> false end, 100),
+    [#{framesDecoded := 5, framesReceived := 12}] =
+        [O || _ := #{type := <<"inbound-rtp">>, kind := <<"video">>} = O <- report(B)].
 
 %% What the library counts itself: frames from the frame buffer and from
 %% what is sent, header bytes, the RFC 6464 level, the ICE members.

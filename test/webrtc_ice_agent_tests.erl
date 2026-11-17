@@ -831,3 +831,68 @@ turn_allocation_mismatch_test() ->
     [Relay] = relays(Evs6),
     ?assertEqual({relay, s2, ?TURN_U}, webrtc_ice_gather:via(Relay, undefined)),
     ?assertEqual(complete, ?AG:gathering_state(A6)).
+
+%%--------------------------------------------------------------------
+%% Server fallbacks (RFC 8489 §8.1, RFC 5928 §3)
+%%--------------------------------------------------------------------
+
+%% A STUN server that never answers: the binding goes to the next address
+%% of its URI, and the candidate comes from there.
+stun_fallback_test() ->
+    Dead = {{192, 0, 2, 10}, 3478},
+    Next = {{192, 0, 2, 11}, 3478},
+    A0 = ?AG:new(#{stun_servers => [Dead], server_fallbacks => #{Dead => [Next]}}),
+    {A1, _} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, Later} = tick(A1, 40000),
+    ?assertEqual([], [E || {_, {event, {gathering_state, complete}}} = E <- Later]),
+    [Req | _] = [B || {_, {send, s, To, B}} <- Later, To =:= Next],
+    {ok, M} = webrtc_stun:decode(Req),
+    Resp = webrtc_stun:encode(webrtc_stun:success(M, [{xor_mapped_address, {{198, 51, 100, 5}, 7000}}]),
+                              #{fingerprint => true}),
+    {_, Acts} = ?AG:handle_packet(s, Next, Resp, 40000, A2),
+    ?assertMatch([{local_candidate, #ice_cand{type = srflx}}, {gathering_state, complete}], events(Acts)).
+
+%% Every address silent: the server is reported unreachable once, and
+%% gathering completes.
+stun_all_unreachable_test() ->
+    Dead = {{192, 0, 2, 10}, 3478},
+    Next = {{192, 0, 2, 11}, 3478},
+    A0 = ?AG:new(#{stun_servers => [Dead], server_fallbacks => #{Dead => [Next], Next => []}}),
+    {A1, _} = ?AG:gather([{s, ?L}], 0, A0),
+    {_, Later} = tick(A1, 100000),
+    ?assertEqual([{event, {server_unreachable, Next}}], [E || {_, {event, {server_unreachable, _}} = E} <- Later]),
+    ?assertMatch([_], [E || {_, {event, {gathering_state, complete}}} = E <- Later]).
+
+%% A TURN connection that fails goes to the next address; an answer, even
+%% an error, is not failed over (RFC 8656 §7.3).
+stream_turn_fallback_test() ->
+    Next = {{198, 51, 100, 9}, 3478},
+    A0 = ?AG:new(#{ufrag => ?U, pwd => ?P, role => controlled, seed => {1, 2, 3},
+                   turn_servers => [#{address => ?TURN_T, transport => tls, username => <<"u">>, password => <<"p">>}],
+                   server_fallbacks => #{?TURN_T => [Next]}}),
+    {A1, Acts} = ?AG:gather([{s, ?L}], 0, A0),
+    {A2, _, _, Other} = settle(0, 1000, element(1, pump(Acts, 0, A1, #{}, [], [])), #{}, [], []),
+    [{connect, Ref, #{server := ?TURN_T}}] = Other ++ [X || {connect, _, _} = X <- Acts],
+    {A3, _} = ?AG:stream_down(Ref, econnrefused, 1000, A2),
+    ?assertEqual(gathering, ?AG:gathering_state(A3)),
+    {_, _, _, Other2} = settle(1000, 3000, A3, #{}, [], []),
+    ?assertMatch([{connect, _, #{server := Next}}], [X || {connect, _, _} = X <- Other2]).
+
+%% Fallback addresses are IP addresses.
+fallback_addresses_test() ->
+    ?assertError({badarg, {server_address, {"next.example", 3478}}},
+                 ?AG:new(#{server_fallbacks => #{{{192, 0, 2, 1}, 3478} => [{"next.example", 3478}]}})).
+
+%% A TURN server that never answers over UDP: after the transaction
+%% timeout the allocation goes to the next address (RFC 5928 §3).
+turn_udp_fallback_test() ->
+    Dead = {{198, 51, 100, 8}, 3478},
+    Next = {{198, 51, 100, 9}, 3478},
+    A0 = ?AG:new(#{turn_servers => [#{address => Dead, username => <<"u">>, password => <<"p">>}],
+                   server_fallbacks => #{Dead => [Next]}}),
+    {A1, _} = ?AG:gather([{s, ?L}], 0, A0),
+    {_, Later} = tick(A1, 60000),
+    ToDead = [T || {T, {send, s, D, _}} <- Later, D =:= Dead],
+    ToNext = [T || {T, {send, s, D, _}} <- Later, D =:= Next],
+    ?assert(length(ToDead) > 1),
+    ?assert(ToNext =/= [] andalso hd(ToNext) > lists:max(ToDead)).

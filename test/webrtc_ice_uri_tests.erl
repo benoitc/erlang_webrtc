@@ -105,14 +105,16 @@ resolve(Urls, Records) ->
 
 %% An IP address needs no lookup.
 literal_test() ->
-    ?assertEqual({[{<<"stun:192.0.2.1">>, {stun, {{192, 0, 2, 1}, 3478}}}], []}, resolve([<<"stun:192.0.2.1">>], #{})).
+    ?assertEqual({[{<<"stun:192.0.2.1">>, {stun, {{192, 0, 2, 1}, 3478}}, []}], []}, resolve([<<"stun:192.0.2.1">>], #{})).
 
-%% A name with a port: A and AAAA, no SRV, one address per family.
+%% A name with a port: A and AAAA, no SRV; per family the first address
+%% is the server and the others its fallbacks (RFC 8489 §8.1).
 explicit_port_test() ->
     Dns = #{{inet, "s.example"} => [{192, 0, 2, 1}, {192, 0, 2, 2}], {inet6, "s.example"} => [{16#2001, 16#db8, 0, 0, 0, 0, 0, 1}],
             {srv, "_stun._udp.s.example"} => [{0, 0, 9999, "other.example"}]},
     {Found, []} = resolve([<<"stun:s.example:4000">>], Dns),
-    ?assertEqual([{stun, {{192, 0, 2, 1}, 4000}}, {stun, {{16#2001, 16#db8, 0, 0, 0, 0, 0, 1}, 4000}}], [E || {_, E} <- Found]).
+    ?assertEqual([{{stun, {{192, 0, 2, 1}, 4000}}, [{{192, 0, 2, 2}, 4000}]},
+                  {{stun, {{16#2001, 16#db8, 0, 0, 0, 0, 0, 1}, 4000}}, []}], [{E, F} || {_, E, F} <- Found]).
 
 %% Without a port, SRV first: targets in priority order, then weight,
 %% with their ports (RFC 2782); none, the default port.
@@ -120,17 +122,19 @@ srv_test() ->
     Dns = #{{srv, "_turn._tcp.t.example"} => [{20, 0, 4000, "b.example"}, {10, 5, 3000, "a.example"}],
             {inet, "a.example"} => [{192, 0, 2, 10}], {inet, "b.example"} => [{192, 0, 2, 20}],
             {inet, "t.example"} => [{192, 0, 2, 30}]},
-    {[{_, {turn, T}}], []} = resolve([<<"turn:t.example?transport=tcp">>], Dns),
+    {[{_, {turn, T}, Fallbacks}], []} = resolve([<<"turn:t.example?transport=tcp">>], Dns),
     ?assertMatch(#{address := {{192, 0, 2, 10}, 3000}, transport := tcp, username := <<"u">>, password := <<"p">>,
                    hostname := "t.example"}, T),
-    {[{_, {turn, U}}], []} = resolve([<<"turn:t.example">>], Dns),
+    %% The next SRV target is the fallback (RFC 5928 §3).
+    ?assertEqual([{{192, 0, 2, 20}, 4000}], Fallbacks),
+    {[{_, {turn, U}, []}], []} = resolve([<<"turn:t.example">>], Dns),
     ?assertMatch(#{address := {{192, 0, 2, 30}, 3478}, transport := udp}, U).
 
 %% The SRV name follows scheme and transport.
 srv_names_test_() ->
     Check = fun(Url, Srv) ->
         Dns = #{{srv, Srv} => [{0, 0, 7000, "x.example"}], {inet, "x.example"} => [{192, 0, 2, 1}]},
-        {[{_, {_, E}}], []} = resolve([Url], Dns),
+        {[{_, {_, E}, _}], []} = resolve([Url], Dns),
         ?assertMatch({{192, 0, 2, 1}, 7000}, case E of #{address := A} -> A; A -> A end)
     end,
     [

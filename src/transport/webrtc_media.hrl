@@ -114,6 +114,10 @@
     %% Our PAUSE and RESUME requests by remote SSRC (RFC 7728).
     pause_req = #{} :: #{non_neg_integer() => webrtc_rtp_pause:requester()},
     counters = #{} :: map(),
+    %% RFC 3611 §4.4 Receiver Reference Times received, by the SSRC that
+    %% sent them: the middle 32 bits and when they came, answered with a
+    %% DLRR block (§4.5) in the next regular report.
+    xr_rrtr = #{} :: #{non_neg_integer() => {0..16#FFFFFFFF, integer()}},
     %% Per stream, for the W3C statistics: counters and the last reports
     %% by {in, RemoteSsrc} or {out, OurSsrc} (webrtc_stats).
     streams = #{} :: #{{in | out, non_neg_integer()} => map()}

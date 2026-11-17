@@ -33,7 +33,13 @@ rtp_in(Bin, Now, M, Ecn) ->
                 {ok, #rtp{ssrc = Ssrc, seq = Seq} = Pkt} ->
                     M1b = M1#media{cc = webrtc_cc:ccfb_arrival(Ssrc, Seq, Ecn, Now, M1#media.cc)},
                     {M2, Acts} = route(Pkt, Now, twcc_arrival(Pkt, Now, M1b)),
-                    {keep_srtp(Ssrc, M2), Acts};
+                    %% Header and padding bytes of a stream we receive.
+                    M3 = case maps:is_key(Ssrc, M2#media.receivers) of
+                             true -> webrtc_media_out:scount(in, Ssrc, header_bytes_received,
+                                                             byte_size(Plain) - byte_size(Pkt#rtp.payload), M2);
+                             false -> M2
+                         end,
+                    {keep_srtp(Ssrc, M3), Acts};
                 {error, _} ->
                     {webrtc_media_out:count(dropped, M1), []}
             end;
@@ -238,7 +244,7 @@ deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
     M0 = webrtc_media_out:sset(in, Ssrc, #{last_packet_received => erlang:system_time(millisecond)},
              webrtc_media_out:scount(in, Ssrc, packets_received, 1,
                  webrtc_media_out:scount(in, Ssrc, bytes_received, byte_size(Pkt#rtp.payload), M))),
-    M1 = learn(Ssrc, Mid, Now, M0#media{receivers = (M0#media.receivers)#{Ssrc => R1}}),
+    M1 = audio_level(Mid, Pkt, learn(Ssrc, Mid, Now, M0#media{receivers = (M0#media.receivers)#{Ssrc => R1}})),
     {Out, M2a} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
     {M2, PauseEvents} = webrtc_media_pause:rtp(Ssrc, M2a),
     case Pkt of
@@ -259,6 +265,50 @@ deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
                     Rid -> {rtp, Mid, Rid, Pkt}
                 end,
             {webrtc_media_out:count(rtp_received, M2), PauseEvents ++ [{event, Event} | Out]}
+    end.
+
+%% The RFC 6464 level of an audio packet, when negotiated: W3C
+%% audioLevel (linear, 1.0 for 0 dBov), totalAudioEnergy (the level
+%% squared times the packet's duration) and totalSamplesDuration.
+audio_level(Mid, #rtp{ext = Ext, ssrc = Ssrc, pt = Pt, payload = P}, M) when is_list(Ext) ->
+    Sec = maps:get(Mid, M#media.recv, #{}),
+    case maps:get(recv_extensions, Sec, #{}) of
+        #{?URI_AUDIO_LEVEL := Id} ->
+            case {webrtc_rtp_ext:find(Id, Ext), duration(Pt, P, maps:get(recv_codecs, Sec, []))} of
+                {{ok, B}, {ok, D}} ->
+                    case webrtc_rtp_ext:decode_audio_level(B) of
+                        {ok, {_, Dbov}} ->
+                            L = math:pow(10, -Dbov / 20),
+                            S = maps:get({in, Ssrc}, M#media.streams, #{}),
+                            M#media{streams = (M#media.streams)#{{in, Ssrc} => S#{
+                                audio_level => L,
+                                total_audio_energy => maps:get(total_audio_energy, S, 0.0) + L * L * D,
+                                total_samples_duration => maps:get(total_samples_duration, S, 0.0) + D}}};
+                        _ ->
+                            M
+                    end;
+                _ ->
+                    M
+            end;
+        _ ->
+            M
+    end;
+audio_level(_Mid, _Pkt, M) ->
+    M.
+
+%% Seconds of audio in a payload: Opus from its TOC byte (RFC 6716
+%% §3.1), G.711 and G.722 from their size (8000 bytes a second).
+duration(Pt, P, Codecs) ->
+    case [string:lowercase(N) || #{pt := X, name := N} <- Codecs, X =:= Pt] of
+        [<<"opus">> | _] ->
+            case webrtc_rtp_opus:duration(P) of
+                {ok, Samples} -> {ok, Samples / 48000};
+                _ -> error
+            end;
+        [N | _] when N =:= <<"pcmu">>; N =:= <<"pcma">>; N =:= <<"g722">> ->
+            {ok, byte_size(P) / 8000};
+        _ ->
+            error
     end.
 
 %% The playout-delay extension, when negotiated and carried.
@@ -470,13 +520,42 @@ sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M0) ->
 rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
     Events = [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs],
     {lists:foldl(fun forget/2, M, Ssrcs), Events};
+rtcp_packet2(#rtcp_xr{ssrc = From, blocks = Blocks}, _Now, M) ->
+    {lists:foldl(fun(B, Acc) -> xr_block(From, B, Acc) end, M, Blocks), []};
 rtcp_packet2(#rtcp_pause{} = P, Now, M) ->
     webrtc_media_pause:rtcp(P, Now, M);
-rtcp_packet2(P, Now, M) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc); is_record(P, rtcp_ccfb) ->
+rtcp_packet2(P, Now, M0) when is_record(P, rtcp_remb); is_record(P, rtcp_twcc); is_record(P, rtcp_ccfb) ->
+    M = case P of #rtcp_ccfb{} -> webrtc_media_out:count(ccfb_received, M0); _ -> M0 end,
     {Events, Cc} = webrtc_cc:rtcp(P, Now, M#media.cc),
     {M#media{cc = Cc}, [{event, {rtcp, undefined, P}} | [{event, E} || E <- Events]]};
 rtcp_packet2(_P, _Now, M) ->
     {M, []}.
+
+%% RFC 3611 §4.4: a Receiver Reference Time to answer (at most 16
+%% sources kept). §4.5: the answer to ours, whose round trip is that of
+%% every stream we receive (W3C remote-outbound-rtp roundTripTime).
+xr_block(From, {rrtr, Ntp}, #media{xr_rrtr = Got} = M) when map_size(Got) < 16; is_map_key(From, Got) ->
+    M#media{xr_rrtr = Got#{From => {webrtc_rtp_stats:ntp_middle(Ntp), erlang:system_time(microsecond)}}};
+xr_block(_From, {dlrr, Subs}, M) ->
+    Ours = [M#media.rtcp_ssrc | [S || #snd{ssrc = S} <- maps:values(M#media.senders)]],
+    Arrival = webrtc_rtp_stats:ntp_from_us(erlang:system_time(microsecond)),
+    case [Us || {S, Lrr, D} <- Subs, lists:member(S, Ours), {ok, Us} <- [webrtc_rtp_stats:rtt(Lrr, D, Arrival)]] of
+        [Us | _] ->
+            Rtt = Us div 1000,
+            lists:foldl(
+                fun(Ssrc, Acc) ->
+                    webrtc_media_out:scount(in, Ssrc, remote_rtt_measurements, 1,
+                        webrtc_media_out:scount(in, Ssrc, remote_total_rtt, Rtt,
+                            webrtc_media_out:sset(in, Ssrc, #{remote_rtt => Rtt}, Acc)))
+                end,
+                M,
+                maps:keys(M#media.receivers)
+            );
+        [] ->
+            M
+    end;
+xr_block(_From, _Block, M) ->
+    M.
 
 %% Report blocks about our streams feed the circuit breakers and the
 %% loss-based estimate (RFC 8083, draft-ietf-rmcat-gcc §6).

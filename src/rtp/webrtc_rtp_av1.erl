@@ -15,7 +15,7 @@
 %% lists as §5 asks.
 -module(webrtc_rtp_av1).
 
--export([aggregation_header/1, is_keyframe/1, depacketize/1, packetize/3, frame_size/1, obus/1]).
+-export([aggregation_header/1, is_keyframe/1, depacketize/1, packetize/3, frame_size/1, payload_size/1, obus/1]).
 
 -export_type([aggregation_header/0]).
 
@@ -237,6 +237,28 @@ frame_size(Tu) ->
         _ ->
             error
     end.
+
+%% @doc The frame size of a sequence header among the whole OBU
+%% elements of one payload.
+-spec payload_size(binary()) -> {ok, {pos_integer(), pos_integer()}} | error.
+payload_size(<<Z:1, Y:1, W:2, _:4, Rest/binary>>) ->
+    try split(W, Rest) of
+        Elems ->
+            Whole = case Y of 1 -> lists:droplast(Elems); 0 -> Elems end,
+            Seqs = [E || E <- case Z of 1 -> tl_or_empty(Whole); 0 -> Whole end,
+                         <<_:1, ?OBU_SEQUENCE_HEADER:4, _:3, _/binary>> <- [E]],
+            case Seqs of
+                [S | _] -> {_, Payload} = obu(S), sequence_size(Payload);
+                [] -> error
+            end
+    catch
+        throw:_ -> error
+    end;
+payload_size(_) ->
+    error.
+
+tl_or_empty([]) -> [];
+tl_or_empty([_ | T]) -> T.
 
 sequence_size(Seq) ->
     try

@@ -4,7 +4,7 @@
 %% picture size. Internal module of `webrtc_frame_buffer'.
 -module(webrtc_frame_codec).
 
--export([codec/2, packet/2, track/4, assemble/4]).
+-export([codec/2, packet/2, payload_size/2, track/4, assemble/4]).
 
 -export_type([codec/0, info/0]).
 
@@ -90,6 +90,35 @@ h264_start(Nal) -> h264_nal_start(Nal).
 h264_nal_start(<<_:3, T:5, _/binary>>) when T =:= 6; T =:= 7; T =:= 9 -> probable;
 h264_nal_start(<<_:3, T:5, 1:1, _/bits>>) when T =:= 1; T =:= 5 -> probable;
 h264_nal_start(_) -> unknown.
+
+%% @doc The picture size one payload tells, when it starts a key frame
+%% (VP8, VP9) or carries an H.264 SPS or an AV1 sequence header.
+-spec payload_size(codec(), binary()) -> {ok, {pos_integer(), pos_integer()}} | error.
+payload_size(vp8, P) ->
+    case webrtc_rtp_vp8:parse(P) of
+        {ok, #{start := true, partition := 0}, Data} -> webrtc_rtp_vp8:frame_size(Data);
+        _ -> error
+    end;
+payload_size(vp9, P) ->
+    case webrtc_rtp_vp9:parse_payload(P) of
+        {ok, #{layer_sizes := [_ | _] = Sizes}, _} -> {ok, lists:last(Sizes)};
+        {ok, #{start := true, inter_predicted := false}, Data} -> webrtc_rtp_vp9:frame_size(Data);
+        _ -> error
+    end;
+payload_size(h264, P) ->
+    case webrtc_rtp_h264:depacketize(P) of
+        {ok, Nals} ->
+            case [N || N <- Nals, webrtc_rtp_h264:nal_type(N) =:= 7] of
+                [Sps | _] -> webrtc_rtp_h264:sps_size(Sps);
+                [] -> error
+            end;
+        _ ->
+            error
+    end;
+payload_size(av1, P) ->
+    webrtc_rtp_av1:payload_size(P);
+payload_size(_, _) ->
+    error.
 
 %% @doc Keep what packet `Seq' (extended) carries for later frames: the
 %% H.264 sequence and picture parameter sets of the highest sequence

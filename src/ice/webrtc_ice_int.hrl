@@ -27,6 +27,10 @@
     generated_by :: {pos_integer(), pos_integer()} | undefined,
     txid :: binary() | undefined,
     rtt :: non_neg_integer() | undefined,
+    %% Every round trip measured (W3C totalRoundTripTime) and the
+    %% consent requests sent (RFC 7675).
+    total_rtt = 0 :: non_neg_integer(),
+    consent_requests = 0 :: non_neg_integer(),
     requests_sent = 0 :: non_neg_integer(),
     responses_received = 0 :: non_neg_integer(),
     requests_received = 0 :: non_neg_integer(),

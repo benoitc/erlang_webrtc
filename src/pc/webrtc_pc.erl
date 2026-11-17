@@ -163,7 +163,8 @@ handle_call({get_stats, w3c}, _From, St) ->
         certificate => maps:get(der, St#st.cert),
         ufrag => Ufrag,
         media => Neg,
-        transports => Transports
+        transports => Transports,
+        servers => stats_servers(St#st.opts)
     }), St};
 handle_call(get_stats, _From, St) ->
     Transport =
@@ -971,6 +972,15 @@ notify(Event, #st{app = App}) ->
     ok.
 
 %% `ice_servers' URIs resolved and added to `stun_servers' and
+%% The STUN and TURN servers by address: the URI they came from and,
+%% for TURN, how they are reached (W3C candidate url, relayProtocol).
+stats_servers(Opts) ->
+    Urls = maps:get(server_urls, Opts, #{}),
+    Stun = maps:from_list([{A, #{url => maps:get(A, Urls, undefined)}} || A <- maps:get(stun_servers, Opts, [])]),
+    Turn = maps:from_list([{A, #{url => maps:get(A, Urls, undefined), protocol => maps:get(transport, T, udp)}}
+                           || #{address := A} = T <- maps:get(turn_servers, Opts, [])]),
+    maps:merge(Stun, Turn).
+
 %% `turn_servers', within the ICE agent's limit of eight servers.
 ice_servers(#{ice_servers := List} = Opts) ->
     {ok, Servers, Unsupported} = webrtc_ice_uri:servers(List),

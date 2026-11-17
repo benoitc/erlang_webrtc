@@ -387,7 +387,14 @@ stats(#media{} = M) ->
         counters => M#media.counters,
         congestion_control => webrtc_cc:stats(M#media.cc),
         senders => maps:map(
-            fun(_Mid, S) -> (webrtc_rtp_stats:tx_info(S#snd.tx))#{ssrc => S#snd.ssrc} end,
+            fun(Key, S) ->
+                (webrtc_rtp_stats:tx_info(S#snd.tx))#{
+                    ssrc => S#snd.ssrc,
+                    %% The RTX stream, when RTX is negotiated.
+                    rtx_ssrc => case map_size(S#snd.rtx) of 0 -> undefined; _ -> S#snd.rtx_ssrc end,
+                    encoding_index => encoding_index(Key, M)
+                }
+            end,
             M#media.senders
         ),
         receivers => maps:map(
@@ -402,6 +409,17 @@ stats(#media{} = M) ->
         ),
         streams => M#media.streams
     }.
+
+%% The place of a simulcast layer in the section's send encodings
+%% (W3C encodingIndex), 0 for a single stream.
+encoding_index({Mid, Rid}, M) ->
+    Rids = [R || #{rid := R} <- maps:get(send_rids, maps:get(Mid, M#media.recv, #{}), [])],
+    case lists:search(fun({_, R}) -> R =:= Rid end, lists:enumerate(0, Rids)) of
+        {value, {I, _}} -> I;
+        false -> undefined
+    end;
+encoding_index(_Mid, _M) ->
+    0.
 
 rand32() ->
     <<S:32>> = crypto:strong_rand_bytes(4),

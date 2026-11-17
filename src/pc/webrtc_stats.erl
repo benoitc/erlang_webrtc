@@ -8,10 +8,12 @@
 %% second, as the dictionaries define them. Types: codec, inbound-rtp,
 %% outbound-rtp, remote-inbound-rtp, remote-outbound-rtp,
 %% peer-connection, data-channel, transport, candidate-pair,
-%% local-candidate, remote-candidate and certificate. This library does
-%% not capture, encode, decode or play media, so media-source,
-%% media-playout and the frame, encoder and decoder members are left
-%% out (docs/compliance/stats.md lists each member).
+%% local-candidate, remote-candidate and certificate. Frame members of
+%% received streams come from the frame buffer (`frames' on the
+%% transceiver), those of sent streams from the packets sent. This
+%% library does not capture, encode, decode or play media, so
+%% media-source, media-playout and the encoder and decoder members are
+%% left out (docs/compliance/stats.md lists each member).
 -module(webrtc_stats).
 
 -include("webrtc_ice.hrl").
@@ -50,11 +52,15 @@ transport_objects(Key, T, In, Kinds, Media, Local) ->
             Der -> [certificate(<<"CR", Tid/binary>>, Der)]
         end,
     Selected = [P || #{selected := true} = P <- Pairs],
-    Cc = maps:get(congestion_control, maps:get(media, T, #{}), #{}),
+    MediaStats = maps:get(media, T, #{}),
+    Cc = maps:get(congestion_control, MediaStats, #{}),
+    Counters = maps:get(counters, MediaStats, #{}),
     PairObjs = [pair(Tid, P, Io, Cc) || P <- Pairs],
+    Servers = maps:get(servers, In, #{}),
+    Ufrags = #{local => maps:get(ufrag, In, undefined), remote => maps:get(remote_ufrag, Ice, undefined)},
     Cands = maps:values(maps:from_list(
-        [{cand_id(local, C), candidate(local, Tid, C)} || #{local := C} <- Pairs, is_record(C, ice_cand)] ++
-        [{cand_id(remote, C), candidate(remote, Tid, C)} || #{remote := C} <- Pairs, is_record(C, ice_cand)])),
+        [{cand_id(local, C), candidate(local, Tid, C, Ufrags, Servers)} || #{local := C} <- Pairs, is_record(C, ice_cand)] ++
+        [{cand_id(remote, C), candidate(remote, Tid, C, Ufrags, Servers)} || #{remote := C} <- Pairs, is_record(C, ice_cand)])),
     Transport = compact(#{
         id => Tid,
         type => <<"transport">>,
@@ -67,6 +73,9 @@ transport_objects(Key, T, In, Kinds, Media, Local) ->
         dtlsState => dtls_state(Dtls),
         iceState => ice_state(maps:get(state, Ice, undefined)),
         selectedCandidatePairId => case Selected of [S | _] -> pair_id(Tid, S); [] -> undefined end,
+        selectedCandidatePairChanges => maps:get(selected_changes, maps:get(counters, Ice, #{}), 0),
+        ccfbMessagesSent => maps:get(ccfb_sent, Counters, 0),
+        ccfbMessagesReceived => maps:get(ccfb_received, Counters, 0),
         localCertificateId => maps:get(id, Local),
         remoteCertificateId => case Remote of [#{id := Rid}] -> Rid; [] -> undefined end,
         tlsVersion => tls_version(Dtls),
@@ -84,7 +93,7 @@ pair(Tid, #{local := L, remote := R} = P, Io, Cc) ->
     %% counters are its own.
     Data =
         case Selected of
-            true -> maps:with([packets_sent, packets_received, bytes_sent, bytes_received], Io);
+            true -> maps:with([packets_sent, packets_received, bytes_sent, bytes_received, last_sent, last_received], Io);
             false -> #{}
         end,
     compact(#{
@@ -100,6 +109,12 @@ pair(Tid, #{local := L, remote := R} = P, Io, Cc) ->
         bytesSent => maps:get(bytes_sent, Data, undefined),
         bytesReceived => maps:get(bytes_received, Data, undefined),
         currentRoundTripTime => seconds(Rtt),
+        totalRoundTripTime => maps:get(total_rtt, P, 0) / 1000,
+        consentRequestsSent => maps:get(consent_requests_sent, P, 0),
+        lastPacketSentTimestamp => maps:get(last_sent, Data, undefined),
+        lastPacketReceivedTimestamp => maps:get(last_received, Data, undefined),
+        packetsDiscardedOnSend => case Selected of true -> maps:get(packets_discarded_on_send, Io, 0); false -> undefined end,
+        bytesDiscardedOnSend => case Selected of true -> maps:get(bytes_discarded_on_send, Io, 0); false -> undefined end,
         availableOutgoingBitrate => case Selected of true -> maps:get(target_bitrate, Cc, undefined); false -> undefined end,
         requestsSent => maps:get(requests_sent, P, 0),
         requestsReceived => maps:get(requests_received, P, 0),
@@ -117,8 +132,13 @@ cand_id(Side, #ice_cand{address = A, port = P, transport = Tr, type = Ty}) ->
 cand_id(Side, _) ->
     case Side of local -> <<"IL">>; remote -> <<"IR">> end.
 
-candidate(Side, Tid, #ice_cand{} = C) ->
+candidate(Side, Tid, #ice_cand{} = C, Ufrags, Servers) ->
+    Server = case Side of local -> maps:get(C#ice_cand.server, Servers, #{}); remote -> #{} end,
     compact(#{
+        usernameFragment => maps:get(Side, Ufrags),
+        %% The STUN or TURN URI of a server reflexive or relay candidate.
+        url => case C#ice_cand.type of T when T =:= srflx; T =:= relay -> maps:get(url, Server, undefined); _ -> undefined end,
+        relayProtocol => case C#ice_cand.type of relay -> enum(maps:get(protocol, Server, undefined)); _ -> undefined end,
         id => cand_id(Side, C),
         type => case Side of local -> <<"local-candidate">>; remote -> <<"remote-candidate">> end,
         transportId => Tid,
@@ -197,12 +217,23 @@ outbound(Tid, Key, #{ssrc := Ssrc} = Tx, Streams, Kinds, Media) ->
     Base = compact(#{
         id => Oid, type => <<"outbound-rtp">>, ssrc => Ssrc, kind => kind(Kind), transportId => Tid,
         codecId => CodecId,
-        packetsSent => maps:get(packets, Tx, 0),
-        bytesSent => maps:get(octets, Tx, 0),
+        %% Retransmissions included, on the RTX stream or not (the RTCP
+        %% sender report counts this SSRC's packets only).
+        packetsSent => maps:get(packets, Tx, 0) + maps:get(retransmitted_packets_sent, S, 0),
+        bytesSent => maps:get(octets, Tx, 0) + maps:get(retransmitted_bytes_sent, S, 0),
         mid => Mid,
         rid => Rid,
         retransmittedPacketsSent => maps:get(retransmitted_packets_sent, S, 0),
         retransmittedBytesSent => maps:get(retransmitted_bytes_sent, S, 0),
+        headerBytesSent => maps:get(header_bytes_sent, S, 0),
+        totalPacketSendDelay => maps:get(total_packet_send_delay_ms, S, 0) / 1000,
+        rtxSsrc => maps:get(rtx_ssrc, Tx, undefined),
+        encodingIndex => maps:get(encoding_index, Tx, undefined),
+        framesSent => video(Kind, maps:get(frames_sent, S, 0)),
+        hugeFramesSent => video(Kind, maps:get(huge_frames_sent, S, 0)),
+        frameWidth => video(Kind, maps:get(frame_width, S, undefined)),
+        frameHeight => video(Kind, maps:get(frame_height, S, undefined)),
+        framesPerSecond => video(Kind, length(maps:get(frame_times, S, []))),
         nackCount => maps:get(nack_count, S, 0),
         firCount => maps:get(fir_count, S, 0),
         pliCount => maps:get(pli_count, S, 0),
@@ -248,7 +279,11 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
                     bytesSent => maps:get(remote_bytes_sent, S, 0),
                     localId => Iid,
                     remoteTimestamp => maps:get(remote_timestamp, S, undefined),
-                    reportsSent => N
+                    reportsSent => N,
+                    %% From DLRR blocks answering our RRTR (RFC 3611).
+                    roundTripTime => seconds(maps:get(remote_rtt, S, undefined)),
+                    totalRoundTripTime => case S of #{remote_total_rtt := T} -> T / 1000; _ -> undefined end,
+                    roundTripTimeMeasurements => maps:get(remote_rtt_measurements, S, undefined)
                 })];
             _ ->
                 []
@@ -269,11 +304,49 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
         pliCount => maps:get(pli_count, S, 0),
         retransmittedPacketsReceived => maps:get(retransmitted_packets_received, S, 0),
         retransmittedBytesReceived => maps:get(retransmitted_bytes_received, S, 0),
+        headerBytesReceived => maps:get(header_bytes_received, S, 0),
         rtxSsrc => maps:get(rtx_ssrc, S, undefined),
         remoteId => case Remote of [#{id := Rid}] -> Rid; [] -> undefined end,
         codec => Codec
     }),
-    [Base | Remote].
+    [maps:merge(Base, compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined)))))
+     | Remote].
+
+%% From the RFC 6464 level of each packet, when negotiated.
+audio_members(audio, #{audio_level := L} = S) ->
+    #{audioLevel => L, totalAudioEnergy => maps:get(total_audio_energy, S, 0.0),
+      totalSamplesDuration => maps:get(total_samples_duration, S, 0.0)};
+audio_members(_, _) ->
+    #{}.
+
+%% From the frame buffer (`frames' on the transceiver).
+frame_members(_Kind, undefined) ->
+    #{};
+frame_members(Kind, F) ->
+    Buffer = #{
+        jitterBufferDelay => maps:get(jitter_buffer_delay, F, 0.0),
+        jitterBufferTargetDelay => maps:get(jitter_buffer_target_delay, F, 0.0),
+        jitterBufferMinimumDelay => maps:get(jitter_buffer_minimum_delay, F, 0.0),
+        jitterBufferEmittedCount => maps:get(jitter_buffer_emitted_count, F, 0),
+        packetsDiscarded => maps:get(packets_discarded, F, 0)
+    },
+    case Kind of
+        video ->
+            Buffer#{
+                framesReceived => maps:get(frames_received, F, 0),
+                framesDropped => maps:get(frames_dropped, F, 0),
+                framesAssembledFromMultiplePackets => maps:get(frames_assembled_from_multiple_packets, F, 0),
+                totalAssemblyTime => maps:get(total_assembly_time, F, 0.0),
+                frameWidth => maps:get(frame_width, F, undefined),
+                frameHeight => maps:get(frame_height, F, undefined),
+                framesPerSecond => maps:get(frames_per_second, F, undefined)
+            };
+        _ ->
+            Buffer
+    end.
+
+video(video, V) -> V;
+video(_, _) -> undefined.
 
 %% The section's first codec: the one sent by preference, and the one a
 %% receiver most likely gets (RFC 9429 §5.3.1).

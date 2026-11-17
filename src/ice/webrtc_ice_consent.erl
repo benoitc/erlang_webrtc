@@ -113,7 +113,8 @@ request(W, C, P, RC, {LU, RU, RP}, Now, S) ->
         consent_next = Now + Interval,
         consent_txids = [{Msg#stun.txid, Now} | Keep],
         last_sent = Now,
-        requests_sent = P#pair.requests_sent + 1
+        requests_sent = P#pair.requests_sent + 1,
+        consent_requests = P#pair.consent_requests + 1
     },
     S1 = put(W, C, P1, S#ice{rand = R}),
     Via = webrtc_ice_tcp:pair_via(P1, RC, S1),
@@ -157,7 +158,8 @@ response({W, C}, Via, From, #stun{txid = TxId} = Msg, Bin, Now, S) ->
                     P2 = P1#pair{
                         consent_ok = Now,
                         consent_expires = Now + S#ice.consent_expiry,
-                        rtt = Now - SentAt
+                        rtt = Now - SentAt,
+                        total_rtt = P1#pair.total_rtt + (Now - SentAt)
                     },
                     {put(W, C, P2, S), []};
                 error ->

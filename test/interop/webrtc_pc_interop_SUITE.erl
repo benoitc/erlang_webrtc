@@ -369,12 +369,13 @@ stats_agree1(Config) ->
     #{<<"packetsReceived">> := Recv, <<"bytesReceived">> := RecvBytes} = maps:get(Ssrc, TheirIn),
     ?assertEqual({Sent, Bytes}, {Recv, RecvBytes}),
     %% The browser's stream at ours: it keeps sending and ours is read
-    %% after theirs, so within a second of audio and with the same bytes
-    %% per packet.
+    %% after theirs, so within a second of audio, and the extra bytes are
+    %% those of at most that many Opus packets (1275 bytes each at most,
+    %% RFC 6716 §3.2.1).
     [{_, #{<<"packetsSent">> := Echoed, <<"bytesSent">> := EchoBytes, <<"ssrc">> := ESsrc}} | _] = maps:to_list(TheirOut),
     #{packetsReceived := Got, bytesReceived := GotBytes} = maps:get(ESsrc, OurIn),
     ?assert(Got >= Echoed andalso Got - Echoed =< 50),
-    ?assertEqual(round(EchoBytes / Echoed), round(GotBytes / Got)),
+    ?assert(GotBytes >= EchoBytes andalso GotBytes - EchoBytes =< (Got - Echoed) * 1275),
     put(peer, P4).
 
 %% Without BUNDLE (RFC 9143) audio, video and data each get their own

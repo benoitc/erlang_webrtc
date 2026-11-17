@@ -24,6 +24,7 @@ go test -shim-path ../../../../bogo_shim -shim-config ../../../../config.json \
 
 - `bogo_shim` starts `webrtc_bogo_shim` with the runner's flags. The shim connects back to the runner over TCP and runs one DTLS connection over the packet adaptor of `ssl/test/packeted_bio.cc`, on the clock the runner advances.
 - A flag the shim does not implement makes it exit 89, which the runner reports as unimplemented, never as a pass. `BOGO_SHIM_LOG=/tmp/unimpl.txt` lists them.
+- Resumption is on, as in BoringSSL, so the runner sends the NewSessionTickets its post-handshake tests use.
 - WebRTC pins the peer certificate by fingerprint. The runner makes its certificates at run time, so the shim pins the one the handshake brought.
 - A WebRTC DTLS server always authenticates the client (RFC 8827), so server tests without `-require-any-client-certificate` are unimplemented.
 
@@ -31,8 +32,9 @@ go test -shim-path ../../../../bogo_shim -shim-config ../../../../config.json \
 
 `config.json` lists the tests that are not run, each with its reason:
 
-- Behaviour we chose on purpose, with the requirement behind it: DTLS 1.0, static RSA and CBC suites are not offered; records that cannot be valid are discarded rather than ending the connection; KeyUpdates are acknowledged at once.
-- Tests that assume BoringSSL internals, such as the runner panicking when the server sends no NewSessionTicket.
-- Open items, marked "Open:": failures understood but not fixed yet, to address in later changes.
+- Behaviour we chose on purpose, with the requirement behind it: DTLS 1.0, static RSA and CBC suites are not offered; records that cannot be valid are discarded rather than ending the connection.
+- Tests that check a BoringSSL choice the RFC does not make, with the RFC text we follow instead.
+
+A test that fails for a reason not understood yet is never disabled: fix the engine or the shim.
 
 The BoringSSL revision is pinned in `BORINGSSL_REV`; the runner's interface is not stable, so update it on purpose and rerun.

@@ -319,7 +319,9 @@ no_ack_no_connection_test() ->
     {C, S} = pair(#{rtx_limit => 3}, #{}),
     F = fun(s, N, _) when N >= AckN -> []; (_, _, D) -> [D] end,
     #{ev := #{c := CE, s := SE}} = run(C, S, F),
-    ?assertEqual([{failed, handshake_timeout}], CE),
+    %% Connected once its Finished is sent, the client still resends it
+    %% until the ACK (RFC 9147 §7.1) and gives up without one.
+    ?assertMatch([{connected, _}, {failed, handshake_timeout}], CE),
     ?assertMatch([_], connected(SE)).
 
 %% A partial flight is acknowledged after a quarter of the timeout and
@@ -732,8 +734,9 @@ server_rejects_client_fingerprint_test() ->
     {C, S} = pair(#{}, #{remote_fingerprints => [fp(webrtc_dtls_cert:generate())]}),
     #{ev := #{c := CE, s := SE}} = run(C, S),
     ?assertEqual([{failed, fingerprint_mismatch}], SE),
-    ?assertEqual([], connected(CE)),
-    ?assertEqual([{failed, {alert, 42}}], CE).
+    %% Connected once its Finished is sent (RFC 8446 §4.4.4), the client
+    %% then gets the server's alert.
+    ?assertMatch([{connected, _}, {failed, {alert, 42}}], CE).
 
 deferred_fingerprint_client_test() ->
     Cc = webrtc_dtls_cert:generate(),
@@ -840,7 +843,7 @@ mutated_handshake() ->
         end,
         Cases
     ),
-    ?assertEqual(wait_ack, webrtc_dtls:status(C3)).
+    ?assertEqual(wait_ack, C3#dtls.state).
 
 feed(Ds, St) ->
     lists:foldl(fun(D, {S, A}) -> {S1, A1} = webrtc_dtls:handle_packet(D, 0, S), {S1, A ++ A1} end, {St, []}, Ds).
@@ -1151,13 +1154,31 @@ cid_pair() ->
 %% Datagrams from `From' handled by `To' until neither has more to say.
 pump(From, To, Ds, Now) -> pump(From, To, Ds, Now, 20).
 
-pump(From, To, [], _Now, _N) -> {From, To};
-pump(From, To, _Ds, _Now, 0) -> {From, To};
+pump(From, To, _Ds, _Now, 0) ->
+    {From, To};
+pump(From, To, [], _Now, N) ->
+    %% Post-handshake ACKs go on their timer (RFC 9147 §7.1).
+    case {From#dtls.ack_at, To#dtls.ack_at} of
+        {infinity, infinity} ->
+            {From, To};
+        {infinity, At} ->
+            {To1, Out} = ack_timer(To),
+            {To2, From2} = pump(To1, From, Out, At, N - 1),
+            {From2, To2};
+        {At, _} ->
+            {From1, Out} = ack_timer(From),
+            pump(From1, To, Out, At, N - 1)
+    end;
 pump(From, To, Ds, Now, N) ->
     {To1, Acts} = lists:foldl(fun(D, {T, A}) -> {T1, A1} = webrtc_dtls:handle_packet(D, Now, T), {T1, A ++ A1} end,
                               {To, []}, Ds),
     {To2, From2} = pump(To1, From, [D || {send, D} <- Acts], Now, N - 1),
     {From2, To2}.
+
+%% Fire the ACK timer: the ACK and anything else due then.
+ack_timer(#dtls{ack_at = At} = St) when At =/= infinity ->
+    {St1, Acts} = webrtc_dtls:handle_timeout(At, St),
+    {St1, [D || {send, D} <- Acts]}.
 
 %% A RequestConnectionId is answered with spare CIDs as long as ours;
 %% the peer keeps them, rotating moves its records to one, and records
@@ -1224,11 +1245,12 @@ cid_message_waits_for_ack_test() ->
 ack_in_older_epoch_test() ->
     {C, S, _} = established(#{}, #{}),
     {ok, C1, [{send, Ku}]} = webrtc_dtls:key_update(100, C),
-    %% S acknowledges and updates too; its ACK is held back.
+    %% S acknowledges and updates too (Figure 14); its ACK is held back.
     {S1, SActs} = webrtc_dtls:handle_packet(Ku, 100, S),
     [Ack, SKu] = [D || {send, D} <- SActs],
     ?assertEqual(3, epoch_bits(Ack)),
-    {C2, [{send, CAck}]} = webrtc_dtls:handle_packet(SKu, 110, C1),
+    {C2a, []} = webrtc_dtls:handle_packet(SKu, 110, C1),
+    {C2, [CAck]} = ack_timer(C2a),
     {S2, []} = webrtc_dtls:handle_packet(CAck, 120, S1),
     %% S now writes epoch 4 and sends a ticket; C still writes epoch 3
     %% and acknowledges it from there.
@@ -1236,8 +1258,10 @@ ack_in_older_epoch_test() ->
                                                           ticket => <<1, 2, 3>>, max_early_data => 0}),
     {S3, [SNst]} = post_handshake(new_session_ticket, Nst, 130, S2),
     ?assertEqual(0, epoch_bits(SNst)),
-    {C3, Now} = webrtc_dtls:handle_packet(SNst, 140, C2),
-    [NstAck] = [D || {send, D} <- Now, epoch_bits(D) =:= 3],
+    {C3a, []} = webrtc_dtls:handle_packet(SNst, 140, C2),
+    %% The ACK goes first, before C's KeyUpdate if it is due again.
+    {C3, [NstAck | _]} = ack_timer(C3a),
+    ?assertEqual(3, epoch_bits(NstAck)),
     {S3b, _} = webrtc_dtls:handle_packet(NstAck, 145, S3),
     ?assertEqual(connected, S3b#dtls.state),
     %% S's first ACK arrives: C moves to epoch 4.
@@ -1385,11 +1409,12 @@ max_records_test() ->
 rtt_timer_test() ->
     {C, S, _} = established(#{}, #{}),
     {ok, C1, [{send, Ku}]} = webrtc_dtls:key_update(1000, C),
+    %% Asked to update, the server acknowledges at once (Figure 14).
     {_, SActs} = webrtc_dtls:handle_packet(Ku, 1060, S),
     {C2, _} = feed([D || {send, D} <- SActs], 1100, C1),
     ?assertEqual(150, C2#dtls.rtx_base),
     {ok, C3, _} = webrtc_dtls:key_update(2000, C2),
-    ?assertEqual(2150, webrtc_dtls:next_timeout(C3)),
+    ?assertEqual(2150, C3#dtls.rtx_at),
     %% Lost: the doubled timer stays for the next flight.
     {C4, _} = webrtc_dtls:handle_timeout(2150, C3),
     ?assertEqual(300, C4#dtls.rtx_base).
@@ -1484,3 +1509,135 @@ certificate_authorities_syntax_test() ->
     ?assertMatch({ok, _}, webrtc_dtls13_msg:decode(certificate_request, Req(<<3:16, 1:16, "a">>))),
     ?assertEqual({error, decode_error}, webrtc_dtls13_msg:decode(certificate_request, Req(<<0:16>>))),
     ?assertEqual({error, decode_error}, webrtc_dtls13_msg:decode(certificate_request, Req(<<3:16, 1:16, "a", 0>>))).
+
+%%====================================================================
+%% Retransmission and ACK rules found by BoringSSL's runner
+%%====================================================================
+
+sends(Acts) -> [D || {send, D} <- Acts].
+
+%% The client after its ClientHello, the server's first flight, and the
+%% server waiting for the client's Finished.
+first_flights() ->
+    {Cl, Sv} = pair(#{}, #{use_cookie => false, address_validated => true}),
+    {Cl1, A0} = webrtc_dtls:start(0, Cl),
+    {Sv1, Fl2} = feed(sends(A0), 0, Sv),
+    {Cl1, Sv1, Fl2}.
+
+nst() ->
+    webrtc_dtls13_msg:encode(new_session_ticket, #{lifetime => 60, age_add => 0, nonce => <<0>>,
+                                                   ticket => <<1, 2, 3>>, max_early_data => 0}).
+
+%% Copies of the server's flight in the same burst do not make the
+%% client resend its own (RFC 6347 §4.2.4, RFC 9147 §5.8.1); a copy from
+%% the server's timer, later, still does.
+copies_in_burst_test() ->
+    {Cl1, Sv1, Fl2} = first_flights(),
+    %% The server's retransmission: the same messages in new records.
+    T = webrtc_dtls:next_timeout(Sv1),
+    {_, Rtx} = webrtc_dtls:handle_timeout(T, Sv1),
+    {Cl2, Once} = feed(Fl2, 0, Cl1),
+    {_, Twice} = feed(Fl2 ++ sends(Rtx), 10, Cl1),
+    ?assertEqual(length(Once), length(Twice)),
+    {_, Later} = feed(sends(Rtx), T, Cl2),
+    ?assertNotEqual([], Later).
+
+%% A copy of the HelloRetryRequest comes from a stateless server: it
+%% says nothing of our ClientHello being lost (RFC 9147 §5.1, §7.1).
+hrr_copy_test() ->
+    {Cl, Sv} = pair(#{}, #{}),
+    {Cl1, A0} = webrtc_dtls:start(0, Cl),
+    {_, Hrr} = feed(sends(A0), 0, Sv),
+    {Cl2, [_ | _]} = feed(Hrr, 0, Cl1),
+    %% A copy in a new record, not a replay.
+    Copy = [<<T, V:16, E:16, (Seq + 1):48, Rest/binary>> || <<T, V:16, E:16, Seq:48, Rest/binary>> <- Hrr],
+    ?assertEqual({Cl2#dtls.state, []}, {wait_server_hello, element(2, feed(Copy, 1000, Cl2))}).
+
+%% A handshake message after the server's Finished spans the key change
+%% (RFC 8446 §5.1): refused with unexpected_message, in epoch 2 when it
+%% arrived first so that the server can read the alert.
+extra_finished_test_() ->
+    {Cl1, Sv1, Fl2} = first_flights(),
+    {_, Sv2} = webrtc_dtls:queue_handshake(finished, <<0:256>>, false, Sv1),
+    Sv3 = webrtc_dtls13:flush(0, Sv2),
+    Extra = sends(lists:reverse(Sv3#dtls.out)),
+    {BeforeSt, Before} = feed(Extra ++ Fl2, Cl1),
+    {AfterSt, After} = feed(Fl2 ++ Extra, Cl1),
+    [
+        ?_assertEqual(failed, webrtc_dtls:status(BeforeSt)),
+        ?_assert(lists:member({event, {failed, message_after_finished}}, Before)),
+        ?_assertEqual([2], [epoch_bits(D) || {send, D} <- Before]),
+        ?_assertEqual(failed, webrtc_dtls:status(AfterSt)),
+        ?_assert(lists:member({event, {failed, message_after_key_change}}, After))
+    ].
+
+%% Likewise after a KeyUpdate: the next message must use the new epoch.
+message_after_key_update_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {ok, S1, [{send, Ku}]} = webrtc_dtls:key_update(100, S),
+    {_, [Extra]} = post_handshake(new_session_ticket, nst(), 100, S1),
+    {C1, A} = feed([Ku, Extra], C),
+    ?assertEqual(failed, webrtc_dtls:status(C1)),
+    ?assert(lists:member({event, {failed, message_after_key_change}}, A)).
+
+%% A KeyUpdate request while ours waits for its ACK is answered by it:
+%% no second KeyUpdate before that ACK (RFC 9147 §8, start_key_update).
+key_update_request_answered_once_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {ok, C1, [{send, _}]} = webrtc_dtls:key_update(100, C),
+    {ok, _, [{send, SKu}]} = webrtc_dtls:key_update(100, S),
+    {C2, _} = webrtc_dtls:handle_packet(SKu, 110, C1),
+    ?assertEqual(C1#dtls.last_flight, C2#dtls.last_flight).
+
+%% After a KeyUpdate the previous epoch is read for one MSL after the
+%% first record of the new one, then discarded (RFC 9147 §4.2.1, §8).
+previous_epoch_expires_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {ok, S0, [{send, Old1}]} = webrtc_dtls:send(<<"old1">>, S),
+    {ok, S0b, [{send, Old2}]} = webrtc_dtls:send(<<"old2">>, S0),
+    {ok, S1, [{send, Ku}]} = webrtc_dtls:key_update(100, S0b),
+    {S2, C1} = pump(S1, C, [Ku], 100),
+    ?assertEqual(4, S2#dtls.write_epoch),
+    {_, C2, _} = data(S2, C1, <<"new">>, 1000),
+    {C3, A1} = webrtc_dtls:handle_packet(Old1, 1000 + 60000, C2),
+    ?assertEqual([{event, {data, <<"old1">>}}], A1),
+    ?assertEqual({C3#dtls.state, []}, {connected, element(2, webrtc_dtls:handle_packet(Old2, 1000 + 120000, C3))}).
+
+%% A post-handshake message is acknowledged on the ACK timer, once: the
+%% timer is not armed again until a new record arrives (§7.1).
+post_handshake_ack_timer_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {S1, [D]} = post_handshake(new_session_ticket, nst(), 100, S),
+    {C1, []} = webrtc_dtls:handle_packet(D, 100, C),
+    ?assertNotEqual(infinity, C1#dtls.ack_at),
+    {C2, [_Ack]} = ack_timer(C1),
+    {ok, _, [{send, Data}]} = webrtc_dtls:send(<<"x">>, S1),
+    {C3, [{event, {data, <<"x">>}}]} = webrtc_dtls:handle_packet(Data, 200, C2),
+    ?assertEqual(infinity, C3#dtls.ack_at).
+
+%% The record numbers kept for ACKs are the latest that fit in one ACK
+%% record (§7.1), however many records arrive.
+ack_set_bounded_test() ->
+    {C, S, _} = established(#{}, #{}),
+    {_, C1} = lists:foldl(
+        fun(I, {Sv, Cl}) ->
+            {Sv1, [D]} = post_handshake(new_session_ticket, nst(), 100 + I, Sv),
+            {Cl1, _} = webrtc_dtls:handle_packet(D, 100 + I, Cl),
+            {Sv1, Cl1}
+        end,
+        {S, C},
+        lists:seq(1, 200)
+    ),
+    ?assertEqual((C1#dtls.mtu - webrtc_dtls13_record:overhead(C1#dtls.peer_cid) - 2) div 16, length(C1#dtls.rcv_recs)).
+
+%% Once its Finished is sent the client is connected and data flows both
+%% ways, while it still waits for the server's ACK (RFC 8446 §4.4.4,
+%% RFC 9147 §5.8.1).
+data_while_waiting_for_ack_test() ->
+    {Cl1, Sv1, Fl2} = first_flights(),
+    {Cl2, A} = feed(Fl2, Cl1),
+    ?assertMatch([_], connected([E || {event, E} <- A])),
+    ?assertEqual({connected, wait_ack}, {webrtc_dtls:status(Cl2), Cl2#dtls.state}),
+    {ok, _, [{send, D}]} = webrtc_dtls:send(<<"early">>, Cl2),
+    {Sv2, _} = feed(sends(A), Sv1),
+    ?assertEqual({ok, [{event, {data, <<"early">>}}]}, {ok, element(2, webrtc_dtls:handle_packet(D, 0, Sv2))}).

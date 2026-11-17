@@ -226,7 +226,9 @@ next_timeout(#dtls{rtx_at = At, ack_at = Ack}) ->
 
 %% @doc Send application data (one record). Only valid once connected.
 -spec send(iodata(), state()) -> {ok, state(), [action()]} | {error, term()}.
-send(Data, #dtls{state = connected, verified = true, version = dtls13} = St) ->
+send(Data, #dtls{state = S, verified = true, announced = true, version = dtls13} = St) when
+    S =:= connected; S =:= wait_ack
+->
     Bin = iolist_to_binary(Data),
     case byte_size(Bin) =< 16384 of
         true -> webrtc_dtls13:send(Bin, St);
@@ -282,7 +284,7 @@ set_remote_fingerprints(FPs, St) ->
 %% `no_context' (RFC 5764 §4.2).
 -spec export_keying_material(binary(), binary() | no_context, non_neg_integer(), state()) ->
     {ok, binary()} | {error, not_connected}.
-export_keying_material(Label, Context, Len, #dtls{handshake_done = true, verified = true, version = dtls13} = St) ->
+export_keying_material(Label, Context, Len, #dtls{announced = true, verified = true, version = dtls13} = St) ->
     #{hash := H} = St#dtls.suite13,
     {ok, webrtc_dtls13_keys:exporter(webrtc_dtls13_keys:prefix(), H, St#dtls.exporter, Label, Context, Len)};
 export_keying_material(Label, Context, Len, #dtls{handshake_done = true, verified = true} = St) ->
@@ -301,6 +303,9 @@ srtp_profile(#dtls{srtp_profile = P}) -> P.
 peer_certificate(#dtls{peer_cert = C}) -> C.
 
 -spec status(state()) -> atom().
+%% A DTLS 1.3 client is connected once its Finished is out, while it
+%% still waits for the server's ACK.
+status(#dtls{state = wait_ack, announced = true}) -> connected;
 status(#dtls{state = S}) -> S.
 
 -spec role(state()) -> client | server.

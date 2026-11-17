@@ -26,6 +26,9 @@
 -define(SMALL_RECORD, 512).
 -define(MAX_EARLY, 32).
 -define(MAX_HELD, 64).
+%% The default TCP MSL (RFC 9293 §3.4.2): how long the previous read
+%% epoch stays usable after a KeyUpdate (RFC 9147 §4.2.1).
+-define(MSL, 120000).
 %% RFC 9147 §4.5.3: records failing authentication per key.
 -define(INTEGRITY_LIMIT, (1 bsl 36)).
 %% RFC 8446 §5.5: 2^24.5 full-size records for AES-GCM.
@@ -108,6 +111,14 @@ record(#{format := unified, epoch_bits := Bits} = R, Now, St) ->
             St
     end.
 
+first_of_epoch(E, Now, #dtls{prev_epoch_until = undefined, read_keys = RK} = St) when E >= 4 ->
+    case E =:= lists:max(maps:keys(RK)) andalso maps:is_key(E - 1, RK) of
+        true -> St#dtls{prev_epoch_until = Now + ?MSL};
+        false -> St
+    end;
+first_of_epoch(_E, _Now, St) ->
+    St.
+
 %% Only ClientHello, ServerHello and HelloRetryRequest are sent in
 %% plaintext. Once handshake keys exist, plaintext handshake records
 %% only signal a peer retransmission and plaintext alerts are ignored.
@@ -136,7 +147,17 @@ plain(alert, <<Level, Desc>>, _Seq, _Now, #dtls{read_keys = RK} = St) when map_s
 plain(_Type, _F, _Seq, _Now, St) ->
     St.
 
-decrypt(E, R, Now, #dtls{read_keys = RK, replay = Rp} = St) ->
+%% After a KeyUpdate the previous epoch is dropped one MSL after the
+%% first record of the new one (§4.2.1, §8).
+decrypt(E, R, Now, #dtls{read_keys = RK, prev_epoch_until = Until} = St) when is_integer(Until), Now >= Until ->
+    case E =:= lists:max(maps:keys(RK)) - 1 of
+        true -> St#dtls{read_keys = maps:remove(E, RK), prev_epoch_until = undefined};
+        false -> open(E, R, Now, St)
+    end;
+decrypt(E, R, Now, St) ->
+    open(E, R, Now, St).
+
+open(E, R, Now, #dtls{read_keys = RK, replay = Rp} = St) ->
     Keys = maps:get(E, RK),
     W = maps:get(E, Rp, webrtc_dtls_record:replay_new()),
     {Max, _} = W,
@@ -148,7 +169,7 @@ decrypt(E, R, Now, #dtls{read_keys = RK, replay = Rp} = St) ->
         {ok, Seq, Type, Content} ->
             case webrtc_dtls_record:replay_check(Seq, W) of
                 ok ->
-                    St1 = St#dtls{replay = Rp#{E => webrtc_dtls_record:replay_update(Seq, W)}},
+                    St1 = first_of_epoch(E, Now, St#dtls{replay = Rp#{E => webrtc_dtls_record:replay_update(Seq, W)}}),
                     content(Type, Content, E, Seq, Now, webrtc_dtls13_cid:seen(maps:get(cid, R, <<>>), St1));
                 replay ->
                     St
@@ -215,24 +236,43 @@ handshake(F, E, Seq, Now, St) ->
         {ok, Frags} ->
             Classes = [webrtc_dtls_reasm:classify(Fr, St) || Fr <- Frags],
             New = [Fr || {Fr, new} <- lists:zip(Frags, Classes)],
+            Old = [Fr || {Fr, old} <- lists:zip(Frags, Classes), not stateless_reply(Fr, St)],
             case New of
                 [] when Classes =/= [], St#dtls.handshake_done ->
                     %% A copy of a message already processed after the
-                    %% handshake: acknowledge it again (§7, §5.8.1).
-                    St#dtls{rcv_recs = [{E, Seq} | St#dtls.rcv_recs], ack_now = true};
+                    %% handshake: acknowledge it again (§7, §5.8.1), on
+                    %% the ACK timer so that a burst of copies gets one.
+                    received(E, Seq, St);
+                [] when Old =/= [] ->
+                    peer_retransmitted(Now, St);
                 [] ->
-                    case lists:member(old, Classes) of
-                        true -> peer_retransmitted(Now, St);
-                        false -> St
-                    end;
+                    St;
                 _ ->
+                    %% After the handshake a new message in an epoch we
+                    %% already moved past spans a key change (RFC 8446 §5.1).
+                    post_handshake(St) andalso E < lists:max(maps:keys(St#dtls.read_keys)) andalso
+                        fail(?ALERT_UNEXPECTED_MESSAGE, message_after_key_change, St),
                     St1 = lists:foldl(fun(Fr, S) -> webrtc_dtls_reasm:add(Fr, E, S) end, St, New),
-                    St2 = St1#dtls{rcv_recs = [{E, Seq} | St1#dtls.rcv_recs]},
-                    webrtc_dtls_reasm:deliver(Now, St2)
+                    webrtc_dtls_reasm:deliver(Now, received(E, Seq, St1))
             end;
         {error, _} ->
             fail(?ALERT_DECODE_ERROR, decode_error, St)
     end.
+
+%% A copy of a HelloRetryRequest, the only ServerHello before the
+%% real one: the server is stateless, so it says nothing of our
+%% ClientHello being lost, and the HRR is acknowledged by our next
+%% flight (§5.1, §7.1).
+stateless_reply(#{type := server_hello}, #dtls{role = client, state = wait_server_hello}) -> true;
+stateless_reply(_, _) -> false.
+
+%% A record to acknowledge. One ACK carries as many record numbers as
+%% fit in the MTU (§7.1), so only that many of the latest are kept.
+received(E, Seq, #dtls{rcv_recs = Recs} = St) ->
+    St#dtls{rcv_recs = lists:sublist([{E, Seq} | Recs], ack_capacity(St)), rcv_new = true}.
+
+ack_capacity(#dtls{mtu = Mtu} = St) ->
+    max(1, (Mtu - webrtc_dtls13_record:overhead(St#dtls.peer_cid) - 2) div 16).
 
 %%====================================================================
 %% ACK (RFC 9147 §7.2)
@@ -302,8 +342,12 @@ gaps([{S, E} | Rest], Pos, Len) when S > Pos -> [{Pos, min(S, Len)} | gaps(Rest,
 gaps([{_S, E} | Rest], Pos, Len) -> gaps(Rest, max(E, Pos), Len).
 
 %% The peer resent its previous flight while none of ours was
-%% acknowledged: part of our flight was lost (§5.8.1 case 3).
-peer_retransmitted(Now, #dtls{last_flight = [_ | _], acked = A} = St) when map_size(A) =:= 0 ->
+%% acknowledged: part of our flight was lost (§5.8.1 case 3). A copy
+%% within half the initial timeout of our flight belongs to the burst we
+%% answered, not to a retransmission by the peer's timer.
+peer_retransmitted(Now, #dtls{last_flight = [_ | _], acked = A, sent_at = Sent, rtx_initial = I} = St) when
+    map_size(A) =:= 0, Sent =:= undefined orelse Now - Sent >= I div 2
+->
     resend(Now, St);
 peer_retransmitted(_Now, St) ->
     St.
@@ -312,7 +356,7 @@ peer_retransmitted(_Now, St) ->
 %% per half initial timeout so that copies and ACKs do not amplify.
 resend(Now, #dtls{last_peer_rtx = Last, rtx_initial = I} = St) when Last =:= undefined; Now - Last >= I div 2 ->
     {St1, Dgrams} = transmit(St#dtls.last_flight, St),
-    St2 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St1#dtls{last_peer_rtx = Now}, Dgrams),
+    St2 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St1#dtls{last_peer_rtx = Now, sent_at = Now}, Dgrams),
     St2#dtls{rtx_at = Now + St2#dtls.rtx_interval};
 resend(_Now, St) ->
     St.
@@ -334,31 +378,52 @@ flush(Now, St0) ->
         [] ->
             arm_ack(Now, St1);
         Items ->
+            %% A handshake flight acknowledges the peer's (§7.1); after
+            %% the handshake ours does not, so a pending ACK stays.
+            {Rcv, AckAt} =
+                case post_handshake(St1) of
+                    true -> {St1#dtls.rcv_recs, St1#dtls.ack_at};
+                    false -> {[], infinity}
+                end,
             St2 = St1#dtls{
                 building = [],
                 last_flight = Items,
                 sent_recs = #{},
                 acked = #{},
-                rcv_recs = [],
-                ack_at = infinity,
+                rcv_recs = Rcv,
+                ack_at = AckAt,
                 rtx_count = 0,
                 rtx_interval = base(St1),
-                flight_at = Now
+                flight_at = Now,
+                sent_at = Now
             },
             {St3, Dgrams} = transmit(Items, St2),
             St4 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St3, Dgrams),
-            St4#dtls{rtx_at = Now + base(St4)}
+            announce(arm_ack(Now, St4#dtls{rtx_at = Now + base(St4)}))
     end.
 
+%% A client is connected once its Finished flight is out, ahead of
+%% any data the owner then sends (RFC 8446 §4.4.4).
+announce(#dtls{state = wait_ack, announced = false} = St) -> webrtc_dtls_hs:maybe_verify(St);
+announce(St) -> St.
+
 %% Part of the incoming flight arrived but we cannot answer yet: ACK
-%% what we have after a quarter of the retransmission timeout (§7.1).
-arm_ack(Now, #dtls{rcv_recs = [_ | _], ack_at = infinity, handshake_done = false, state = S} = St) ->
-    case lists:member(S, ?HANDSHAKE_STATES) of
+%% what we have after a quarter of the retransmission timeout (§7.1),
+%% once per new record so the timer does not re-arm after its ACK.
+%% Post-handshake messages are acknowledged after the same delay (§7.1
+%% allows it), so one ACK covers a flight of them.
+arm_ack(Now, #dtls{rcv_recs = [_ | _], rcv_new = true, ack_at = infinity, state = S} = St) ->
+    case lists:member(S, ?HANDSHAKE_STATES) orelse post_handshake(St) of
         true -> St#dtls{ack_at = Now + max(1, St#dtls.rtx_interval div 4)};
         false -> St
     end;
 arm_ack(_Now, St) ->
     St.
+
+%% Our Finished is out: what the peer sends now is post-handshake.
+post_handshake(#dtls{handshake_done = true}) -> true;
+post_handshake(#dtls{state = wait_ack, last_flight = [_ | _]}) -> true;
+post_handshake(_) -> false.
 
 send_ack(#dtls{rcv_recs = []} = St) ->
     St;
@@ -367,10 +432,10 @@ send_ack(#dtls{rcv_recs = Recs0, write_epoch = E, mtu = Mtu} = St) ->
     %% than its own. After the handshake it goes in our highest sending
     %% epoch whatever the records' epochs: a peer's KeyUpdates are
     %% acknowledged without waiting for one of ours (Figure 14).
-    {Recs, Later} =
+    Recs =
         case St#dtls.handshake_done of
-            true -> {Recs0, []};
-            false -> lists:partition(fun({RE, _}) -> RE =< E end, Recs0)
+            true -> Recs0;
+            false -> [R || {RE, _} = R <- Recs0, RE =< E]
         end,
     N = max(1, (Mtu - webrtc_dtls13_record:overhead(St#dtls.peer_cid) - 2) div 16),
     case Recs of
@@ -378,13 +443,12 @@ send_ack(#dtls{rcv_recs = Recs0, write_epoch = E, mtu = Mtu} = St) ->
             St;
         _ ->
             Body = webrtc_dtls13_record:encode_ack(lists:sublist(Recs, N)),
-            case encode(ack, E, Body, St) of
+            case encode(ack, E, Body, St#dtls{rcv_new = false}) of
                 {ok, Rec, _, St1} ->
-                    St2 = push({send, Rec}, St1),
-                    case St2#dtls.handshake_done of
-                        true -> St2#dtls{rcv_recs = Later};
-                        false -> St2
-                    end;
+                    %% The record numbers stay (the latest that fit, see
+                    %% received/3): an ACK repeats them in case an
+                    %% earlier one was lost (§7.1).
+                    push({send, Rec}, St1);
                 {error, _} ->
                     St
             end
@@ -416,7 +480,7 @@ timeout(Now, St0) ->
                     %% held the whole handshake back.
                     Interval = min(St1#dtls.rtx_interval * 2, St1#dtls.rtx_max_interval),
                     Count = St1#dtls.rtx_count + 1,
-                    {St2, Dgrams} = transmit(St1#dtls.last_flight, St1#dtls{rtx_count = Count}),
+                    {St2, Dgrams} = transmit(St1#dtls.last_flight, St1#dtls{rtx_count = Count, sent_at = Now}),
                     St3 = lists:foldl(fun(D, S) -> push({send, D}, S) end, St2, Dgrams),
                     Base = case St1#dtls.handshake_done of true -> Interval; false -> St1#dtls.rtx_base end,
                     St3#dtls{rtx_interval = Interval, rtx_base = Base, rtx_at = Now + Interval}
@@ -437,7 +501,9 @@ send(Bin, #dtls{write_epoch = E, write_seq = WS, write_ciphers = WC} = St) ->
             {error, key_limit};
         false ->
             {ok, Rec, _, St1} = encode(application_data, E, Bin, St),
-            case Seq + 1 >= St1#dtls.rekey_records andalso not St1#dtls.ku_pending of
+            %% Not while our final flight waits for its ACK: a KeyUpdate
+            %% flight would take its place.
+            case Seq + 1 >= St1#dtls.rekey_records andalso not St1#dtls.ku_pending andalso St1#dtls.state =:= connected of
                 true ->
                     Now = erlang:monotonic_time(millisecond),
                     St2 = flush(Now, webrtc_dtls13_epoch:start_key_update(update_requested, St1#dtls{out = []})),

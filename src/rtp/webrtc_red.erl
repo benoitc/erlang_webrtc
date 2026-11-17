@@ -12,7 +12,14 @@
 
 -include("webrtc_rtp.hrl").
 
--export([encode/2, decode/1, packets/3]).
+-export([encode/2, decode/1, packets/3, packets/4, repair/4, seen/3]).
+
+-export_type([history/0]).
+
+%% The last {Seq, Ts} a receiver got, newest first.
+-type history() :: [{0..65535, non_neg_integer()}].
+
+-define(HISTORY, 64).
 
 -export_type([block/0]).
 
@@ -55,14 +62,72 @@ blocks([{P, O, L} | Hs], Bin, Pt, Acc) ->
 %% @doc The RTP packets a RED packet carries: the primary with the
 %% packet's sequence number and marker, and the redundant blocks as the
 %% packets they repeat, the n-th before the primary taking sequence
-%% number seq - n (one block per earlier packet, as WebRTC sends them).
-%% Blocks whose payload type `Keep' refuses are left out.
+%% number seq - n (one block per earlier packet, as libwebrtc sends
+%% them). Blocks whose payload type `Keep' refuses are left out.
 -spec packets(#rtp{}, [block()], fun((0..127) -> boolean())) -> [#rtp{}].
-packets(#rtp{seq = Seq, ts = Ts} = Pkt, Blocks, Keep) ->
+packets(Pkt, Blocks, Keep) ->
+    packets(Pkt, Blocks, Keep, fun(I, N, _Offset) -> (Pkt#rtp.seq - (N - I)) band 16#FFFF end).
+
+%% @doc The same, with the sequence number of a redundant block given
+%% by `SeqOf(Index, Count, Offset)'. A block carries no sequence number
+%% (§3): a sender may repeat an older packet than the previous one
+%% (GStreamer's `distance'), so the receiver finds it from the
+%% timestamp offset and the packet duration.
+-spec packets(#rtp{}, [block()], fun((0..127) -> boolean()),
+              fun((pos_integer(), pos_integer(), 0..16#3FFF) -> 0..65535)) -> [#rtp{}].
+packets(#rtp{ts = Ts} = Pkt, Blocks, Keep, SeqOf) ->
     N = length(Blocks),
     [case I of
          N -> Pkt#rtp{pt = P, payload = D};
-         _ -> Pkt#rtp{pt = P, payload = D, marker = false, seq = (Seq - (N - I)) band 16#FFFF,
-                      ts = (Ts - O) band 16#FFFFFFFF}
+         _ -> Pkt#rtp{pt = P, payload = D, marker = false, seq = SeqOf(I, N, O), ts = (Ts - O) band 16#FFFFFFFF}
      end
      || {I, {P, O, D}} <- lists:enumerate(Blocks), Keep(P)].
+
+%%====================================================================
+%% Receiver
+%%====================================================================
+
+%% @doc Record a received packet in a receiver's history.
+-spec seen(0..65535, non_neg_integer(), history()) -> history().
+seen(Seq, Ts, History) ->
+    lists:sublist([{Seq, Ts} | History], ?HISTORY).
+
+%% @doc What a receiver delivers for a RED packet, given its history:
+%% the redundant blocks that repair a lost packet (before the RED
+%% packet, within the history, received neither under that sequence
+%% number nor that timestamp), then the primary.
+%%
+%% A block carries no sequence number (§3), and a sender may repeat an
+%% older packet than the previous one (GStreamer's `distance'). The
+%% block is placed between the latest packet received before its
+%% timestamp and the RED packet, the gap spread evenly over the packets
+%% between them; without such a packet, the n-th block before the
+%% primary is the n-th packet before it (libwebrtc's layout).
+-spec repair(#rtp{}, [block()], fun((0..127) -> boolean()), history()) -> {[#rtp{}], [#rtp{}]}.
+repair(#rtp{seq = Seq, ts = Ts} = Red, Blocks, Keep, History) ->
+    SeqOf = fun(I, N, Off) -> block_seq(Seq, Ts, I, N, Off, History) end,
+    {Redundant, Primary} = lists:partition(fun(#rtp{seq = S}) -> S =/= Seq end, packets(Red, Blocks, Keep, SeqOf)),
+    {[P || P <- Redundant, lost(P, Seq, History)], Primary}.
+
+block_seq(Seq, Ts, I, N, Off, History) ->
+    %% Received packets older than the block: {how far back, Seq}.
+    Before = [{(Ts - T) band 16#FFFFFFFF, S} || {S, T} <- History,
+              (Ts - T) band 16#FFFFFFFF > Off, (Ts - T) band 16#FFFFFFFF < 16#80000000],
+    case lists:sort(Before) of
+        [{Back, S} | _] ->
+            Gap = (Seq - S) band 16#FFFF,
+            K = round((Back - Off) * Gap / Back),
+            case K > 0 andalso K < Gap of
+                true -> (S + K) band 16#FFFF;
+                false -> (Seq - (N - I)) band 16#FFFF
+            end;
+        [] ->
+            (Seq - (N - I)) band 16#FFFF
+    end.
+
+lost(_P, _RedSeq, []) ->
+    false;
+lost(#rtp{seq = Seq, ts = Ts}, RedSeq, History) ->
+    Age = (RedSeq - Seq) band 16#FFFF,
+    Age > 0 andalso Age < ?HISTORY andalso not lists:keymember(Seq, 1, History) andalso
+        not lists:keymember(Ts, 2, History).

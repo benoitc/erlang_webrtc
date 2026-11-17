@@ -56,12 +56,11 @@
     clock_rate :: pos_integer(),
     rx :: term(),
     nack :: undefined | term(),
-    %% The last sequence numbers received, newest first (at most
-    %% ?RECENT): a redundant block repairs only a packet not among them.
-    recent = [] :: [0..65535]
+    %% The last {Seq, Ts} received, newest first (at most 64): a
+    %% redundant block repairs only a packet not among them, and their
+    %% timestamps give the packet a block repeats.
+    recent = [] :: webrtc_red:history()
 }).
-
--define(RECENT, 64).
 
 -record(media, {
     cname :: binary(),

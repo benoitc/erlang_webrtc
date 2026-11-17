@@ -104,6 +104,20 @@ Ask the sender for a keyframe when a new receiver joins:
 ok = webrtc:request_keyframe(In, <<"1">>).
 ```
 
+## Receive frames
+
+To decode or record what a peer sends, ask for frames instead of packets. The packets of each frame are put in order, joined and released at their playout time; a frame that cannot be completed is dropped and a key frame is asked for.
+
+```erlang
+{ok, _} = webrtc:add_transceiver(Pc, video, #{frames => true}),
+%% or for every transceiver, those a remote offer creates included:
+{ok, Pc} = webrtc:new_peer_connection(#{frames => true}),
+
+{webrtc, Pc, {frame, _Mid, #{data := Data, keyframe := Key, width := W, height := H}}} -> decode(Data).
+```
+
+`data` is a VP8 or VP9 frame, an H.264 access unit in Annex B, or an AV1 temporal unit; audio frames are the payloads. `#{min_delay => Ms, max_delay => Ms}` instead of `true` bounds the delay.
+
 ## Read the statistics
 
 You get the W3C statistics, the ones a browser's `getStats()` returns, as a map from stats id to the members of each dictionary.

@@ -6,6 +6,7 @@
 -define(URI_RID, <<"urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id">>).
 -define(URI_RRID, <<"urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
+-define(URI_PLAYOUT_DELAY, <<"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay">>).
 %% Feedback packets kept while the RTCP bandwidth does not allow them.
 -define(MAX_PENDING_FEEDBACK, 32).
 -define(BUFFER_SIZE, 512).
@@ -59,7 +60,13 @@
     %% The last {Seq, Ts} received, newest first (at most 64): a
     %% redundant block repairs only a packet not among them, and their
     %% timestamps give the packet a block repeats.
-    recent = [] :: webrtc_red:history()
+    recent = [] :: webrtc_red:history(),
+    %% Frame assembly when the transceiver asked for frames.
+    frames :: undefined | webrtc_frame_buffer:state(),
+    %% Key frame requests the stream accepts (RFC 4585 PLI, RFC 5104
+    %% FIR) and the sequence number of our next FIR (§4.3.1.2).
+    keyframe = [] :: [pli | fir],
+    fir_seq = 0 :: 0..255
 }).
 
 -record(media, {

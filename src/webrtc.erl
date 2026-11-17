@@ -233,14 +233,23 @@ new_peer_connection() ->
 %% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
 %%     extensions (RFC 9335), default `true'. Media is sent that way
 %%     when every section of the connection negotiated it.</li>
+%% <li>`frames': the `frames' option of transceivers added without it,
+%%     those a remote offer creates included (see
+%%     `add_transceiver/3'), default `false'.</li>
 %% </ul>
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
-new_peer_connection(#{ice_servers := Servers} = Opts) ->
+new_peer_connection(Opts) ->
+    case webrtc_jsep:frames_opts(maps:get(frames, Opts, false)) of
+        {ok, _} -> servers(Opts);
+        {error, _} = E -> E
+    end.
+
+servers(#{ice_servers := Servers} = Opts) ->
     case webrtc_ice_uri:servers(Servers) of
         {ok, _, _} -> new_pc(Opts);
         {error, _} -> {error, {badarg, ice_servers}}
     end;
-new_peer_connection(Opts) ->
+servers(Opts) ->
     new_pc(Opts).
 
 new_pc(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
@@ -270,6 +279,15 @@ new_pc(Opts) ->
 %% (resume it with `request_resume/3'). A transceiver without
 %% `send_encodings' answering an offer that asks to receive simulcast
 %% sends the offered layers.
+%%
+%% `frames': `true' or `#{min_delay => Ms, max_delay => Ms}' delivers
+%% `{frame, Mid, Frame}' (`{frame, Mid, Rid, Frame}' for a simulcast
+%% layer) instead of `{rtp, Mid, Packet}': the packets of each frame put
+%% in order, joined and released at their playout time, a key frame
+%% asked for when one is lost (see `webrtc_frame_buffer'). `Frame' is
+%% `#{timestamp, keyframe, data, codec}', with `width' and `height' for
+%% video. `data' is the encoded frame: VP8 and VP9 frames, H.264 in
+%% Annex B, AV1 temporal units in the low overhead bitstream format.
 -spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).

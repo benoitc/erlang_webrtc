@@ -45,15 +45,23 @@
     %% (0 with nowait) and the sequence number cycles, for PAUSED.
     pause :: undefined | webrtc_rtp_pause:sender(),
     hold_off = 0 :: non_neg_integer(),
-    cycles = 0 :: non_neg_integer()
+    cycles = 0 :: non_neg_integer(),
+    %% The previous payload sent, {Pt, Ts, Data}, repeated in the next
+    %% RED packet (RFC 2198) when the send asks for redundancy.
+    red_prev :: undefined | {0..127, non_neg_integer(), binary()}
 }).
 
 -record(rcv, {
     mid :: binary(),
     clock_rate :: pos_integer(),
     rx :: term(),
-    nack :: undefined | term()
+    nack :: undefined | term(),
+    %% The last sequence numbers received, newest first (at most
+    %% ?RECENT): a redundant block repairs only a packet not among them.
+    recent = [] :: [0..65535]
 }).
+
+-define(RECENT, 64).
 
 -record(media, {
     cname :: binary(),

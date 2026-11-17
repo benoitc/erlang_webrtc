@@ -20,6 +20,8 @@
     nack_timeouts/2,
     pace/4,
     pick_pt/2,
+    is_repair/1,
+    red_pt/1,
     reports/3,
     retransmit/4,
     send_feedback/3,
@@ -105,10 +107,24 @@ pick_pt(#{codec := Name}, #snd{codecs = Cs}) ->
         [P | _] -> {ok, P};
         [] -> error
     end;
-pick_pt(_, #snd{codecs = [#{pt := P} | _]}) ->
-    {ok, P};
-pick_pt(_, _) ->
-    error.
+pick_pt(_, #snd{codecs = Cs}) ->
+    %% The first media codec: an offer may list RED first (RFC 2198).
+    case [P || #{pt := P, name := N} <- Cs, not is_repair(N)] of
+        [P | _] -> {ok, P};
+        [] -> error
+    end.
+
+%% @doc Payload formats that carry other packets or their repair.
+-spec is_repair(binary()) -> boolean().
+is_repair(N) -> lists:member(string:lowercase(N), [<<"rtx">>, <<"red">>, <<"ulpfec">>, <<"flexfec-03">>]).
+
+%% @doc The RED payload type negotiated for sending, if any.
+-spec red_pt(#snd{}) -> {ok, 0..127} | error.
+red_pt(#snd{codecs = Cs}) ->
+    case [P || #{pt := P, name := N} <- Cs, string:lowercase(N) =:= <<"red">>] of
+        [P | _] -> {ok, P};
+        [] -> error
+    end.
 
 %% Queue packets in the pacer, then protect and send what it releases.
 pace(Class, Items, Now, M) ->

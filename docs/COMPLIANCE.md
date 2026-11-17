@@ -71,6 +71,8 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | RTP stream pause and resume | RFC 7728 | | [rtp](compliance/rtp.md) |
 | Header extensions | RFC 8285 | | [rtp](compliance/rtp.md) |
 | RTX | RFC 4588 | | [rtp](compliance/rtp.md) |
+| Redundant audio | RFC 2198 | | [rtp](compliance/rtp.md) |
+| WebRTC FEC | RFC 8854 | | [rtp](compliance/rtp.md) |
 | rtcp-mux | RFC 5761, RFC 8858 | | [rtp](compliance/rtp.md) |
 | Congestion control | RFC 8836, RFC 8888 | | [rtp](compliance/rtp.md) |
 | Congestion control test cases | RFC 8867, RFC 8868 | | [rtp](compliance/rtp.md) |

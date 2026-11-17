@@ -16,6 +16,7 @@
     unreliable_datachannel/1,
     binary_and_large_messages/1,
     erlang_sends_media/1,
+    erlang_sends_red_audio/1,
     stats_agree/1,
     peer_sends_media/1,
     peer_closes/1,
@@ -46,6 +47,7 @@ cases() ->
         unreliable_datachannel,
         binary_and_large_messages,
         erlang_sends_media,
+        erlang_sends_red_audio,
         stats_agree,
         peer_sends_media,
         peer_closes,
@@ -404,6 +406,41 @@ erlang_offers_unbundled1(Config) ->
     #{transports := Ts} = webrtc:get_stats(Pc),
     ?assertEqual(2, map_size(Ts)),
     put(peer, P4).
+
+%% We send audio as RED (RFC 2198) with the previous packet repeated:
+%% the browser takes the Opus packets out of it and decodes them.
+erlang_sends_red_audio(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox -> erlang_sends_red_audio1(Config);
+        _ -> {skip, "the peer's statistics are not W3C ones"}
+    end.
+
+erlang_sends_red_audio1(Config) ->
+    {Pc, P0} = start(Config),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"audio">>]}),
+    Opus = <<16#F8, 16#FF, 16#FE>>,
+    [begin ok = webrtc:send_rtp(Pc, <<"0">>, Opus, #{timestamp => N * 960, red => true}), timer:sleep(20) end
+     || N <- lists:seq(1, 100)],
+    timer:sleep(1000),
+    P2 = ?P:cmd(P1, #{cmd => stats}),
+    {ok, P3, #{<<"stats">> := Stats}} = ?P:wait_event(P2, <<"stats">>, #{}),
+    In = [S || S <- maps:values(Stats), is_map(S), maps:get(<<"type">>, S, x) =:= <<"inbound-rtp">>,
+               maps:get(<<"kind">>, S, x) =:= <<"audio">>],
+    ct:log("browser inbound audio: ~p", [In]),
+    %% The browser reports the codec it decodes (Opus), so whether RED
+    %% was used comes from its answer.
+    Answer = iolist_to_binary(webrtc:remote_description(Pc)),
+    case binary:match(Answer, <<" red/48000/2">>) of
+        {_, _} ->
+            [#{<<"packetsReceived">> := Got} = S0 | _] = In,
+            ?assert(Got >= 90),
+            ?assert(maps:get(<<"totalSamplesReceived">>, S0, 0) > 0),
+            put(peer, P3);
+        nomatch ->
+            put(peer, P3),
+            {skip, "the browser did not negotiate audio/red"}
+    end.
 
 %% The peer sends media from its own encoders; Erlang receives it,
 %% forwards every packet back, and decoding peers report decoded frames.

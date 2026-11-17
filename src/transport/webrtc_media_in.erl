@@ -188,7 +188,59 @@ rtx_in(Mid, Primary, Pkt, Now, M) ->
             {webrtc_media_out:count(dropped, M), []}
     end.
 
-deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
+%% RED (RFC 2198): the primary block is delivered as the packet it
+%% carries; a redundant block only when the packet it repeats was lost
+%% (RFC 8854 §7: audio FEC is received and used).
+deliver(Mid, #rtp{pt = Pt} = Pkt, Now, M) ->
+    case is_red(Mid, Pt, M) of
+        true -> red_in(Mid, Pkt, Now, M);
+        false -> deliver1(Mid, Pkt, Now, M)
+    end.
+
+is_red(Mid, Pt, M) ->
+    Codecs = maps:get(recv_codecs, maps:get(Mid, M#media.recv, #{}), []),
+    lists:any(fun(#{pt := P, name := N}) -> P =:= Pt andalso string:lowercase(N) =:= <<"red">> end, Codecs).
+
+red_in(Mid, #rtp{seq = Seq} = Red, Now, M0) ->
+    M = webrtc_media_out:count(red_received, M0),
+    case webrtc_red:decode(Red#rtp.payload) of
+        {ok, Blocks} ->
+            Codecs = maps:get(recv_codecs, maps:get(Mid, M#media.recv, #{}), []),
+            Known = fun(P) -> lists:any(fun(#{pt := X, name := N}) -> X =:= P andalso not webrtc_media_out:is_repair(N) end, Codecs) end,
+            Pkts = webrtc_red:packets(Red, Blocks, Known),
+            {Redundant, Primary} = lists:partition(fun(#rtp{seq = S}) -> S =/= Seq end, Pkts),
+            {M1, Acts1} = lists:foldl(
+                fun(P, {Acc, A}) ->
+                    case lost(P, Seq, Acc) of
+                        true ->
+                            {Acc1, A1} = deliver1(Mid, P, Now, webrtc_media_out:count(red_recovered, Acc)),
+                            {Acc1, A ++ A1};
+                        false ->
+                            {Acc, A}
+                    end
+                end,
+                {M, []},
+                Redundant
+            ),
+            {M2, Acts2} = lists:foldl(fun(P, {Acc, A}) -> {Acc1, A1} = deliver1(Mid, P, Now, Acc), {Acc1, A ++ A1} end,
+                                      {M1, []}, Primary),
+            {M2, Acts1 ++ Acts2};
+        {error, _} ->
+            {webrtc_media_out:count(dropped, M), []}
+    end.
+
+%% A packet before the RED packet `RedSeq' that carries it, within the
+%% history, and not received: lost.
+lost(#rtp{ssrc = Ssrc, seq = Seq}, RedSeq, M) ->
+    case maps:find(Ssrc, M#media.receivers) of
+        {ok, #rcv{recent = [_ | _] = Recent}} ->
+            Age = (RedSeq - Seq) band 16#FFFF,
+            Age > 0 andalso Age < ?RECENT andalso not lists:member(Seq, Recent);
+        _ ->
+            false
+    end.
+
+deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
     R0 =
         case maps:find(Ssrc, M#media.receivers) of
             {ok, R} -> R;
@@ -200,7 +252,7 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
             undefined -> {undefined, []};
             N -> webrtc_nack:packet(Seq, Now, N)
         end,
-    R1 = R0#rcv{rx = Rx, nack = Nack},
+    R1 = R0#rcv{rx = Rx, nack = Nack, recent = lists:sublist([Seq | R0#rcv.recent], ?RECENT)},
     M0 = webrtc_media_out:sset(in, Ssrc, #{last_packet_received => erlang:system_time(millisecond)},
              webrtc_media_out:scount(in, Ssrc, packets_received, 1,
                  webrtc_media_out:scount(in, Ssrc, bytes_received, byte_size(Pkt#rtp.payload), M))),

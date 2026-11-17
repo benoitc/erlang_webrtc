@@ -8,6 +8,7 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
+    red_repairs_loss/1,
     data_channel_echo/1,
     data_channel_both_sides/1,
     data_channel_large_message/1,
@@ -48,7 +49,7 @@
 -define(S, webrtc_test_signal).
 
 all() ->
-    [
+    [red_repairs_loss, 
         data_channel_echo,
         data_channel_both_sides,
         data_channel_large_message,
@@ -219,6 +220,32 @@ rtp(Pc, Mid, Payload) ->
     {ok, {rtp, Mid, #rtp{} = P}} =
         ?S:wait(Pc, fun({rtp, M, #rtp{payload = Pl}}) -> M =:= Mid andalso Pl =:= Payload; (_) -> false end, 10000),
     P.
+
+%% RED (RFC 2198): each audio packet repeats the previous one, so the
+%% receiver gets a lost packet back from the next one, with its payload
+%% type, sequence number and timestamp.
+red_repairs_loss(_Config) ->
+    Hole = atomics:new(1, []),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => webrtc_impair:filter(#{blackhole => Hole})}),
+    B = pc(),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ?S:connect(A, B),
+    Send = fun(N) -> ok = webrtc:send_rtp(A, <<"0">>, <<"opus", N>>, #{timestamp => N * 960, red => true}) end,
+    Send(1),
+    #rtp{pt = 111, seq = S1} = rtp(B, <<"0">>, <<"opus", 1>>),
+    timer:sleep(100),
+    atomics:put(Hole, 1, 1),
+    Send(2),
+    timer:sleep(100),
+    atomics:put(Hole, 1, 0),
+    Send(3),
+    #rtp{pt = 111, seq = S2, ts = 1920} = rtp(B, <<"0">>, <<"opus", 2>>),
+    #rtp{pt = 111, seq = S3} = rtp(B, <<"0">>, <<"opus", 3>>),
+    ?assertEqual({S1 + 1, S1 + 2}, {S2, S3}),
+    #{transport := #{media := #{counters := #{red_recovered := 1}}}} = webrtc:get_stats(B),
+    webrtc:close(A),
+    webrtc:close(B).
 
 audio_video_rtp(_Config) ->
     A = pc(),

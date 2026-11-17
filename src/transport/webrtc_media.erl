@@ -195,18 +195,35 @@ send(Mid0, Payload, Opts, Now, M) ->
         {ok, S} ->
             case webrtc_media_out:pick_pt(Opts, S) of
                 {ok, Pt} ->
+                    Ts = maps:get(timestamp, Opts, 0),
+                    {SendPt, Body, S1} = redundancy(Opts, Pt, Ts, Payload, S),
                     Pkt = #rtp{
-                        pt = Pt,
+                        pt = SendPt,
                         marker = maps:get(marker, Opts, false),
-                        ts = maps:get(timestamp, Opts, 0),
-                        payload = Payload,
-                        ext = webrtc_media_out:audio_level(Opts, S)
+                        ts = Ts,
+                        payload = Body,
+                        ext = webrtc_media_out:audio_level(Opts, S1)
                     },
-                    send_packet(Mid, Pkt, Now, M);
+                    send_packet(Mid, Pkt, Now, M#media{senders = (M#media.senders)#{Mid := S1}});
                 error ->
                     {error, unknown_codec}
             end
     end.
+
+%% With `red => true' and RED negotiated, the payload goes in a RED
+%% packet with the previous one as its redundant block (RFC 2198, RFC
+%% 8854 §4.1), so a single loss is repaired at the receiver without a
+%% round trip.
+redundancy(#{red := true}, Pt, Ts, Payload, S) ->
+    case webrtc_media_out:red_pt(S) of
+        {ok, Red} ->
+            Prev = [{P, (Ts - T) band 16#FFFFFFFF, D} || {P, T, D} <- [S#snd.red_prev], P =:= Pt],
+            {Red, webrtc_red:encode(Prev, {Pt, Payload}), S#snd{red_prev = {Pt, Ts, Payload}}};
+        error ->
+            {Pt, Payload, S}
+    end;
+redundancy(_, Pt, _Ts, Payload, S) ->
+    {Pt, Payload, S}.
 
 %% @doc Send an RTP packet on a transceiver, or on one of its simulcast
 %% layers with `{Mid, Rid}'. The SSRC and sequence number are ours;

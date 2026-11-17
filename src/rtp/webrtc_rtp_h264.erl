@@ -33,7 +33,8 @@
 %%
 %% `split_annexb/1' extracts NAL units from an Annex B byte stream.
 %% Nothing here decodes video; key frame detection looks for an IDR
-%% slice (NAL type 5).
+%% slice (NAL type 5). `sps_size/1' reads the picture size from a
+%% sequence parameter set.
 -module(webrtc_rtp_h264).
 
 -export([
@@ -45,6 +46,7 @@
     depacketizer_push/3,
     nal_types/1,
     is_keyframe/1,
+    sps_size/1,
     packetize_interleaved/3,
     mtap/2,
     depacketize_interleaved/1,
@@ -442,3 +444,124 @@ nal_types(Payload) ->
 -spec is_keyframe(binary()) -> boolean().
 is_keyframe(Payload) ->
     lists:member(?IDR, nal_types(Payload)).
+
+%%====================================================================
+%% Sequence parameter set
+%%====================================================================
+
+%% @doc Width and height of the pictures of a sequence parameter set NAL
+%% unit (ITU-T H.264 §7.3.2.1.1), cropping applied (§7.4.2.1.1).
+-spec sps_size(binary()) -> {ok, {pos_integer(), pos_integer()}} | error.
+sps_size(<<_:3, 7:5, Rbsp0/binary>>) ->
+    Rbsp = binary:replace(Rbsp0, <<0, 0, 3>>, <<0, 0>>, [global]),
+    try sps(Rbsp) of
+        {W, H} when W > 0, H > 0 -> {ok, {W, H}};
+        _ -> error
+    catch
+        error:_ -> error;
+        throw:_ -> error
+    end;
+sps_size(_) ->
+    error.
+
+sps(<<Profile, _Constraints, _Level, B0/bits>>) ->
+    {_Id, B1} = ue(B0),
+    {Chroma, Separate, B2} =
+        case lists:member(Profile, [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]) of
+            true ->
+                {C, Bc} = ue(B1),
+                {Sep, Bs} = case C of 3 -> <<S:1, R/bits>> = Bc, {S, R}; _ -> {0, Bc} end,
+                {_, Bd} = ue(Bs),
+                {_, Be} = ue(Bd),
+                <<_Qp:1, Scaling:1, Bf/bits>> = Be,
+                {C, Sep, scaling(Scaling, case C of 3 -> 12; _ -> 8 end, Bf)};
+            false ->
+                {1, 0, B1}
+        end,
+    {_, B3} = ue(B2),
+    {PocType, B4} = ue(B3),
+    B5 = poc(PocType, B4),
+    {_, B6} = ue(B5),
+    <<_Gaps:1, B7/bits>> = B6,
+    {WMbs, B8} = ue(B7),
+    {HMaps, B9} = ue(B8),
+    <<FrameMbsOnly:1, B10/bits>> = B9,
+    B11 = case FrameMbsOnly of 0 -> <<_:1, R1/bits>> = B10, R1; 1 -> B10 end,
+    <<_Direct8x8:1, Crop:1, B12/bits>> = B11,
+    {L, Rt, T, Bt} =
+        case Crop of
+            1 ->
+                {Cl, C1} = ue(B12),
+                {Cr, C2} = ue(C1),
+                {Ct, C3} = ue(C2),
+                {Cb, _} = ue(C3),
+                {Cl, Cr, Ct, Cb};
+            0 ->
+                {0, 0, 0, 0}
+        end,
+    ArrayType = case Separate of 1 -> 0; 0 -> Chroma end,
+    {SubW, SubH} =
+        case ArrayType of
+            1 -> {2, 2};
+            2 -> {2, 1};
+            _ -> {1, 1}
+        end,
+    {CropX, CropY} =
+        case ArrayType of
+            0 -> {1, 2 - FrameMbsOnly};
+            _ -> {SubW, SubH * (2 - FrameMbsOnly)}
+        end,
+    {(WMbs + 1) * 16 - CropX * (L + Rt), (2 - FrameMbsOnly) * (HMaps + 1) * 16 - CropY * (T + Bt)}.
+
+scaling(0, _, B) ->
+    B;
+scaling(1, N, B) ->
+    lists:foldl(
+        fun(I, Acc) ->
+            case Acc of
+                <<1:1, R/bits>> -> scaling_list(case I < 6 of true -> 16; false -> 64 end, 8, 8, R);
+                <<0:1, R/bits>> -> R
+            end
+        end,
+        B,
+        lists:seq(0, N - 1)
+    ).
+
+%% §7.3.2.1.1.1: delta_scale until next_scale is 0.
+scaling_list(0, _, _, B) ->
+    B;
+scaling_list(_, _, 0, B) ->
+    B;
+scaling_list(N, Last, _Next, B) ->
+    {Delta, B1} = se(B),
+    Next = (Last + Delta + 256) rem 256,
+    scaling_list(N - 1, case Next of 0 -> Last; _ -> Next end, Next, B1).
+
+poc(0, B) ->
+    {_, B1} = ue(B),
+    B1;
+poc(1, B) ->
+    <<_:1, B1/bits>> = B,
+    {_, B2} = se(B1),
+    {_, B3} = se(B2),
+    {N, B4} = ue(B3),
+    lists:foldl(fun(_, Acc) -> element(2, se(Acc)) end, B4, lists:seq(1, N));
+poc(_, B) ->
+    B.
+
+%% Exp-Golomb codes (§9.1).
+ue(B) -> ue(B, 0).
+
+ue(<<0:1, R/bits>>, N) when N < 32 -> ue(R, N + 1);
+ue(<<1:1, R/bits>>, N) ->
+    <<V:N, R1/bits>> = R,
+    {(1 bsl N) - 1 + V, R1};
+ue(_, _) ->
+    throw(bad_exp_golomb).
+
+se(B) ->
+    {K, R} = ue(B),
+    case K rem 2 of
+        1 -> {(K + 1) div 2, R};
+        0 -> {-(K div 2), R}
+    end.

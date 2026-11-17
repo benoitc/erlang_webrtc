@@ -214,8 +214,15 @@ new(Opts) ->
     end,
     _ = [error({badarg, {turn_transport, Tr}}) || #{transport := Tr} <- S1#ice.turn_servers,
                                                 not lists:member(Tr, [udp, tcp, tls])],
+    %% Server addresses are IP addresses: names go through `ice_servers'
+    %% (webrtc_ice_resolve) before the agent exists.
+    _ = [error({badarg, {server_address, A}}) || A <- S1#ice.stun_servers ++ [maps:get(address, Srv, undefined) || Srv <- S1#ice.turn_servers],
+                                                not ip_port(A)],
     S1#ice{tx = webrtc_stun_tx:new(#{rto => S1#ice.min_rto, min_rto => S1#ice.min_rto,
                                     rc => S1#ice.rc, rm => S1#ice.rm, max_rto => S1#ice.max_rto})}.
+
+ip_port({IP, Port}) when is_integer(Port), Port > 0, Port =< 65535 -> is_tuple(IP) andalso inet:ntoa(IP) =/= {error, einval};
+ip_port(_) -> false.
 
 check_credentials(U, P) ->
     case webrtc_ice_candidate:valid_ufrag(U) andalso webrtc_ice_candidate:valid_pwd(P) of

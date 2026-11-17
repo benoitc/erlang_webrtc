@@ -519,3 +519,16 @@ remove_host_test() ->
     N4 = ?NET:call(N3, b, fun(A) -> ?AG:restart(Now, A) end),
     N5 = run_ok(resignal(N4), fun completed/1, 10000),
     ?assertMatch({host, host, {{10, 0, 0, 2}, 5001}, _}, selected(N5, a)).
+
+%% Server addresses are IP addresses: a name never reaches gathering
+%% (names go through `ice_servers', webrtc_ice_resolve).
+server_addresses_test_() ->
+    [
+        ?_assertError({badarg, {server_address, {"stun.example", 3478}}},
+                      ?AG:new(#{stun_servers => [{"stun.example", 3478}]})),
+        ?_assertError({badarg, {server_address, {<<"turn.example">>, 3478}}},
+                      ?AG:new(#{turn_servers => [#{address => {<<"turn.example">>, 3478}, username => <<"u">>,
+                                                   password => <<"p">>}]})),
+        ?_assertError({badarg, {server_address, {{127, 0, 0, 1}, 0}}}, ?AG:new(#{stun_servers => [{{127, 0, 0, 1}, 0}]})),
+        ?_test(_ = ?AG:new(#{stun_servers => [{{127, 0, 0, 1}, 3478}, {{0, 0, 0, 0, 0, 0, 0, 1}, 3478}]}))
+    ].

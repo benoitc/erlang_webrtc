@@ -71,7 +71,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | WRTP-19 | 5.2.5 | Video orientation (CVO) header extension | webrtc_rtp_ext | video_orientation_test | Unit tested |
 | WRTP-20 | 6.1 | Senders understand generic NACK | webrtc_rtcp_fb, webrtc_nack_buffer | nack_test, webrtc_nack_buffer_tests:buffer_test | Unit tested |
 | WRTP-21 | 6.1 | Receivers support RTX with SSRC multiplexing (RFC 4588) | webrtc_rtx | webrtc_rtx_tests:rtx_test | Unit tested |
-| WRTP-22 | 6.1 | RTT estimate from SR / RR to decide on retransmission | webrtc_rtp_stats, webrtc_nack_buffer | rtt_rfc_example_test, buffer_test | Unit tested |
+| WRTP-22 | 6.1 | RTT estimate from SR / RR to decide on retransmission: each report block's RTT paces the NACK requests we repeat and keeps a packet from being resent twice within one RTT | webrtc_rtp_stats, webrtc_media_in, webrtc_nack, webrtc_nack_buffer | rtt_rfc_example_test, buffer_test, webrtc_media_rtt_tests | Unit tested |
 | WRTP-23 | RFC 3550 §6.6, §6.3.5 | Receive streams end with a BYE or after 60 s without packets: receiver, NACK, rid, RTX and SRTP state removed; at most 16 receive streams per transceiver and 256 per session, packets of further SSRCs dropped (`too_many_streams`); SSRCs learned from packets kept across renegotiation only while live | webrtc_media_in, webrtc_media | webrtc_media_tests:ssrc_churn_bounded_test, bye_removes_stream_test | Unit tested |
 
 ## RFC 4585: RTP/AVPF

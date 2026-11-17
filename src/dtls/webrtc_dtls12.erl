@@ -163,13 +163,15 @@ handle_alert(_Level, _Desc, _E, St) ->
 %%====================================================================
 
 %% @doc The peer resent a flight we already processed: our reply was
-%% lost, send our last flight again (§4.2.4). Rate limited to one resend
-%% per half initial timeout so a flood of copies does not amplify.
+%% lost, send our last flight again (§4.2.4). A copy that comes within
+%% half the initial timeout of our flight belongs to the burst we
+%% answered (partial reads cause no resend, §4.2.4), and resends are
+%% limited to one per half initial timeout so copies do not amplify.
 -spec peer_retransmitted(integer(), #dtls{}) -> #dtls{}.
 peer_retransmitted(_Now, #dtls{last_flight = []} = St) ->
     St;
-peer_retransmitted(Now, #dtls{last_peer_rtx = Last, rtx_initial = I} = St) when
-    Last =:= undefined; Now - Last >= I div 2
+peer_retransmitted(Now, #dtls{last_peer_rtx = Last, sent_at = Sent, rtx_initial = I} = St) when
+    (Last =:= undefined orelse Now - Last >= I div 2) andalso (Sent =:= undefined orelse Now - Sent >= I div 2)
 ->
     {St1, Dgrams} = transmit(St#dtls.last_flight, St),
     lists:foldl(fun(D, S) -> push({send, D}, S) end, St1#dtls{last_peer_rtx = Now}, Dgrams);
@@ -194,6 +196,7 @@ flush(Now, #dtls{building = Items} = St) ->
     St2#dtls{
         building = [],
         last_flight = Items,
+        sent_at = Now,
         rtx_count = 0,
         rtx_interval = St#dtls.rtx_initial,
         rtx_at =
@@ -295,7 +298,8 @@ timeout(Now, #dtls{rtx_at = At} = St) when At =/= infinity, Now >= At ->
             St2 = St1#dtls{
                 rtx_count = St#dtls.rtx_count + 1,
                 rtx_interval = Interval,
-                rtx_at = Now + Interval
+                rtx_at = Now + Interval,
+                sent_at = Now
             },
             {St2, [{send, D} || D <- Dgrams]}
     end;

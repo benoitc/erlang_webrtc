@@ -27,7 +27,7 @@ install_read(Epoch, Secret, #dtls{suite13 = Suite, read_keys = RK, replay = Rp} 
             false ->
                 {RK1, Rp}
         end,
-    St#dtls{read_keys = RK2, replay = Rp1}.
+    St#dtls{read_keys = RK2, replay = Rp1, prev_epoch_until = undefined}.
 
 %% @doc Install the write keys of `Epoch' and make it the write epoch.
 -spec install_write(non_neg_integer(), binary(), #dtls{}) -> #dtls{}.
@@ -56,9 +56,9 @@ key_update_acked(#dtls{write_epoch = E, write_ciphers = WC} = St) ->
     #{secret := S, hash := H} = maps:get(E, WC),
     Next = webrtc_dtls13_keys:next_secret(webrtc_dtls13_keys:prefix(), H, S),
     St1 = install_write(E + 1, Next, St#dtls{ku_pending = false}),
+    %% Records not acknowledged yet keep their ACK timer, and the ACK
+    %% goes in the new epoch.
     St1#dtls{
-        %% Records of the new epoch held back from an earlier ACK.
-        ack_now = St1#dtls.ack_now orelse St1#dtls.rcv_recs =/= [],
         write_ciphers = maps:with([E + 1], St1#dtls.write_ciphers),
         write_seq = maps:with([0, E + 1], St1#dtls.write_seq)
     }.
@@ -69,11 +69,19 @@ key_update_acked(#dtls{write_epoch = E, write_ciphers = WC} = St) ->
 peer_key_update({Req, E}, #dtls{read_keys = RK} = St) ->
     E =:= lists:max(maps:keys(RK)) orelse fail(?ALERT_UNEXPECTED_MESSAGE, key_update_wrong_epoch, St),
     E < ?MAX_EPOCH orelse fail(?ALERT_INTERNAL_ERROR, epoch_exhausted, St),
+    %% Handshake messages must not span a key change (RFC 8446 §5.1).
+    webrtc_dtls_reasm:pending(E, St) andalso fail(?ALERT_UNEXPECTED_MESSAGE, message_after_key_update, St),
     #{secret := S, hash := H} = maps:get(E, RK),
     Next = webrtc_dtls13_keys:next_secret(webrtc_dtls13_keys:prefix(), H, S),
-    St1 = (install_read(E + 1, Next, St))#dtls{ack_now = true},
+    %% Acknowledged on the ACK timer, with the rest of its flight (§7.1).
+    St1 = install_read(E + 1, Next, St),
+    %% Asked to update too: the ACK goes first, then our KeyUpdate
+    %% (Figure 14), before any more data (RFC 8446 §4.6.3). Otherwise the
+    %% ACK waits for the ACK timer.
     case Req of
-        update_requested -> start_key_update(update_not_requested, St1);
-        update_not_requested -> St1
+        update_requested when not St1#dtls.ku_pending ->
+            start_key_update(update_not_requested, St1#dtls{ack_now = true});
+        _ ->
+            St1
     end.
 

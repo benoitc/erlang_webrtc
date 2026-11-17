@@ -406,6 +406,9 @@ client(wait_cv, certificate_verify, CV, Full, _Now, St) ->
 client(wait_finished, finished, VD, Full, _Now, St) ->
     #{shs := SHS} = St#dtls.secrets,
     verify_finished(SHS, VD, St),
+    %% Handshake messages must not span a key change (RFC 8446 §5.1):
+    %% refused before our keys change, so the server can read the alert.
+    webrtc_dtls_reasm:pending(2, St) andalso fail(?ALERT_UNEXPECTED_MESSAGE, message_after_finished, St),
     St1 = derive_application(add(Full, St)),
     #{sap := SAP} = St1#dtls.secrets,
     St2 = webrtc_dtls13_epoch:install_read(3, SAP, St1#dtls{peer_finished = true}),
@@ -419,19 +422,25 @@ client(wait_finished, finished, VD, Full, _Now, St) ->
         end,
     #{chs := CHS, cap := CAP} = St3#dtls.secrets,
     St4 = resumption_secret(queue(finished, finished_body(CHS, St3), St3)),
-    %% Application data uses epoch 3 once our Finished is sent; early
-    %% data ends here (zero_rtt is already accepted or rejected).
+    %% Application data uses epoch 3 once our Finished is sent, in both
+    %% directions (RFC 8446 §4.4.4); early data ends here (zero_rtt is
+    %% already accepted or rejected). The Finished flight is resent until
+    %% the server acknowledges it (RFC 9147 §7.1).
+    %% Reported connected once the flight is out (webrtc_dtls13:flush).
     webrtc_dtls13_epoch:install_write(3, CAP, St4#dtls{state = wait_ack});
 client(S, new_session_ticket, M, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
-    %% The server only sends it after our Finished, so it also confirms
-    %% our flight. Kept for a later resumption with the same peer.
-    St1 = maybe_final(St),
-    store_ticket(M, St1),
-    St1#dtls{ack_now = true};
+    %% Kept for a later resumption with the same peer. Neither it nor a
+    %% KeyUpdate acknowledges our final flight: RFC 9147 §7.1 only lets
+    %% the next flight do that for handshake flights other than the
+    %% client's final one, which must be ACKed.
+    ok = store_ticket(M, St),
+    St;
 client(S, certificate_request, M, Full, _Now, St) when S =:= wait_ack; S =:= connected ->
+    %% The server asks only once it has our Finished (RFC 8446 §4.6.2),
+    %% and our answer is a flight that replaces the Finished one.
     webrtc_dtls13_pha:client_request(M, Full, maybe_final(St));
 client(S, key_update, Req, _Full, _Now, St) when S =:= wait_ack; S =:= connected ->
-    webrtc_dtls13_epoch:peer_key_update(Req, maybe_final(St));
+    webrtc_dtls13_epoch:peer_key_update(Req, St);
 client(_State, Type, _M, _Full, _Now, St) ->
     fail(?ALERT_UNEXPECTED_MESSAGE, {unexpected_message, Type}, St).
 

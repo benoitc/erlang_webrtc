@@ -88,7 +88,9 @@ key("-" ++ Name) -> list_to_atom(Name).
 engine_opts(Server, Cfg) ->
     Cert = load_cert(Cfg),
     %% No remote fingerprints yet: pin() sets them from the handshake.
-    Opts0 = #{role => case Server of true -> server; false -> client end, cert => Cert},
+    %% Resumption on, as BoringSSL by default: the client offers the PSK
+    %% modes, so the runner sends the NewSessionTickets its tests use.
+    Opts0 = #{role => case Server of true -> server; false -> client end, cert => Cert, resumption => true},
     Opts1 = case versions(Cfg) of all -> Opts0; Vs -> Opts0#{versions => Vs} end,
     Opts2 = case maps:find(mtu, Cfg) of {ok, M} -> Opts1#{mtu => list_to_integer(M)}; error -> Opts1 end,
     Opts25 = case maps:find('initial-timeout-duration-ms', Cfg) of
@@ -199,8 +201,9 @@ expect_timeout(Ns, #{dtls := D} = St) ->
         {_, infinity} ->
             throw({fail, "expected a timeout of ~b us, but got none", [Ns div 1000]});
         {_, At} ->
+            %% The engine's clock counts milliseconds: within one.
             Ours = At * 1000 - maps:get(now, St),
-            abs(Ours - Ns div 1000) < 1000 orelse
+            abs(Ours - Ns div 1000) =< 1000 orelse
                 throw({fail, "expected a timeout of ~b us, but got ~b us", [Ns div 1000, Ours]})
     end.
 
@@ -316,7 +319,9 @@ write(Bin, #{dtls := D} = St) ->
 %% ours unless we sent it already, then stop.
 finish(#{closing := true}) ->
     throw(done);
-finish(#{dtls := D} = St) ->
+finish(#{dtls := D, sock := Sock}) ->
+    %% The runner may have closed the connection already: our
+    %% close_notify is then lost, which is not a failure.
     {_, Acts} = webrtc_dtls:close(D),
-    _ = lists:foldl(fun action/2, St#{closing := true}, [A || {send, _} = A <- Acts]),
+    _ = [gen_tcp:send(Sock, [<<"P", (byte_size(B)):32>>, B]) || {send, B} <- Acts],
     throw(done).

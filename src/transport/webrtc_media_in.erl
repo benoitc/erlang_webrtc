@@ -338,10 +338,26 @@ frames(Mid, Ssrc, Fun, Now, M) ->
             {Actions, Fb} = Fun(Fb0),
             M1 = M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{frames = Fb}}},
             Rid = webrtc_media_rid:rid(Ssrc, M1#media.rids),
-            Events = [{event, case Rid of
-                                  undefined -> {frame, Mid, F};
-                                  _ -> {frame, Mid, Rid, F}
-                              end} || {frame, F} <- Actions],
+            {Events, M1a} = lists:foldl(
+                fun({frame, F}, {Acc, MA}) ->
+                        Ev = {event, case Rid of
+                                         undefined -> {frame, Mid, F};
+                                         _ -> {frame, Mid, Rid, F}
+                                     end},
+                        {Decoded, MB} = decode(Mid, Ssrc, F, MA),
+                        {Acc ++ [Ev | Decoded], MB};
+                   (_, Acc) ->
+                        Acc
+                end,
+                {[], M1},
+                Actions
+            ),
+            frames_feedback(Actions, Ssrc, Events, Now, M1a);
+        _ ->
+            {[], M}
+    end.
+
+frames_feedback(Actions, Ssrc, Events, Now, M1) ->
             case lists:member(request_keyframe, Actions) of
                 true ->
                     {Fb1, M2} = keyframe_feedback(Ssrc, M1),
@@ -349,10 +365,46 @@ frames(Mid, Ssrc, Fun, Now, M) ->
                     {Events ++ Sent, M3};
                 false ->
                     {Events, M1}
-            end;
-        _ ->
-            {[], M}
+            end.
+
+%% The transceiver's codec plugin decodes the frame (webrtc_media_codec):
+%% its outputs become events, its statistics the stream's.
+decode(Mid, Ssrc, #{codec := Name} = F, M) ->
+    Sec = maps:get(Mid, M#media.recv, #{}),
+    R = maps:get(Ssrc, M#media.receivers),
+    case {maps:get(codec_plugin, Sec, undefined), R#rcv.plugin} of
+        {undefined, _} ->
+            {[], M};
+        {_, {off, _}} ->
+            {[], M};
+        {{Mod, Opts}, Plugin} ->
+            Started =
+                case Plugin of
+                    {Mod, St, Name} ->
+                        {ok, St};
+                    _ ->
+                        Codec = hd([C || #{name := N} = C <- maps:get(recv_codecs, Sec, []), N =:= Name] ++ [#{name => Name}]),
+                        webrtc_media:plugin_call(fun() -> Mod:init(maps:get(kind, Sec, video), Codec, Opts) end)
+                end,
+            case Started of
+                {ok, St0} ->
+                    case webrtc_media:plugin_call(fun() -> Mod:decode(F, St0) end) of
+                        {ok, Outs, Stats, St1} ->
+                            M1 = set_plugin(Ssrc, {Mod, St1, Name}, M),
+                            Info = webrtc_media:plugin_info(decoder, Mod, St1),
+                            {[{event, {decoded, Mid, Out}} || Out <- Outs],
+                             webrtc_media:report_stream(in, Ssrc, inbound, maps:merge(Stats, Info), M1)};
+                        {error, Reason} ->
+                            {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
+                    end;
+                {error, Reason} ->
+                    {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
+            end
     end.
+
+set_plugin(Ssrc, P, M) ->
+    R = maps:get(Ssrc, M#media.receivers),
+    M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{plugin = P}}}.
 
 %% @doc Frame buffer timers.
 -spec frame_timeouts(integer(), #media{}) -> {#media{}, list()}.

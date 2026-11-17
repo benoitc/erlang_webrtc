@@ -106,3 +106,32 @@ default_send_codec_test() ->
                                           send_codecs => [Red#{fmtp => []}, Rtx#{fmtp => []}, Opus#{fmtp => []}]}, #{}),
     ?assertEqual({ok, 111}, webrtc_media_out:pick_pt(#{}, S)),
     ?assertEqual({ok, 63}, webrtc_media_out:red_pt(S)).
+
+%% A sender may repeat an older packet than the previous one: GStreamer's
+%% rtpredenc with distance 2 puts packet n - 2 in packet n. The block is
+%% placed by its timestamp offset and the packet duration (RFC 2198 §3:
+%% no sequence number in a block).
+repair_distance_two_test() ->
+    Ssrc = 9,
+    Pkt = fun(Seq, Ts, Blocks) -> #rtp{pt = 63, seq = Seq, ts = Ts, ssrc = Ssrc,
+                                       payload = webrtc_red:encode(Blocks, {111, <<Seq:16>>})} end,
+    Keep = fun(P) -> P =:= 111 end,
+    %% 10 and 11 received, 12 lost, 13 lost, 14 carries 12.
+    H0 = ?R:seen(11, 1960, ?R:seen(10, 1000, [])),
+    Red = Pkt(14, 4840, [{111, 1920, <<12:16>>}]),
+    {ok, Blocks} = ?R:decode(Red#rtp.payload),
+    {[Repaired], [Primary]} = ?R:repair(Red, Blocks, Keep, H0),
+    ?assertEqual({12, 2920, <<12:16>>}, {Repaired#rtp.seq, Repaired#rtp.ts, Repaired#rtp.payload}),
+    ?assertEqual(14, Primary#rtp.seq),
+    %% Already received under its timestamp: no repair.
+    H1 = ?R:seen(12, 2920, H0),
+    ?assertMatch({[], [_]}, ?R:repair(Red, Blocks, Keep, H1)).
+
+%% Without a known packet duration the n-th block before the primary is
+%% the n-th packet before it (libwebrtc's layout).
+repair_without_duration_test() ->
+    Red = #rtp{pt = 63, seq = 5, ts = 5000, ssrc = 1, payload = webrtc_red:encode([{111, 960, <<"four">>}], {111, <<"five">>})},
+    {ok, Blocks} = ?R:decode(Red#rtp.payload),
+    {[R], _} = ?R:repair(Red, Blocks, fun(_) -> true end, ?R:seen(3, 3080, [])),
+    ?assertEqual(4, R#rtp.seq),
+    ?assertMatch({[], _}, ?R:repair(Red, Blocks, fun(_) -> true end, [])).

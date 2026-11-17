@@ -64,6 +64,15 @@ Erlang peers against the pion/turn v5 server (`interop/turn`). A filter drops ev
 | The same over TLS, server certificate verified against the suite's CA | relay (TLS to the server) / host | Pass |
 | TLS server certificate not trusted: no relay candidate | | Pass |
 
+## Redundant audio against GStreamer (webrtc_red_gst_SUITE)
+
+RED (RFC 2198) is an RTP payload format, so the suite exchanges it with GStreamer's `rtpredenc` and `rtpreddec` over plain RTP on UDP, without a WebRTC stack around them. GStreamer is the one RED implementation independent of libwebrtc: Firefox, Pion and aiortc have no audio RED. Install it with `brew install gstreamer` or `apt-get install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good`; without it the suite is skipped.
+
+- GStreamer encodes Opus in RED with `distance` 1 and 2; every redundant block matches the primary it repeats, and with every third packet lost we get 59 of 60 packets back (the last one has no later packet).
+- We encode, with every third packet lost: `rtpreddec` and `opusdec` decode 226560 bytes of audio, against 230400 with no loss and 153600 without redundancy.
+
+Running it found that a redundant block was taken for the previous packet, as libwebrtc sends it, when GStreamer's `distance` 2 repeats the one before; blocks are now placed by their timestamp.
+
 ## Harness control (webrtc_harness_SUITE)
 
 These runs connect independent implementations to each other through the controller, to prove the harness before it is used against this stack.

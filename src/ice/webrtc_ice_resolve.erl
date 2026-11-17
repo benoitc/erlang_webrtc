@@ -27,7 +27,8 @@
 resolve(Servers, Opts) ->
     Timeout = maps:get(timeout, Opts, ?TIMEOUT),
     Resolver = maps:get(resolver, Opts, default_resolver(Timeout)),
-    Jobs = [{spawn_monitor(fun() -> exit({result, addresses(S, Resolver)}) end), S} || S <- Servers],
+    Self = self(),
+    Jobs = [{spawn_monitor(fun() -> Self ! {self(), addresses(S, Resolver)} end), S} || S <- Servers],
     Deadline = erlang:monotonic_time(millisecond) + Timeout,
     Results = [collect(Ref, Pid, S, Deadline) || {{Pid, Ref}, S} <- Jobs],
     Found = [{Url, entry(S, A)} || {#{url := Url} = S, {ok, As}} <- Results, A <- As],
@@ -40,11 +41,16 @@ entry(S, Addr) -> {turn, turn(S, Addr)}.
 collect(Ref, Pid, S, Deadline) ->
     Left = max(0, Deadline - erlang:monotonic_time(millisecond)),
     receive
-        {'DOWN', Ref, process, Pid, {result, R}} -> {S, R};
-        {'DOWN', Ref, process, Pid, Other} -> {S, {error, Other}}
+        {Pid, R} ->
+            erlang:demonitor(Ref, [flush]),
+            {S, R};
+        {'DOWN', Ref, process, Pid, Reason} ->
+            {S, {error, Reason}}
     after Left ->
         exit(Pid, kill),
         receive {'DOWN', Ref, process, Pid, _} -> ok end,
+        %% A result sent just before the kill.
+        receive {Pid, _} -> ok after 0 -> ok end,
         {S, {error, timeout}}
     end.
 

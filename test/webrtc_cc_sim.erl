@@ -25,7 +25,7 @@
 -module(webrtc_cc_sim).
 
 -export([run/1, average/4, min_after/4, reached/3]).
--export([rate/4, tcp_rate/4, link_rate/4, queue_percentile/4, received/2]).
+-export([rate/4, tcp_rate/4, link_rate/4, queue_percentile/4, reverse_queue_percentile/4, received/2]).
 
 -define(BIN, 200).
 
@@ -49,6 +49,7 @@ run(Opts) ->
         events => lists:keysort(1, maps:get(events, Opts, [])),
         bins => #{},
         samples => [],
+        rsamples => [],
         trace_ms => maps:get(trace_ms, Opts, undefined),
         trace => [],
         order => rand:seed_s(exsss, {Seed, 17, 23})
@@ -339,10 +340,11 @@ receivers_step(T, #{flows := Fs} = Sim) ->
         Fs
     ).
 
-sample(T, #{flows := Fs, link := L} = Sim) when T rem 100 =:= 0 ->
+sample(T, #{flows := Fs, link := L, rlink := RL} = Sim) when T rem 100 =:= 0 ->
     Targets = [webrtc_cc:target(maps:get(cc, maps:get(Id, Fs))) || Id <- lists:sort(maps:keys(Fs))],
     Q = webrtc_cc_link:queue_delay(T * 1000, L) div 1000,
-    Sim#{samples := [{T, Targets, Q} | maps:get(samples, Sim)]};
+    RQ = webrtc_cc_link:queue_delay(T * 1000, RL) div 1000,
+    Sim#{samples := [{T, Targets, Q} | maps:get(samples, Sim)], rsamples := [{T, RQ} | maps:get(rsamples, Sim)]};
 sample(_T, Sim) ->
     Sim.
 
@@ -383,6 +385,11 @@ rate(#{samples := S}, N, From, To) ->
     average(S, N, From, To).
 
 %% Pth percentile of the bottleneck queue delay (ms) over [From, To].
+%% The same for the backward link, which carries the feedback.
+reverse_queue_percentile(#{rsamples := S}, P, From, To) ->
+    Qs = lists:sort([Q || {T, Q} <- S, T >= From, T =< To]),
+    lists:nth(max(1, min(length(Qs), round(P / 100 * length(Qs)))), Qs).
+
 queue_percentile(#{samples := S}, P, From, To) ->
     Qs = lists:sort([Q || {T, _, Q} <- S, T >= From, T =< To]),
     lists:nth(max(1, min(length(Qs), round(P / 100 * length(Qs)))), Qs).

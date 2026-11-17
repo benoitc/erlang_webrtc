@@ -117,24 +117,39 @@ alr_probe_test() ->
     P6 = up(20000, 1000000, 0, up(19000, 1000000, 0, settled(#{}))),
     ?assertMatch(#{application_limited := false}, ?P:info(P6)).
 
-%% A drop under 66% and a recovery from over-use within 5 s: a cluster
-%% at 85% of the rate before the drop.
+%% A drop under 66% and a recovery from over-use within 5 s, while
+%% application limited or within 3 s of it: a cluster at 85% of the rate
+%% before the drop, at most one every 5 s (libwebrtc's RequestProbe).
 drop_probe_test() ->
-    P0 = up(6000, 2000000, 1800000, settled(#{})),
-    P1 = up(6100, 1000000, 1800000, overuse, P0),
+    %% Sending 1 Mbps of a 2 Mbps estimate for 600 ms: application limited.
+    A0 = up(5600, 2000000, 1000000, up(5000, 2000000, 1000000, settled(#{}))),
+    ?assertMatch(#{application_limited := true}, ?P:info(A0)),
+    P1 = up(6100, 1000000, 1000000, overuse, A0),
     ?assertMatch(#{pending := 0}, ?P:info(P1)),
     P2 = up(7000, 1000000, 1000000, normal, P1),
     ?assertMatch(#{pending := 1}, ?P:info(P2)),
-    {Rate, _} = next_cluster(7000, P2),
+    {Rate, P3} = next_cluster(7000, P2),
     ?assert(Rate >= 1700000 andalso Rate < 1900000),
+    %% Another drop 2 s later: too soon for a second probe.
+    P4 = up(9000, 600000, 600000, overuse, up(8900, 1000000, 600000, P3)),
+    P5 = up(9100, 600000, 600000, normal, P4),
+    ?assertEqual(maps:get(pending, ?P:info(P4)), maps:get(pending, ?P:info(P5))),
     %% Recovered too late: no probe.
-    Q1 = up(6100, 1000000, 1800000, overuse, P0),
+    Q1 = up(6100, 1000000, 1000000, overuse, A0),
     Q2 = up(11200, 1000000, 1000000, normal, Q1),
     ?assertMatch(#{pending := 0}, ?P:info(Q2)),
     %% Already back near the old rate: no probe either.
-    R1 = up(6100, 1300000, 1800000, overuse, up(6050, 2000000, 1800000, P0)),
-    R2 = up(6200, 1700000, 1800000, normal, R1),
+    R1 = up(6100, 1300000, 1000000, overuse, up(6050, 2000000, 1000000, A0)),
+    R2 = up(6200, 1700000, 1000000, normal, R1),
     ?assertMatch(#{pending := 0}, ?P:info(R2)).
+
+%% A sender that fills its estimate does not probe after a drop: the drop
+%% came from a competing flow or a smaller link.
+no_drop_probe_when_not_app_limited_test() ->
+    P0 = up(6000, 2000000, 1800000, settled(#{})),
+    P1 = up(6100, 1000000, 1800000, overuse, P0),
+    P2 = up(7000, 1000000, 1000000, normal, P1),
+    ?assertMatch(#{pending := 0}, ?P:info(P2)).
 
 %% A raised maximum probes at once when the estimate sat at the old one.
 max_raised_test() ->

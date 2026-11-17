@@ -19,9 +19,13 @@
 %%     500 ms, until it is back over 80%. While it lasts a cluster at
 %%     twice the estimate goes every 5 s, so the estimate keeps up with
 %%     the link while the application sends little.</li>
-%% <li>After a large drop: the estimate fell under 66% of its previous
-%%     value, the delay detector leaves over-use within 5 s, and a probe
-%%     at 85% of the rate before the drop would still raise it.</li>
+%% <li>After a large drop while application limited or within 3 s of it:
+%%     the estimate fell under 66% of its previous value, the delay
+%%     detector leaves over-use within 5 s, a probe at 85% of the rate
+%%     before the drop would still raise it, and no such probe went in
+%%     the last 5 s. A sender that fills its share does not probe after
+%%     a drop: the drop came from a competing flow or a smaller link,
+%%     and probing it back refills the queue.</li>
 %% <li>On a raised `max_bitrate' (`max_raised/5'): the estimate was at
 %%     the old maximum, so the new one is probed at once.</li>
 %% </ul>
@@ -63,6 +67,8 @@
 -define(ALR_SCALE, 2).
 -define(DROP, 0.66).
 -define(DROP_TIMEOUT, 5000).
+-define(ALR_ENDED, 3000).
+-define(DROP_INTERVAL, 5000).
 -define(AFTER_DROP, 0.85).
 -define(UNCERTAINTY, 0.05).
 -define(CAPPED, 0.9).
@@ -99,8 +105,11 @@
     estimate :: undefined | pos_integer(),
     low_since :: undefined | integer(),
     alr_since :: undefined | integer(),
-    %% The estimate before the last large drop, and when it happened.
+    alr_ended :: undefined | integer(),
+    %% The estimate before the last large drop, when it happened, and
+    %% when the last probe after a drop went.
     drop :: undefined | {pos_integer(), integer()},
+    drop_probed :: undefined | integer(),
     delay_state = normal :: atom(),
     %% Start times of the probes after start-up, within BUDGET_MS.
     probed = [] :: [integer()],
@@ -146,7 +155,8 @@ alr(Now, E, Sent, #probe{low_since = Low, alr_since = Alr} = P) ->
             InAlr = case Alr of undefined when Now - Since >= ?ALR_MS -> Now; _ -> Alr end,
             P#probe{low_since = Since, alr_since = InAlr};
         Sent > ?ALR_STOP * E; Sent =:= 0 ->
-            P#probe{low_since = undefined, alr_since = undefined};
+            Ended = case Alr of undefined -> P#probe.alr_ended; _ -> Now end,
+            P#probe{low_since = undefined, alr_since = undefined, alr_ended = Ended};
         true ->
             P
     end.
@@ -172,8 +182,8 @@ drop(Now, E, D, #probe{estimate = Prev} = P) ->
     case {P1#probe.drop, P1#probe.delay_state, D} of
         {{Before, At}, overuse, S} when S =/= overuse, Now - At < ?DROP_TIMEOUT ->
             Rate = min(round(?AFTER_DROP * Before), P1#probe.max),
-            case (1 - ?UNCERTAINTY) * Rate > E of
-                true -> probe(Now, Rate, P1#probe{drop = undefined});
+            case (1 - ?UNCERTAINTY) * Rate > E andalso app_limited(Now, P1) andalso since(Now, P1#probe.drop_probed) of
+                true -> probe(Now, Rate, P1#probe{drop = undefined, drop_probed = Now});
                 false -> P1
             end;
         {{_, At}, _, _} when Now - At >= ?DROP_TIMEOUT ->
@@ -181,6 +191,13 @@ drop(Now, E, D, #probe{estimate = Prev} = P) ->
         _ ->
             P1
     end.
+
+app_limited(_Now, #probe{alr_since = Alr}) when Alr =/= undefined -> true;
+app_limited(Now, #probe{alr_ended = Ended}) when is_integer(Ended) -> Now - Ended < ?ALR_ENDED;
+app_limited(_Now, _P) -> false.
+
+since(_Now, undefined) -> true;
+since(Now, At) -> Now - At > ?DROP_INTERVAL.
 
 %% @doc `max_bitrate' went from `Old' to `New': an estimate capped at
 %% `Old' probes `New' at once.

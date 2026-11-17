@@ -11,12 +11,14 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([relay_only_datachannel/1, relay_only_media/1, wrong_credentials_no_relay/1, one_side_relayed/1,
-         relayed_spoofing_dropped/1, relayed_over_tcp/1, relayed_over_tls/1, untrusted_tls_no_relay/1]).
+         relayed_spoofing_dropped/1, relayed_over_tcp/1, relayed_over_tls/1, untrusted_tls_no_relay/1,
+         relayed_by_uri_udp/1, relayed_by_uri_tcp/1, relayed_by_uri_tls/1]).
 
 -define(S, webrtc_test_signal).
 
 all() -> [relay_only_datachannel, relay_only_media, wrong_credentials_no_relay, one_side_relayed,
-          relayed_spoofing_dropped, relayed_over_tcp, relayed_over_tls, untrusted_tls_no_relay].
+          relayed_spoofing_dropped, relayed_over_tcp, relayed_over_tls, untrusted_tls_no_relay,
+          relayed_by_uri_udp, relayed_by_uri_tcp, relayed_by_uri_tls].
 
 init_per_suite(Config) ->
     Bin = filename:join([root(), "interop", "turn", "bin", "turn-server"]),
@@ -132,6 +134,41 @@ stream_relay(_Config, Transport, Addr, Tls) ->
         ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 15000),
     ok = webrtc:send_data(A, Id, text, <<"over ", (atom_to_binary(Transport))/binary>>),
     {ok, _} = ?S:wait(B, fun({channel_message, _, text, <<"over ", _/binary>>}) -> true; (_) -> false end, 15000),
+    ?assertMatch([{relay, _}], selected_types(A)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% The server given by URI and host name (RFC 7065), resolved when the
+%% peer connection starts; for turns the certificate is checked against
+%% the name.
+relayed_by_uri_udp(Config) ->
+    %% UDP from A only to the server.
+    Turn = ?config(turn, Config),
+    uri_relay(by_uri(<<"turn">>, Turn, <<"?transport=udp">>), #{}, [Turn]).
+
+relayed_by_uri_tcp(Config) ->
+    uri_relay(by_uri(<<"turn">>, ?config(turn_tcp, Config), <<"?transport=tcp">>), #{}, []).
+
+relayed_by_uri_tls(Config) ->
+    uri_relay(by_uri(<<"turns">>, ?config(turn_tls, Config), <<>>), #{tls_options => [{cacerts, [?config(turn_ca, Config)]}]},
+              []).
+
+by_uri(Scheme, {_, Port}, Query) ->
+    <<Scheme/binary, ":localhost:", (integer_to_binary(Port))/binary, Query/binary>>.
+
+uri_relay(Url, Extra, OnlyTo) ->
+    {ok, A} = webrtc:new_peer_connection(#{
+        loopback => true,
+        ice_servers => [maps:merge(#{urls => [Url], username => <<"alice">>, credential => <<"wonderland">>}, Extra)],
+        outbound_filter => webrtc_impair:filter(#{only_to => OnlyTo})
+    }),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    ok = webrtc:create_data_channel(A, <<"u">>, #{}),
+    connect(A, B),
+    {ok, {datachannel_open, Id, _, _, _}} =
+        ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 15000),
+    ok = webrtc:send_data(A, Id, text, Url),
+    {ok, _} = ?S:wait(B, fun({channel_message, _, text, U}) -> U =:= Url; (_) -> false end, 15000),
     ?assertMatch([{relay, _}], selected_types(A)),
     webrtc:close(A),
     webrtc:close(B).

@@ -451,7 +451,8 @@ check_frames(Pc, Codec, Frames, Before, After) ->
     {FramesAfter, KeysAfter} = After,
     Keys = length([x || #{keyframe := true} <- Frames]),
     ?assert(length(Frames) >= FramesBefore andalso length(Frames) =< FramesAfter),
-    ?assert(Keys >= KeysBefore andalso Keys =< KeysAfter),
+    %% Playwright's Firefox build has no keyFramesEncoded.
+    ?assert(KeysAfter =:= undefined orelse (Keys >= KeysBefore andalso Keys =< KeysAfter)),
     #{frames_dropped := 0} = frame_stats(Pc),
     ok.
 
@@ -473,7 +474,7 @@ encoded(P0) ->
     {ok, P2, #{<<"stats">> := S} = Ev} = ?P:wait_event(P1, <<"stats">>, #{}),
     [Out | _] = [X || X <- maps:values(S), is_map(X), maps:get(<<"type">>, X, x) =:= <<"outbound-rtp">>,
                       maps:get(<<"kind">>, X, x) =:= <<"video">>],
-    {{maps:get(<<"framesEncoded">>, Out, 0), maps:get(<<"keyFramesEncoded">>, Out, 0)}, consume(P2, Ev)}.
+    {{maps:get(<<"framesEncoded">>, Out, 0), maps:get(<<"keyFramesEncoded">>, Out, undefined)}, consume(P2, Ev)}.
 
 frame_stats(Pc) ->
     #{transport := #{media := #{receivers := Rs}}} = webrtc:get_stats(Pc),

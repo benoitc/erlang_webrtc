@@ -36,7 +36,8 @@
     erlang_sends_audio_level/1,
     erlang_offers_encrypted_audio_level/1,
     peer_sends_audio_level/1,
-    peer_sends_frames/1
+    peer_sends_frames/1,
+    video_stats_agree/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -64,7 +65,8 @@ cases() ->
         erlang_sends_audio_level,
         erlang_offers_encrypted_audio_level,
         peer_sends_audio_level,
-        peer_sends_frames
+        peer_sends_frames,
+        video_stats_agree
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -494,6 +496,47 @@ parses(Codec, #{data := D, keyframe := Key, width := W, height := H}) ->
             Key andalso ?assert(lists:member(7, Types) andalso lists:member(8, Types));
         <<"av1">> ->
             {ok, [{2, <<>>} | _]} = webrtc_rtp_av1:obus(D)
+    end.
+
+%% Erlang sends VP8 frames: the frames, their size and the header bytes
+%% we count as sent are those the browser counts as received.
+video_stats_agree(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox -> video_stats_agree1(Config);
+        _ -> {skip, "the peer's statistics are not W3C ones"}
+    end.
+
+video_stats_agree1(Config) ->
+    %% No probe padding: Chromium counts the RTX stream's packets, padding
+    %% included, in the media stream's packetsReceived.
+    {Pc, P0} = start(Config, #{congestion_control => #{probing => false}}),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{direction => sendonly}),
+    P1 = erlang_offer(Pc, P0, #{}),
+    Frames = webrtc_test_frames:frames(vp8),
+    [begin
+         Ps = webrtc_rtp_vp8:packetize(D, 1000, #{picture_id => I}),
+         N = length(Ps),
+         [ok = webrtc:send_rtp(Pc, <<"0">>, X, #{timestamp => 1000 + I * 3000, marker => J =:= N, codec => <<"VP8">>})
+          || {J, X} <- lists:enumerate(Ps)],
+         timer:sleep(33)
+     end || {I, #{data := D}} <- lists:enumerate(0, Frames)],
+    {ok, P2, _} = ?P:wait(P1, fun(#{<<"event">> := <<"rtp">>, <<"kind">> := <<"video">>, <<"count">> := C}) -> C >= 10;
+                                 (_) -> false end, 20000),
+    timer:sleep(1000),
+    P3 = ?P:cmd(P2, #{cmd => stats}),
+    {ok, P4, #{<<"stats">> := Theirs0}} = ?P:wait_event(P3, <<"stats">>, #{}),
+    put(peer, P4),
+    [In | _] = [S || S <- maps:values(Theirs0), is_map(S), maps:get(<<"type">>, S, x) =:= <<"inbound-rtp">>,
+                     maps:get(<<"kind">>, S, x) =:= <<"video">>],
+    [Out] = [S || _ := #{type := <<"outbound-rtp">>, kind := <<"video">>} = S <- webrtc:get_stats(Pc, #{format => w3c})],
+    ct:log("ours ~p~ntheirs ~p", [Out, In]),
+    #{framesSent := 12, frameWidth := 176, frameHeight := 144, headerBytesSent := Hs, packetsSent := Sent} = Out,
+    ?assertEqual(Sent, maps:get(<<"packetsReceived">>, In)),
+    ?assertEqual(12, maps:get(<<"framesReceived">>, In)),
+    ?assertEqual({176, 144}, {maps:get(<<"frameWidth">>, In), maps:get(<<"frameHeight">>, In)}),
+    case maps:find(<<"headerBytesReceived">>, In) of
+        {ok, Hr} -> ?assertEqual(Hs, Hr);
+        error -> ct:log("no headerBytesReceived")
     end.
 
 %% Without BUNDLE (RFC 9143) audio, video and data each get their own

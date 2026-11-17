@@ -451,7 +451,7 @@ exchange(Port, Sock, Peer, D0, Tag) ->
 %% Let the engine process whatever arrives for a while.
 settle(Sock, Peer, D, Ms) ->
     {_, D1, _, Ev} = webrtc_dtls_udp:run(Sock, Peer, D, #{timeout => Ms, stop => fun(_) -> false end}),
-    ?assertNot(lists:keymember(failed, 1, Ev)),
+    ?assertEqual([], [E || {failed, _} = E <- Ev]),
     D1.
 
 openssl13_server_our_client(Config) ->

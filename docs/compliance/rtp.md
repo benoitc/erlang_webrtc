@@ -214,6 +214,8 @@ No independent implementation answers these messages (browsers, Pion and aiortc 
 | XR-1 | RFC 3611 §4.4 | Receiver Reference Time report block | webrtc_rtcp_xr | webrtc_rtcp_xr_tests:xr_test, xr_errors_test_ | Unit tested |
 | XR-2 | RFC 3611 §4.5 | DLRR report block with sub-blocks | webrtc_rtcp_xr | xr_test, xr_errors_test_ | Unit tested |
 | XR-3 | RFC 3611 §3 | Other block types kept with their type-specific byte | webrtc_rtcp_xr | xr_unknown_block_test | Unit tested |
+| XR-4 | RFC 3611 §4.4 | A Receiver Reference Time block in each regular report while we receive streams | webrtc_media_out | webrtc_stats_SUITE:derived_members | E2E tested |
+| XR-5 | RFC 3611 §4.5 | A DLRR block answering each Receiver Reference Time received (at most 16 sources), its delay in 1/65536 s; the answer to ours gives the round trip time of the streams we receive | webrtc_media_out, webrtc_media_in | derived_members | E2E tested |
 
 ## Congestion control (RFC 8836, draft-ietf-rmcat-gcc-02)
 

@@ -127,7 +127,7 @@ Report = webrtc:get_stats(Pc, #{format => w3c}),
 [#{packetsSent := Sent}] = [S || _ := #{type := <<"outbound-rtp">>} = S <- Report].
 ```
 
-Media is not captured, encoded or decoded here, so the frame and encoder members are absent; [docs/compliance/stats.md](docs/compliance/stats.md) lists every member.
+The frame members of received streams come from the frame buffer when you ask for frames; media is not encoded or decoded here, so the encoder and decoder members are absent. [docs/compliance/stats.md](docs/compliance/stats.md) lists every member.
 
 ## Documentation
 

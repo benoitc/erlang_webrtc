@@ -555,7 +555,9 @@ maybe_verify(#dtls{verified = false, remote_fps = undefined} = St) ->
     St;
 maybe_verify(#dtls{verified = false} = St) ->
     maybe_verify(check_fingerprint(St));
-maybe_verify(#dtls{verified = true, handshake_done = true, announced = false} = St) ->
+maybe_verify(#dtls{verified = true, announced = false} = St) when
+    St#dtls.handshake_done; St#dtls.state =:= wait_ack
+->
     Info = (webrtc_dtls:info(St))#{peer_certificate => St#dtls.peer_cert},
     St1 = emit({connected, Info}, St#dtls{announced = true}),
     Held = lists:reverse(St1#dtls.held),

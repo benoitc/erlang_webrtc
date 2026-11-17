@@ -91,5 +91,6 @@ Superseded documents named in older WebRTC RFCs are tracked under their replacem
 | BUNDLE | RFC 9143 | obsoletes RFC 8843 | [sdp](compliance/sdp.md) |
 | Security architecture | RFC 8826, RFC 8827 | | [security](compliance/security.md) |
 | Transports | RFC 8835 | | [transport](compliance/transport.md) |
+| WebRTC statistics | W3C webrtc-stats | Candidate Recommendation | [stats](compliance/stats.md) |
 
 Interoperability results are tracked separately in [INTEROP.md](INTEROP.md).

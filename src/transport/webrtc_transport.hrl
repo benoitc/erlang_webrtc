@@ -55,6 +55,9 @@
     dropped_last :: undefined | {atom(), term(), term()},
     %% Datagrams received on the sockets, by class (webrtc_demux).
     received = #{} :: #{atom() => pos_integer()},
+    %% Application datagrams (ICE checks left out) and their bytes, for
+    %% the W3C transport statistics.
+    io = #{packets_sent => 0, bytes_sent => 0, packets_received => 0, bytes_received => 0} :: map(),
     %% The selected pair, to tell a path change (connection ID
     %% rotation); `restart' after an ICE restart.
     pair :: undefined | restart | {term(), term()}

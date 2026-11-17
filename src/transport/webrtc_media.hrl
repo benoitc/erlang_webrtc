@@ -107,7 +107,10 @@
     rtcp_rot = 0 :: non_neg_integer(),
     %% Our PAUSE and RESUME requests by remote SSRC (RFC 7728).
     pause_req = #{} :: #{non_neg_integer() => webrtc_rtp_pause:requester()},
-    counters = #{} :: map()
+    counters = #{} :: map(),
+    %% Per stream, for the W3C statistics: counters and the last reports
+    %% by {in, RemoteSsrc} or {out, OurSsrc} (webrtc_stats).
+    streams = #{} :: #{{in | out, non_neg_integer()} => map()}
 }).
 
 -type sender_key() :: binary() | {binary(), binary()}.

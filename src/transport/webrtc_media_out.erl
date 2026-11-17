@@ -11,6 +11,8 @@
     cc_timeouts/2,
     count/2,
     count/3,
+    scount/5,
+    sset/4,
     egress/3,
     mid_ext/1,
     header_ext/2,
@@ -211,8 +213,19 @@ keep_wire(Key, #rtp{seq = Seq} = Pkt, Srtp, false, Now, M) ->
             M
     end.
 
-sent_stats(_Mid, _Pkt, true, M) ->
-    count(retransmitted, M);
+sent_stats(Mid, Pkt, true, M) ->
+    M1 =
+        case maps:find(Mid, M#media.senders) of
+            {ok, #snd{ssrc = Ssrc}} ->
+                %% Without RTX the first transmission's protected bytes
+                %% go again: the packet counts, its payload size is not
+                %% known here.
+                Bytes = case Pkt of #rtp{payload = P} -> byte_size(P); _ -> 0 end,
+                scount(out, Ssrc, retransmitted_bytes_sent, Bytes, scount(out, Ssrc, retransmitted_packets_sent, 1, M));
+            error ->
+                M
+        end,
+    count(retransmitted, M1);
 sent_stats(Mid, Pkt, false, M) ->
     case maps:find(Mid, M#media.senders) of
         {ok, S} ->
@@ -434,7 +447,8 @@ send_feedback([], _Now, M) ->
     {[], M};
 send_feedback(_Pkts, _Now, #media{out = undefined} = M) ->
     {[], M};
-send_feedback(Pkts, Now, #media{rtcp = R} = M) ->
+send_feedback(Pkts, Now, #media{rtcp = R} = M0) ->
+    M = lists:foldl(fun feedback_sent/2, M0, Pkts),
     Compound =
         case M#media.reduced_size of
             true -> Pkts;
@@ -450,6 +464,12 @@ send_feedback(Pkts, Now, #media{rtcp = R} = M) ->
                                  M#media.pending_fb ++ Pkts),
             {[], count(feedback_delayed, M#media{rtcp = R1, pending_fb = Kept})}
     end.
+
+%% NACK, PLI and FIR we send, per remote stream.
+feedback_sent(#rtcp_nack{media_ssrc = S}, M) -> scount(in, S, nack_count, 1, M);
+feedback_sent(#rtcp_pli{media_ssrc = S}, M) -> scount(in, S, pli_count, 1, M);
+feedback_sent(#rtcp_fir{entries = Es}, M) -> lists:foldl(fun({S, _}, Acc) -> scount(in, S, fir_count, 1, Acc) end, M, Es);
+feedback_sent(_, M) -> M.
 
 with_blocks(#rtcp_sr{} = SR, Bs) -> SR#rtcp_sr{reports = Bs};
 with_blocks(#rtcp_rr{} = RR, Bs) -> RR#rtcp_rr{reports = Bs}.
@@ -552,6 +572,17 @@ count(Key, M) ->
 
 count(Key, N, #media{counters = C} = M) ->
     M#media{counters = maps:update_with(Key, fun(V) -> V + N end, N, C)}.
+
+%% @doc Add N to a counter of stream {Dir, Ssrc}.
+-spec scount(in | out, non_neg_integer(), atom(), integer(), #media{}) -> #media{}.
+scount(Dir, Ssrc, Key, N, #media{streams = Ss} = M) ->
+    S = maps:get({Dir, Ssrc}, Ss, #{}),
+    M#media{streams = Ss#{{Dir, Ssrc} => S#{Key => maps:get(Key, S, 0) + N}}}.
+
+%% @doc Set values of stream {Dir, Ssrc}.
+-spec sset(in | out, non_neg_integer(), map(), #media{}) -> #media{}.
+sset(Dir, Ssrc, Values, #media{streams = Ss} = M) ->
+    M#media{streams = Ss#{{Dir, Ssrc} => maps:merge(maps:get({Dir, Ssrc}, Ss, #{}), Values)}}.
 
 rand16() ->
     <<S:16>> = crypto:strong_rand_bytes(2),

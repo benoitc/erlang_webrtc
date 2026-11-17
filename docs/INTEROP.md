@@ -34,12 +34,15 @@ The CID cases check the wire: every protected record we send carries the peer's 
 
 BoringSSL's test runner (BoGo, pinned in `interop/bogo/BORINGSSL_REV`) drives our DTLS engine through a shim (`interop/bogo`). The runner is an independent DTLS 1.2 and 1.3 implementation that sends reordered, fragmented, replayed and deliberately broken traffic and checks every record we send back.
 
-Of its 1,488 DTLS tests, 217 run and pass, and none fails. The others are:
+Of its 1,488 DTLS tests, 236 run and pass, and none fails. The others are:
 - unimplemented in the shim: features a WebRTC peer does not use (resumption in DTLS 1.2, PSK, ECH, OCSP, ALPN, raw public keys, credential selection), and server tests without client authentication, which WebRTC always requires (RFC 8827);
-- disabled in `interop/bogo/config.json`, each with its reason: DTLS 1.0, static RSA and CBC suites, records we discard where BoringSSL aborts (RFC 6347 §4.1.2.7), KeyUpdates we acknowledge at once where the runner expects BoringSSL's ACK timer, and tests that assume BoringSSL internals;
-- open (marked "Open:" in the config): timer schedules the runner checks, the client resending its ClientHello after part of the server's flight arrived, records in an unexpected epoch under heavy reordering, and two DTLS 1.3 record header cases.
+- disabled in `interop/bogo/config.json`, each with its reason: DTLS 1.0, static RSA and CBC suites, records we discard where BoringSSL aborts (RFC 6347 §4.1.2.7), and tests that check a BoringSSL choice the RFC does not make: an ACK for a copy of a HelloRetryRequest (RFC 9147 §7.1 says SHOULD NOT), a ClientHello resent after a complete ServerHello (§7.2 makes the ServerHello an implicit ACK), and a KeyUpdate answered before its ACK (we follow Figure 14, as OpenSSL requires).
 
-Running the suite found and fixed: an ECDSA client that could not reach an RSA server, the HelloVerifyRequest version, reassembly of one-byte fragments, wrong alerts for unexpected messages, unsolicited extensions, oversized records and bad Finished messages, a replayed or final flight that made the client resend its own, a DTLS 1.3 ServerHello accepted after a HelloVerifyRequest, alerts in the wrong epoch, ACKs withheld from a peer's KeyUpdates, and empty certificate_authorities accepted.
+Running the suite found and fixed:
+- an ECDSA client that could not reach an RSA server, the HelloVerifyRequest version, reassembly of one-byte fragments;
+- wrong alerts for unexpected messages, unsolicited extensions, oversized records and bad Finished messages;
+- a replayed or final flight that made the client resend its own, a DTLS 1.3 ServerHello accepted after a HelloVerifyRequest, alerts in the wrong epoch, empty certificate_authorities accepted;
+- copies of the peer's flight in the same burst making us resend ours, the client's final flight taken as acknowledged by a NewSessionTicket or KeyUpdate, messages spanning a key change accepted, ACK sets without bound and an ACK timer re-armed after its ACK, the previous epoch kept forever after a KeyUpdate, and a reassembly window one message wider than a flight.
 
 ## DTLS state machine learning (interop/dtlsfuzzer)
 

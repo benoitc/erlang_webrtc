@@ -17,6 +17,7 @@
     binary_and_large_messages/1,
     erlang_sends_media/1,
     erlang_sends_red_audio/1,
+    stats_agree/1,
     peer_sends_media/1,
     peer_closes/1,
     erlang_renegotiates_adds_audio/1,
@@ -47,6 +48,7 @@ cases() ->
         binary_and_large_messages,
         erlang_sends_media,
         erlang_sends_red_audio,
+        stats_agree,
         peer_sends_media,
         peer_closes,
         erlang_renegotiates_adds_audio,
@@ -334,6 +336,48 @@ erlang_sends_media(Config) ->
             ok
     end,
     put(peer, P2).
+
+%% The W3C statistics of both sides agree on the streams between them:
+%% what one side sent, the other received (loopback, no loss), counted
+%% the same way (RFC 3550 §6.4.1: payload octets).
+stats_agree(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox -> stats_agree1(Config);
+        _ -> {skip, "the peer's statistics are not W3C ones"}
+    end.
+
+stats_agree1(Config) ->
+    {Pc, P0} = start(Config),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"audio">>]}),
+    Opus = <<16#F8, 16#FF, 16#FE>>,
+    [begin ok = webrtc:send_rtp(Pc, <<"0">>, Opus, #{timestamp => N * 960}), timer:sleep(20) end || N <- lists:seq(1, 100)],
+    {ok, P2, _} = ?P:wait(P1, fun(#{<<"event">> := <<"rtp">>, <<"count">> := C}) -> C >= 100; (_) -> false end, 20000),
+    %% The last echoes and a round of RTCP reports.
+    timer:sleep(2000),
+    P3 = ?P:cmd(P2, #{cmd => stats}),
+    {ok, P4, #{<<"stats">> := Theirs0}} = ?P:wait_event(P3, <<"stats">>, #{}),
+    Theirs = [S || S <- maps:values(Theirs0), is_map(S)],
+    Ours = maps:values(webrtc:get_stats(Pc, #{format => w3c})),
+    By = fun(Type, L) -> maps:from_list([{maps:get(K, S), S} || S <- L, maps:get(type, S, maps:get(<<"type">>, S, x)) =:= Type,
+                                         K <- [ssrc, <<"ssrc">>], maps:is_key(K, S)]) end,
+    OurOut = By(<<"outbound-rtp">>, Ours),
+    OurIn = By(<<"inbound-rtp">>, Ours),
+    TheirIn = By(<<"inbound-rtp">>, Theirs),
+    TheirOut = By(<<"outbound-rtp">>, Theirs),
+    ct:log("ours out ~p in ~p~ntheirs in ~p out ~p", [OurOut, OurIn, TheirIn, TheirOut]),
+    %% Our audio stream at the browser.
+    [{Ssrc, #{packetsSent := Sent, bytesSent := Bytes}}] = maps:to_list(OurOut),
+    #{<<"packetsReceived">> := Recv, <<"bytesReceived">> := RecvBytes} = maps:get(Ssrc, TheirIn),
+    ?assertEqual({Sent, Bytes}, {Recv, RecvBytes}),
+    %% The browser's stream at ours: it keeps sending and ours is read
+    %% after theirs, so within a second of audio and with the same bytes
+    %% per packet.
+    [{_, #{<<"packetsSent">> := Echoed, <<"bytesSent">> := EchoBytes, <<"ssrc">> := ESsrc}} | _] = maps:to_list(TheirOut),
+    #{packetsReceived := Got, bytesReceived := GotBytes} = maps:get(ESsrc, OurIn),
+    ?assert(Got >= Echoed andalso Got - Echoed =< 50),
+    ?assertEqual(round(EchoBytes / Echoed), round(GotBytes / Got)),
+    put(peer, P4).
 
 %% Without BUNDLE (RFC 9143) audio, video and data each get their own
 %% ICE and DTLS transport, and all of them carry their traffic.

@@ -90,3 +90,10 @@ cover(Msg, Len, Pos, Acc) ->
     cover(Msg, Len, Start + Size, [{Start, binary:part(Msg, Start, Size)} | Acc]).
 
 shuffle(L) -> [X || {_, X} <- lists:sort([{rand:uniform(), X} || X <- L])].
+
+%% Messages up to six ahead of the next expected one are buffered (the
+%% longest flight); further ones are not part of the flight and dropped.
+window_test() ->
+    St = st(),
+    ?assertEqual(new, webrtc_dtls_reasm:classify(frag(6, 10, 0, <<0:80>>), St)),
+    ?assertEqual(ignore, webrtc_dtls_reasm:classify(frag(7, 10, 0, <<0:80>>), St)).

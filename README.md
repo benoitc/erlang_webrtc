@@ -104,6 +104,17 @@ Ask the sender for a keyframe when a new receiver joins:
 ok = webrtc:request_keyframe(In, <<"1">>).
 ```
 
+## Read the statistics
+
+You get the W3C statistics, the ones a browser's `getStats()` returns, as a map from stats id to the members of each dictionary.
+
+```erlang
+Report = webrtc:get_stats(Pc, #{format => w3c}),
+[#{packetsSent := Sent}] = [S || _ := #{type := <<"outbound-rtp">>} = S <- Report].
+```
+
+Media is not captured, encoded or decoded here, so the frame and encoder members are absent; [docs/compliance/stats.md](docs/compliance/stats.md) lists every member.
+
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, processes, how a packet travels.

@@ -107,6 +107,7 @@
     signaling_state/1,
     connection_state/1,
     get_stats/1,
+    get_stats/2,
     close/1,
     controlling_process/2
 ]).
@@ -434,6 +435,13 @@ connection_state(Pc) -> call(Pc, connection_state).
 
 -spec get_stats(pc()) -> map().
 get_stats(Pc) -> call(Pc, get_stats).
+
+%% @doc Statistics. `#{format => w3c}' gives the W3C WebRTC statistics
+%% (webrtc_stats): a map from stats id to a map of the dictionary's
+%% members; `#{format => internal}' is get_stats/1.
+-spec get_stats(pc(), #{format => w3c | internal}) -> map().
+get_stats(Pc, #{format := w3c}) -> call(Pc, {get_stats, w3c});
+get_stats(Pc, _) -> get_stats(Pc).
 
 -spec close(pc()) -> ok.
 close(Pc) ->

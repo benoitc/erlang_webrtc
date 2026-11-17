@@ -228,10 +228,14 @@ handle_call(stats, _From, St) ->
         dropped => St#st.dropped,
         dropped_last => St#st.dropped_last,
         received => St#st.received,
+        io => St#st.io,
         ice => webrtc_ice_agent:stats(St#st.ice),
         dtls => case St#st.dtls of undefined -> undefined; D -> webrtc_dtls:info(D) end,
         media => webrtc_media:stats(St#st.media),
-        sctp => case St#st.dcep of undefined -> undefined; Dc -> webrtc_sctp_assoc:stats(webrtc_dcep:sctp(Dc)) end
+        sctp => case St#st.dcep of undefined -> undefined; Dc -> webrtc_sctp_assoc:stats(webrtc_dcep:sctp(Dc)) end,
+        peer_certificate => case St#st.dtls of undefined -> undefined; D -> webrtc_dtls:peer_certificate(D) end,
+        channels => case St#st.dcep of undefined -> #{}; Dc -> webrtc_dcep:channels(Dc) end,
+        channel_counts => case St#st.dcep of undefined -> #{opened => 0, closed => 0}; Dc -> webrtc_dcep:channel_counts(Dc) end
     },
     {reply, Stats, St}.
 

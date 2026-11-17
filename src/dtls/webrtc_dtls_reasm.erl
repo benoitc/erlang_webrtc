@@ -7,14 +7,17 @@
 
 -include("webrtc_dtls.hrl").
 
--export([fragment/4, classify/2, add/3, deliver/2]).
+-export([fragment/4, classify/2, add/3, deliver/2, pending/2]).
 
 -ifdef(TEST).
 -export([peek/2]).
 -endif.
 
 -define(MAX_MSG_LEN, 131072).
--define(REASM_AHEAD, 8).
+%% Messages buffered ahead of the next expected one: a flight has at
+%% most six (a DTLS 1.3 server's), so anything further is not part of
+%% it and is dropped (as BoringSSL does).
+-define(REASM_AHEAD, 7).
 %% At most this many disjoint ranges per message: fragments that only
 %% extend a range (however small, RFC 6347 §4.2.3 allows any size) never
 %% count against it.
@@ -47,6 +50,9 @@ fragment(#{seq := Seq, type := client_hello} = F, E, Now, #dtls{state = wait_cli
     fragment(F, E, Now, St#dtls{recv_msg_seq = Seq, reasm = #{}});
 fragment(F, E, Now, St) ->
     case classify(F, St) of
+        %% A stateless server's HelloVerifyRequest says nothing of our
+        %% flight being lost (RFC 6347 §4.2.1).
+        old when map_get(type, F) =:= hello_verify_request -> St;
         old -> webrtc_dtls12:peer_retransmitted(Now, St);
         new -> deliver(Now, add(F, E, St));
         ignore -> St
@@ -154,6 +160,11 @@ deliver(Now, #dtls{recv_msg_seq = Next, reasm = R} = St) ->
         _ ->
             St
     end.
+
+%% @doc Whether part of a message of epoch `E' is buffered.
+-spec pending(non_neg_integer(), #dtls{}) -> boolean().
+pending(E, #dtls{reasm = R}) ->
+    lists:any(fun(#msg{epoch = Ep}) -> Ep =:= E end, maps:values(R)).
 
 -ifdef(TEST).
 %% Test helper: `{Covered, Ranges, Body | incomplete}' of a buffered

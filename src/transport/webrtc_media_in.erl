@@ -179,7 +179,9 @@ rtx_in(Mid, Primary, Pkt, Now, M) ->
             case webrtc_rtx:decapsulate(Pkt, #{ssrc => Primary, pt => OrigPt}) of
                 {ok, Orig} ->
                     M1 = learn(Pkt#rtp.ssrc, Mid, Now, M#media{rtx_ssrc = (M#media.rtx_ssrc)#{Pkt#rtp.ssrc => Primary}}),
-                    deliver(Mid, Orig, Now, webrtc_media_out:count(rtx_received, M1));
+                    M2 = webrtc_media_out:scount(in, Primary, retransmitted_packets_received, 1,
+                             webrtc_media_out:scount(in, Primary, retransmitted_bytes_received, byte_size(Orig#rtp.payload), M1)),
+                    deliver(Mid, Orig, Now, webrtc_media_out:count(rtx_received, webrtc_media_out:sset(in, Primary, #{rtx_ssrc => Pkt#rtp.ssrc}, M2)));
                 {error, _} -> {webrtc_media_out:count(dropped, M), []}
             end;
         _ ->
@@ -199,7 +201,10 @@ deliver(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M) ->
             N -> webrtc_nack:packet(Seq, Now, N)
         end,
     R1 = R0#rcv{rx = Rx, nack = Nack},
-    M1 = learn(Ssrc, Mid, Now, M#media{receivers = (M#media.receivers)#{Ssrc => R1}}),
+    M0 = webrtc_media_out:sset(in, Ssrc, #{last_packet_received => erlang:system_time(millisecond)},
+             webrtc_media_out:scount(in, Ssrc, packets_received, 1,
+                 webrtc_media_out:scount(in, Ssrc, bytes_received, byte_size(Pkt#rtp.payload), M))),
+    M1 = learn(Ssrc, Mid, Now, M0#media{receivers = (M0#media.receivers)#{Ssrc => R1}}),
     {Out, M2a} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
     {M2, PauseEvents} = webrtc_media_pause:rtp(Ssrc, M2a),
     Event =
@@ -276,17 +281,18 @@ rtcp_in(Bin, Now, M) ->
             {webrtc_media_out:count(srtp_rejected, M), []}
     end.
 
-rtcp_packet(#rtcp_nack{media_ssrc = Ssrc, items = Items}, Now, M) ->
+rtcp_packet(#rtcp_nack{media_ssrc = Ssrc, items = Items}, Now, M0) ->
+    M = webrtc_media_out:scount(out, Ssrc, nack_count, 1, M0),
     case sender_by_ssrc(Ssrc, M) of
         {ok, S} -> webrtc_media_out:retransmit(S, webrtc_rtcp_fb:nack_seqs(Items), Now, M);
         error -> {M, []}
     end;
 rtcp_packet(#rtcp_pli{media_ssrc = Ssrc}, _Now, M) ->
-    keyframe(Ssrc, M);
+    keyframe(Ssrc, webrtc_media_out:scount(out, Ssrc, pli_count, 1, M));
 rtcp_packet(#rtcp_fir{entries = Entries}, _Now, M) ->
     lists:foldl(
         fun({Ssrc, _}, {Acc, Act}) ->
-            {Acc1, A} = keyframe(Ssrc, Acc),
+            {Acc1, A} = keyframe(Ssrc, webrtc_media_out:scount(out, Ssrc, fir_count, 1, Acc)),
             {Acc1, Act ++ A}
         end,
         {M, []},
@@ -305,7 +311,13 @@ rtcp_packet(#rtcp_rr{ssrc = Ssrc, reports = Rbs}, Now, M0) ->
 rtcp_packet(Other, Now, M) ->
     rtcp_packet2(Other, Now, M).
 
-sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M) ->
+sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M0) ->
+    %% The remote outbound stream (W3C RTCRemoteOutboundRtpStreamStats).
+    M = webrtc_media_out:scount(in, Ssrc, reports_received, 1, webrtc_media_out:sset(in, Ssrc, #{
+        remote_packets_sent => SR#rtcp_sr.packets,
+        remote_bytes_sent => SR#rtcp_sr.octets,
+        remote_timestamp => webrtc_rtp_stats:ntp_to_us(SR#rtcp_sr.ntp) div 1000
+    }, M0)),
     case maps:find(Ssrc, M#media.receivers) of
         {ok, R} ->
             Rx = webrtc_rtp_stats:rx_sender_report(SR, Now, R#rcv.rx),
@@ -340,7 +352,8 @@ report_blocks(Rbs, Now, M) ->
                             undefined -> undefined
                         end,
                     {Events, Cc} = webrtc_cc:report(Mid, Rb, Rtt, Now, M1#media.cc),
-                    {M1#media{cc = Cc}, Acts ++ [{event, E} || E <- Events]};
+                    M2 = remote_inbound(Rb, Rtt, M1#media{cc = Cc}),
+                    {M2, Acts ++ [{event, E} || E <- Events]};
                 error ->
                     {M1, Acts}
             end
@@ -348,6 +361,26 @@ report_blocks(Rbs, Now, M) ->
         {M, []},
         Rbs
     ).
+
+%% What the peer reports of one of our streams (W3C
+%% RTCRemoteInboundRtpStreamStats); the round trip time in ms.
+remote_inbound(#rtcp_rb{ssrc = Ssrc} = Rb, Rtt, M) ->
+    M1 = webrtc_media_out:sset(out, Ssrc, #{
+        remote_fraction_lost => Rb#rtcp_rb.fraction_lost,
+        remote_packets_lost => Rb#rtcp_rb.lost,
+        remote_jitter => Rb#rtcp_rb.jitter,
+        remote_reports => maps:get(remote_reports, stream(out, Ssrc, M), 0) + 1
+    }, M),
+    case Rtt of
+        undefined ->
+            M1;
+        _ ->
+            webrtc_media_out:scount(out, Ssrc, rtt_measurements, 1,
+                webrtc_media_out:scount(out, Ssrc, total_rtt, Rtt,
+                    webrtc_media_out:sset(out, Ssrc, #{rtt => Rtt}, M1)))
+    end.
+
+stream(Dir, Ssrc, M) -> maps:get({Dir, Ssrc}, M#media.streams, #{}).
 
 keyframe(Ssrc, M) ->
     case sender_by_ssrc(Ssrc, M) of

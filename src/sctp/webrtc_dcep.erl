@@ -35,6 +35,7 @@
 
 -export([
     new/1,
+    channel_counts/1,
     connect/2,
     open_channel/4,
     send/5,
@@ -109,7 +110,12 @@
     out_reset = false :: boolean(),
     in_reset = false :: boolean(),
     partial = [] :: [binary()],
-    partial_bytes = 0 :: non_neg_integer()
+    partial_bytes = 0 :: non_neg_integer(),
+    %% Messages and bytes of user data (W3C RTCDataChannelStats).
+    messages_sent = 0 :: non_neg_integer(),
+    bytes_sent = 0 :: non_neg_integer(),
+    messages_received = 0 :: non_neg_integer(),
+    bytes_received = 0 :: non_neg_integer()
 }).
 
 -record(dc, {
@@ -119,6 +125,9 @@
     local_max :: pos_integer(),
     connected = false :: boolean(),
     channels = #{} :: #{0..?MAX_ID => #ch{}},
+    %% Channels that opened and that closed (W3C RTCPeerConnectionStats).
+    opened = 0 :: non_neg_integer(),
+    closed = 0 :: non_neg_integer(),
     acts = [] :: [term()]
 }).
 
@@ -378,7 +387,8 @@ send(Id, Type, Data, Now, #dc{channels = Chs, max_message_size = Max} = D) when
             {Ppid, Payload} = user_ppid(Type, Data),
             case webrtc_sctp_assoc:send(Id, Ppid, Payload, send_opts(Ch), Now, D#dc.sctp) of
                 {ok, S1, Acts} ->
-                    {D1, Out} = finish(Now, assoc_actions(Acts, Now, D#dc{sctp = S1})),
+                    Sent = Ch#ch{messages_sent = Ch#ch.messages_sent + 1, bytes_sent = Ch#ch.bytes_sent + byte_size(Data)},
+                    {D1, Out} = finish(Now, assoc_actions(Acts, Now, D#dc{sctp = S1, channels = Chs#{Id := Sent}})),
                     {ok, D1, Out};
                 {error, _} = E ->
                     E
@@ -429,13 +439,19 @@ buffered_amount(Id, #dc{sctp = S}) ->
 set_buffered_amount_low_threshold(Id, Low, #dc{sctp = S} = D) ->
     D#dc{sctp = webrtc_sctp_assoc:set_buffered_amount_low_threshold(Id, Low, S)}.
 
+%% @doc Channels that opened and that closed so far.
+-spec channel_counts(dcep()) -> #{opened := non_neg_integer(), closed := non_neg_integer()}.
+channel_counts(#dc{opened = O, closed = C}) -> #{opened => O, closed => C}.
+
 %% @doc Channels by id with their label, state and options.
 -spec channels(dcep()) -> #{0..?MAX_ID => map()}.
 channels(#dc{channels = Chs}) ->
     maps:map(
         fun(_, Ch) ->
             (event_opts(Ch))#{
-                label => Ch#ch.label, protocol => Ch#ch.protocol, state => Ch#ch.state
+                label => Ch#ch.label, protocol => Ch#ch.protocol, state => Ch#ch.state,
+                messages_sent => Ch#ch.messages_sent, bytes_sent => Ch#ch.bytes_sent,
+                messages_received => Ch#ch.messages_received, bytes_received => Ch#ch.bytes_received
             }
         end,
         Chs
@@ -632,7 +648,8 @@ user_message(Ch, Ppid, Data, Now, D) ->
             reset_out(Ch, Now, D)
     end.
 
-deliver(#ch{partial = []} = Ch, Type, Data, D) ->
+deliver(#ch{partial = []} = Ch0, Type, Data, D) ->
+    Ch = Ch0#ch{messages_received = Ch0#ch.messages_received + 1, bytes_received = Ch0#ch.bytes_received + byte_size(Data)},
     D1 = D#dc{channels = (D#dc.channels)#{Ch#ch.id := Ch}},
     event({channel_message, Ch#ch.id, Type, Data}, D1);
 deliver(#ch{partial = Parts} = Ch, Type, Data, D) ->
@@ -714,6 +731,8 @@ dcep_send(Id, Msg, Now, #dc{sctp = S} = D) ->
         {error, _} = E -> E
     end.
 
+event({channel_open, _, _, _, _} = E, #dc{acts = A} = D) -> D#dc{acts = [{event, E} | A], opened = D#dc.opened + 1};
+event({channel_closed, _} = E, #dc{acts = A} = D) -> D#dc{acts = [{event, E} | A], closed = D#dc.closed + 1};
 event(E, #dc{acts = A} = D) -> D#dc{acts = [{event, E} | A]}.
 out(Act, #dc{acts = A} = D) -> D#dc{acts = [Act | A]}.
 

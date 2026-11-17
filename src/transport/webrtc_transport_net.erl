@@ -10,6 +10,7 @@
 
 -export([
     open_socket/1,
+    io/3,
     local_addresses/1,
     family/1,
     datagram/5,
@@ -97,7 +98,7 @@ datagram(Sock, Src, Bin, Now, St0, Ecn) ->
             ice_actions(Acts, St#st{ice = I1});
         Class ->
             case webrtc_ice_agent:is_valid_remote(Sock, Src, St#st.ice) of
-                true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, St, Ecn);
+                true -> webrtc_transport_secure:secure_datagram(Class, Bin, Now, io(received, Bin, St), Ecn);
                 false -> drop(unvalidated_source, St#st{dropped_last = {Class, Sock, Src}})
             end
     end.
@@ -145,7 +146,7 @@ ice_action({event, {data, Via, Peer, Bin}}, St) ->
     %% relay; only a validated candidate pair may reach DTLS and SRTP
     %% (RFC 8445 §12.2, RFC 8826 §4.2).
     case webrtc_ice_agent:is_valid_remote(Via, Peer, St#st.ice) of
-        true -> webrtc_transport_secure:secure_relayed(Peer, Bin, St);
+        true -> webrtc_transport_secure:secure_relayed(Peer, Bin, io(received, Bin, St));
         false -> drop(unvalidated_relayed, St)
     end;
 ice_action({event, {connection_state, S} = E}, St) when S =:= connected; S =:= completed ->
@@ -173,6 +174,13 @@ local_candidate(C, St) ->
     {Value, M} = webrtc_mdns_client:local_candidate(C, St#st.mdns),
     webrtc_transport:to_pc({local_candidate, Value}, St),
     St#st{mdns = M}.
+
+%% @doc Count an application datagram sent or received.
+-spec io(sent | received, binary(), #st{}) -> #st{}.
+io(sent, Bin, #st{io = #{packets_sent := P, bytes_sent := B} = Io} = St) ->
+    St#st{io = Io#{packets_sent := P + 1, bytes_sent := B + byte_size(Bin)}};
+io(received, Bin, #st{io = #{packets_received := P, bytes_received := B} = Io} = St) ->
+    St#st{io = Io#{packets_received := P + 1, bytes_received := B + byte_size(Bin)}}.
 
 udp_send(Sock, {IP, Port}, Bin) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
@@ -221,7 +229,7 @@ filtered(Sock, Dest, Bin, Ecn, #st{filter = {F, FS}} = St) ->
 %% Send a datagram on the selected pair.
 send_out(Bin, St) ->
     case webrtc_ice_agent:send(Bin, webrtc_transport:now_ms(), St#st.ice) of
-        {ok, I1, Acts} -> ice_actions(Acts, St#st{ice = I1});
+        {ok, I1, Acts} -> ice_actions(Acts, io(sent, Bin, St#st{ice = I1}));
         {error, _} -> St
     end.
 
@@ -231,7 +239,7 @@ send_out_ect(Bin, St) ->
     case webrtc_ice_agent:send(Bin, webrtc_transport:now_ms(), St#st.ice) of
         {ok, I1, Acts} ->
             ice_actions([case A of {send, Sock, Dest, B} when is_port(Sock) -> {send_ect, Sock, Dest, B}; _ -> A end
-                         || A <- Acts], St#st{ice = I1});
+                         || A <- Acts], io(sent, Bin, St#st{ice = I1}));
         {error, _} ->
             St
     end.

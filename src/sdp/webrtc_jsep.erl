@@ -47,6 +47,7 @@
     remote_view/1,
     bundle_view/1,
     negotiated/1,
+    local_ice/1,
     close/1
 ]).
 
@@ -777,6 +778,10 @@ remote_ice(#sdp{media = Media} = Sdp) ->
 %% @doc Negotiated parameters from the current (or provisional)
 %% descriptions, or `undefined' before the first answer.
 -spec negotiated(state()) -> map() | undefined.
+%% @doc The local ICE ufrag and password.
+-spec local_ice(state()) -> {binary(), binary()}.
+local_ice(#jsep{ice_ufrag = U, ice_pwd = P}) -> {U, P}.
+
 negotiated(#jsep{} = J) ->
     {Local, Remote} =
         case J#jsep.signaling of

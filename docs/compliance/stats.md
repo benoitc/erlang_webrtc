@@ -111,7 +111,7 @@ Inherits RTCReceivedRtpStreamStats.
 | retransmittedPacketsReceived |  | Reported: RTX (RFC 4588) |
 | retransmittedBytesReceived |  | Reported |
 | rtxSsrc |  | Reported |
-| fecSsrc |  | Not reported: ULPFEC travels on the media SSRC; FlexFEC, with its own SSRC, is not implemented yet |
+| fecSsrc |  | Reported with FlexFEC: the repair stream; ULPFEC travels on the media SSRC |
 | totalCorruptionProbability |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | totalSquaredCorruptionProbability |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | corruptionMeasurements |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |

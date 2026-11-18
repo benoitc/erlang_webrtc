@@ -651,7 +651,7 @@ stats(#media{} = M) ->
     }.
 
 %% @doc What the statistics show of a receive stream.
--spec receiver_info(non_neg_integer(), #rcv{}, state()) -> map().
+-spec receiver_info(non_neg_integer(), #rcv{}, #media{}) -> map().
 receiver_info(Ssrc, R, M) ->
     Info = (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)},
     Info1 = case R#rcv.fec of

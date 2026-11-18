@@ -106,6 +106,18 @@ Ask the sender for a keyframe when a new receiver joins:
 ok = webrtc:request_keyframe(In, <<"1">>).
 ```
 
+Ask a peer to send less on a transceiver, for example to pass on the bandwidth of a SIP leg (TMMBR, RFC 5104; both sides need `ccm tmmbr`, which browsers do not negotiate). The rate counts RTP headers and payload; `infinity` lifts the limit:
+
+```erlang
+ok = webrtc:request_max_bitrate(In, <<"1">>, 300000).
+```
+
+When a peer limits what you send, you get the payload rate it allows; the connection holds the stream to it, so keep the encoder under it:
+
+```erlang
+{webrtc, Pc, {max_bitrate, <<"1">>, Bps}} -> set_encoder_rate(Bps).
+```
+
 ## Receive frames
 
 To decode or record what a peer sends, ask for frames instead of packets. The packets of each frame are put in order, joined and released at their playout time; a frame that cannot be completed is dropped and a key frame is asked for.

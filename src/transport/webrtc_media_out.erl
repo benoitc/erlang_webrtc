@@ -19,6 +19,7 @@
     audio_level/2,
     nack_timeouts/2,
     pace/4,
+    enqueue/3,
     pick_pt/2,
     is_repair/1,
     red_pt/1,
@@ -36,16 +37,45 @@
 senders(#{mid := Mid, send_rids := [_ | _] = Layers} = Sec, Old) ->
     Exts = maps:get(send_extensions, Sec, #{}),
     [
-        {{Mid, Rid}, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false)},
-                             maps:get({Mid, Rid}, Old, undefined)))#snd{
+        {{Mid, Rid}, ext_form(Sec, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false)},
+                                           maps:get({Mid, Rid}, Old, undefined)))#snd{
             rid = Rid,
             rid_ext = maps:get(?URI_RID, Exts, undefined),
             rrid_ext = maps:get(?URI_RRID, Exts, undefined)
-        }}
+        })}
      || #{rid := Rid, ssrc := S, rtx_ssrc := X} = L <- Layers
     ];
 senders(#{mid := Mid} = Sec, Old) ->
-    [{Mid, sender(Sec, maps:get(Mid, Old, undefined))}].
+    [{Mid, ext_form(Sec, sender(Sec, maps:get(Mid, Old, undefined)))}].
+
+%% RFC 8285 §6: without extmap-allow-mixed on both sides a stream keeps
+%% one form: one-byte when every element we send fits it (ids up to 14,
+%% 1 to 16 bytes), two-byte otherwise.
+ext_form(Sec, #snd{} = S) ->
+    case maps:get(ext_mixed, Sec, true) of
+        true ->
+            S#snd{ext_form = auto};
+        false ->
+            Ids = [I || I <- [S#snd.mid_ext, S#snd.rid_ext, S#snd.rrid_ext, S#snd.twcc_ext, S#snd.audio_level_ext],
+                        is_integer(I)],
+            Sdes = [V || {I, V} <- [{S#snd.mid_ext, S#snd.mid}, {S#snd.rid_ext, S#snd.rid}, {S#snd.rrid_ext, S#snd.rid}],
+                         is_integer(I), is_binary(V)],
+            Fits = lists:all(fun(I) -> I =< 14 end, Ids) andalso
+                lists:all(fun(V) -> byte_size(V) >= 1 andalso byte_size(V) =< 16 end, Sdes),
+            S#snd{ext_form = case Fits of true -> one_byte; false -> two_byte end}
+    end.
+
+%% Encode in the stream's header extension form.
+encode_rtp(#rtp{ext = [_ | _] = Ext} = Pkt, Form) when Form =/= auto ->
+    webrtc_rtp:encode(Pkt#rtp{ext = webrtc_rtp_ext:encode(Ext, #{form => Form})});
+encode_rtp(Pkt, _Form) ->
+    webrtc_rtp:encode(Pkt).
+
+ext_form_of(Key, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, #snd{ext_form = F}} -> F;
+        error -> auto
+    end.
 
 skey(#snd{mid = Mid, rid = undefined}) -> Mid;
 skey(#snd{mid = Mid, rid = Rid}) -> {Mid, Rid}.
@@ -62,9 +92,15 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     AudioLevel = maps:get(?URI_AUDIO_LEVEL, SendExt, undefined),
     TwccExt = maps:get(?URI_TWCC, SendExt, undefined),
     {Pause, HoldOff} = pause(Sec, Old),
+    Tmmbr = case webrtc_media_limit:negotiated(Cs) of
+                false -> undefined;
+                true when is_record(Old, snd), Old#snd.tmmbr =/= undefined -> Old#snd.tmmbr;
+                true -> webrtc_tmmbr:new()
+            end,
     case Old of
         #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff,
-                          audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc)};
+                          audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc),
+                          tmmbr = Tmmbr};
         undefined ->
             #snd{
                 mid = Mid,
@@ -83,7 +119,8 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 hold_off = HoldOff,
                 audio_level_ext = AudioLevel,
                 fec_ssrc = maps:get(fec_ssrc, Sec, undefined),
-                fec_seq = rand16()
+                fec_seq = rand16(),
+                tmmbr = Tmmbr
             }
     end.
 
@@ -167,7 +204,7 @@ fec_sent(Key, Pkt, Now, M) ->
                     {[], M};
                 Pts ->
                     Media = unwrap_red(Pkt, Pts),
-                    Group = [{Media#rtp.seq, webrtc_rtp:encode(Media)} | S#snd.fec_group],
+                    Group = [{Media#rtp.seq, encode_rtp(Media, S#snd.ext_form)} | S#snd.fec_group],
                     case Pkt#rtp.marker of
                         false ->
                             {[], M#media{senders = (M#media.senders)#{Key := S#snd{fec_group = Group}}}};
@@ -197,7 +234,7 @@ fec_packets(Key, Group, Ts, {flex, Flex}, Now, M) ->
         S0,
         Payloads
     ),
-    M1 = count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}}),
+    M1 = webrtc_media_limit:charge(Key, Pkts, Now, count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}})),
     egress([{Key, P, flexfec, Now} || P <- Pkts], Now, M1);
 fec_packets(Key, Group, Ts, {ulp, Red, Ulp}, Now, M) ->
     S0 = maps:get(Key, M#media.senders),
@@ -214,7 +251,7 @@ fec_packets(Key, Group, Ts, {ulp, Red, Ulp}, Now, M) ->
         S0,
         Payloads
     ),
-    M1 = count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}}),
+    M1 = webrtc_media_limit:charge(Key, Pkts, Now, count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}})),
     egress([{Key, P, fec, Now} || P <- Pkts], Now, M1).
 
 %% `video_fec': a fixed rate, or with `auto' twice the fraction lost the
@@ -233,9 +270,16 @@ chunk(L, N) when length(L) =< N -> [L];
 chunk(L, N) -> {A, B} = lists:split(N, L), [A | chunk(B, N)].
 
 %% Queue packets in the pacer, then protect and send what it releases.
-pace(Class, Items, Now, M) ->
+%% A stream under a TMMBR limit goes through its limiter first.
+pace(Class, Items, Now, M0) ->
+    {Admitted, M} = webrtc_media_limit:admit([{Class, I} || I <- Items], Now, M0),
+    enqueue(Admitted, Now, M).
+
+%% @doc Queue `[{Class, {Key, Pkt, Rtx}}]' in the pacer and send what it
+%% releases.
+enqueue(Items, Now, M) ->
     {Out, Cc} = lists:foldl(
-        fun({K, P, R}, {Acc, C}) ->
+        fun({Class, {K, P, R}}, {Acc, C}) ->
             %% The time it was queued, for totalPacketSendDelay.
             {O, C1} = webrtc_cc:enqueue({Class, wire_size(P), {K, P, R, Now}}, Now, C),
             {Acc ++ O, C1}
@@ -272,7 +316,7 @@ egress(Items, Now, M0) ->
                     {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
                 false ->
                     Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
-                    Plain = webrtc_rtp:encode(Pkt),
+                    Plain = encode_rtp(Pkt, ext_form_of(Key, M1)),
                     case webrtc_srtp:protect_rtp(Plain, M1#media.out) of
                         {ok, Srtp, Out} ->
                             %% Circuit breakers work per transceiver: all
@@ -495,7 +539,9 @@ probes(Probes, Now, M) ->
     %% With transport-cc the probes carry its sequence numbers; with RFC
     %% 8888 feedback their own RTP sequence numbers are reported.
     Ccfb = webrtc_cc:ccfb_send(M#media.cc),
-    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined orelse Ccfb] of
+    %% Not on a stream held to a TMMBR limit.
+    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined orelse Ccfb,
+               not webrtc_media_limit:limited(S)] of
         [] ->
             {[], M};
         Senders ->
@@ -522,7 +568,7 @@ probe({probe, Cluster, Size}, Mid, Key, Now, M) ->
         end,
     M1 = M#media{senders = (M#media.senders)#{Key := S1}},
     Wire = add_twcc(S#snd.twcc_ext, webrtc_cc:twcc_seq(M1#media.cc), Pkt),
-    case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Wire), M1#media.out) of
+    case webrtc_srtp:protect_rtp(encode_rtp(Wire, S#snd.ext_form), M1#media.out) of
         {ok, Srtp, Out} ->
             Cc = webrtc_cc:sent_probe_rtp(Mid, Wire#rtp.ssrc, Wire#rtp.seq, byte_size(Srtp), Now, Cluster, M1#media.cc),
             {[out(Srtp, M1)], count(probe_sent, M1#media{out = Out, cc = Cc})};

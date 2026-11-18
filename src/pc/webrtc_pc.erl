@@ -78,6 +78,7 @@ init(#{owner := App} = Opts0) ->
         ice_pwd => ice_string(24),
         fingerprints => [FP],
         ice_lite => maps:get(ice_lite, Opts, false),
+        ice_pacing => maps:get(ice_pacing, Opts, 50),
         max_message_size => maps:get(max_message_size, Opts, 262144)
     })),
     Signaler = case maps:get(signaling, Opts, undefined) of
@@ -497,7 +498,8 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
             lite => Lite,
             remote_lite => RemoteLite,
             ufrag => U,
-            pwd => P
+            pwd => P,
+            ta => maps:get(ice_pacing, St#st.opts, 50)
         }
     ),
     {ok, T} = webrtc_transport:start_link(TOpts),
@@ -593,8 +595,8 @@ push_remote_ice(#st{transport = T} = St) ->
         undefined ->
             St;
         {U, P} = Creds ->
-            #sdp{media = Media} = webrtc_jsep:remote_view(St#st.jsep),
-            ok = webrtc_transport:set_remote_ice(T, U, P),
+            #sdp{media = Media} = R = webrtc_jsep:remote_view(St#st.jsep),
+            ok = webrtc_transport:set_remote_ice(T, U, P, webrtc_sdp_media:ice_pacing(R)),
             Cands = lists:flatmap(fun webrtc_sdp_media:candidates/1, Media),
             Sent =
                 case St#st.remote_ice =:= Creds of
@@ -870,7 +872,7 @@ push_extra(St) ->
                             Acc;
                         [#{ufrag := U, pwd := P} | _] ->
                             Acc1 = extra_restart(K, X, {U, P}, Acc),
-                            ok = webrtc_transport:set_remote_ice(T, U, P),
+                            ok = webrtc_transport:set_remote_ice(T, U, P, webrtc_sdp_media:ice_pacing(R)),
                             Cands = lists:flatmap(fun webrtc_sdp_media:candidates/1, Secs),
                             Sent = case maps:get(remote, X) =:= {U, P} of true -> maps:get(sent, X); false -> 0 end,
                             _ = [webrtc_transport:add_remote_candidate(T, C) || C <- lists:nthtail(min(Sent, length(Cands)), Cands)],

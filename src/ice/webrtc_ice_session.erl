@@ -283,6 +283,7 @@ stats(S) ->
         pairs => lists:sort(fun(A, B) -> maps:get(priority, A) >= maps:get(priority, B) end, Pairs),
         counters => S#ice.counters,
         remote_ufrag => S#ice.remote_ufrag,
+        ta => S#ice.ta,
         transactions => webrtc_stun_tx:size(S#ice.tx)
     }.
 

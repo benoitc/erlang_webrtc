@@ -371,6 +371,22 @@ pacing_test() ->
     ?assertEqual([{0, {10, 0, 0, 101}}, {50, {10, 0, 0, 102}}, {100, {10, 0, 0, 103}}],
                  [{T, IP} || {T, {send, s, {IP, _}, _}} <- Acts]).
 
+%% RFC 8445 §14.2: both agents use the higher of the two Ta values.
+pacing_remote_higher_test() ->
+    A0 = with_remote(?AG:set_remote_pacing(100, agent(#{}))),
+    A1 = lists:foldl(fun(N, A) -> element(1, ?AG:add_remote_candidate(remote(N), 0, A)) end, A0, lists:seq(1, 3)),
+    {_, Acts} = tick(A1, 220),
+    ?assertEqual([0, 100, 200], [T || {T, {send, s, _, _}} <- Acts]).
+
+pacing_local_higher_test() ->
+    A0 = with_remote(?AG:set_remote_pacing(20, agent(#{ta => 70}))),
+    A1 = lists:foldl(fun(N, A) -> element(1, ?AG:add_remote_candidate(remote(N), 0, A)) end, A0, lists:seq(1, 3)),
+    {_, Acts} = tick(A1, 150),
+    ?assertEqual([0, 70, 140], [T || {T, {send, s, _, _}} <- Acts]).
+
+pacing_floor_test() ->
+    ?assertError({badarg, {ta, 4}}, agent(#{ta => 4})).
+
 freezing_test() ->
     A0 = agent(#{}),
     {A1, _} = ?AG:gather([{s2, {{10, 0, 0, 7}, 5000}}], 0, A0),

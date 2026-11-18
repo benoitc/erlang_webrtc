@@ -63,7 +63,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | WRTP-11 | 5.1.2 | Understand PLI | webrtc_rtcp_fb | pli_test | Unit tested |
 | WRTP-12 | 5.1.3 | SLI | webrtc_rtcp_fb | sli_test | Unit tested |
 | WRTP-13 | 5.1.4 | RPSI | webrtc_rtcp_fb | afb_other_raw_test (kept raw) | Not implemented: decoded as `#rtcp_raw{}` |
-| WRTP-14 | 5.1.6 | Understand TMMBR, answer with TMMBN | webrtc_rtcp_fb | tmmbr_test, tmmbn_test | Unit tested (codec only; the bounding set of RFC 5104 §3.5.4 is not implemented) |
+| WRTP-14 | 5.1.6 | Understand TMMBR, answer with TMMBN, and follow the limit as media sender | webrtc_rtcp_fb, webrtc_tmmbr, webrtc_media_limit | webrtc_media_tmmbr_tests, webrtc_pc_SUITE:tmmbr_limits_sender | Unit and e2e tested (Erlang to Erlang: browsers do not negotiate `ccm tmmbr`) |
 | WRTP-15 | 5.2 | Header extensions follow RFC 8285 | webrtc_rtp_ext | webrtc_rtp_ext_tests | Unit tested |
 | WRTP-16 | 5.2.1 | Rapid synchronisation (RFC 6051) | | | Not implemented |
 | WRTP-17 | 5.2.2 | Client-to-mixer audio level (RFC 6464), sent with the `audio_level` option of `send_rtp`, encrypted with RFC 6904 when negotiated (the capability is required, its use recommended) | webrtc_rtp_ext, webrtc_media_out | audio_level_test, webrtc_pc_SUITE:header_extension_encryption, webrtc_pc_interop_SUITE:erlang_sends_audio_level, peer_sends_audio_level | Interoperability tested in clear (Chromium and Firefox read our level, we read theirs); encrypted between Erlang peers |
@@ -100,7 +100,14 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | CCM-2 | 4.2.1.1 | Exponent and mantissa chosen so the encoded rate never exceeds the requested one | webrtc_rtcp_fb | bitrate_precision_test | Unit tested |
 | CCM-3 | 4.2.2 | TMMBN, including an empty bounding set | webrtc_rtcp_fb | tmmbn_test | Unit tested |
 | CCM-4 | 4.3.1 | FIR: media SSRC 0, FCI SSRC and sequence number, reserved bits ignored | webrtc_rtcp_fb | fir_test | Unit tested |
-| CCM-5 | 3.5.4 | TMMBR bounding set computation | | | Not implemented |
+| CCM-5 | 3.5.4.2 | TMMBR bounding set computation | webrtc_tmmbr | webrtc_tmmbr_tests, prop_bounding_set_envelope, prop_bounding_set_minimal | Unit tested; the properties check the set against the definition (same lower envelope as every tuple, no member superfluous), exactly with rationals |
+| CCM-7 | 4.2.1.2 | Media sender: new tuples merged with the previous bounding set, the owner's tuple replaced | webrtc_tmmbr | non_owner_test, owner_replaces_test | Unit tested |
+| CCM-8 | 4.2.1.2 | A higher limit applied only after 2 x RTT + T_dither_max; a lower one at once | webrtc_tmmbr, webrtc_media_limit | hold_off_test, bye_lifts_limit_test | Unit tested |
+| CCM-9 | 4.2.1.2 | Owners that leave (BYE) or time out removed, with a new TMMBN | webrtc_tmmbr, webrtc_media_limit | leave_test, expire_test, bye_lifts_limit_test | Unit tested (timeout 25 s, five regular intervals of at least 5 s) |
+| CCM-10 | 4.2.2.2 | A TMMBN answers every TMMBR, even one that leaves the set unchanged; media SSRC 0 | webrtc_media_limit | request_answered_test | Unit tested |
+| CCM-11 | 3.5.4.1 | Sender stays within the feasible region: net media rate at the stream's packet rate | webrtc_rate_limit, webrtc_media_limit | prop_rate_limit_bound, limit_followed_test, zero_holds_test | Unit tested (packets wait in a token bucket, the oldest dropped when it is full; FEC counts against it; no probes on the stream) |
+| CCM-12 | 4.2.1.2 | Media receiver: TMMBR repeated until a TMMBN lists it or already limits more | webrtc_media_limit | request_answered_test | Unit tested |
+| CCM-13 | 7 | Used only when `a=rtcp-fb:* ccm tmmbr` is negotiated; answered without `smaxpr` | webrtc_jsep_caps, webrtc_media_limit | not_negotiated_test, ignored_when_not_negotiated_test | Unit tested |
 | CCM-6 | 4.3.2, 4.3.4 | TSTR / TSTN, VBCM | | | Not implemented (kept raw) |
 
 ## RFC 8285: header extensions
@@ -114,7 +121,9 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | EXT-5 | 4.2 | Id 0 is reserved for padding, not an element | webrtc_rtp_ext | one_byte_errors_test_ | Unit tested |
 | EXT-6 | 6 | Mixed one-byte / two-byte use (extmap-allow-mixed): the encoder picks the two-byte form only when an element needs it | webrtc_rtp_ext | encode_auto_two_byte_test_, prop_ext_roundtrip | Unit tested |
 | EXT-7 | 4.1 | Malformed element lists rejected without crashing | webrtc_rtp_ext | every_truncation_test, bad_rfc8285_ext_test, prop_rtp_mutation_never_crashes | Unit tested |
-| EXT-8 | 6 | Only negotiated ids sent; two-byte form only with extmap-allow-mixed | | | Not implemented (SDP layer chooses the form) |
+| EXT-8 | 6 | `extmap-allow-mixed` answered only where offered, in effect when both descriptions carry it | webrtc_jsep_build, webrtc_jsep_params | webrtc_media_ext_form_tests:negotiation_test, media_level_test | Unit tested |
+| EXT-9 | 4.1.2, 6 | Without it, one form throughout a stream: one-byte when every element we send fits, two-byte otherwise | webrtc_media_out | one_byte_throughout_test, two_byte_throughout_test, long_mid_two_byte_test | Unit tested |
+| EXT-10 | 6 | With it, each packet takes the form its elements need | webrtc_media_out | mixed_allowed_test | Unit tested |
 
 ## RFC 4588: retransmission
 

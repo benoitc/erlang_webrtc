@@ -54,7 +54,7 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | SDP-ICE-10 | 8839 5.4 | Media-level `ice-ufrag`/`ice-pwd` take precedence over session level | webrtc_sdp_media | attribute_helpers_test | Unit tested |
 | SDP-ICE-11 | 8839 5.6 | `ice-options` tags (trickle, ice2, renomination), media level over session level | webrtc_sdp_attr | trickle_candidates_test | Unit tested |
 | SDP-ICE-12 | 8839 5.2 | `remote-candidates` | | | Not implemented: kept as an untyped attribute. |
-| SDP-ICE-13 | 8839 5.5 | `ice-pacing` | | | Not implemented: kept as an untyped attribute. |
+| SDP-ICE-13 | 8839 5.5 | `ice-pacing`: session level, `1*10DIGIT`, 50 ms when absent | webrtc_sdp_attr, webrtc_sdp_media | malformed_test_, ice_pacing_test, prop_random_attribute | Unit tested |
 
 ## DTLS attributes (RFC 8122, RFC 8842, RFC 4145)
 
@@ -86,7 +86,7 @@ Tests named `name_test` or `name_test_` live in `webrtc_sdp_tests`, unless prefi
 | SDP-BUNDLE-1 | 5888 5 | `group` semantics *(SP identification-tag) | webrtc_sdp_attr | chrome_offer_test, malformed_test_ | Unit tested |
 | SDP-BUNDLE-2 | 5888 4 | `mid` token | webrtc_sdp_attr | chrome_offer_test, malformed_test_ | Unit tested |
 | SDP-BUNDLE-3 | 9143 6 | `bundle-only` | webrtc_sdp_attr | misc_attributes_test | Unit tested |
-| SDP-BUNDLE-4 | 5888 4 | mid unique within a description | | | Not implemented: left to JSEP. |
+| SDP-BUNDLE-4 | 5888 4 | mid unique within a description | webrtc_jsep | webrtc_jsep_tests:duplicate_mid_test | Unit tested: a description with a repeated mid is refused (`duplicate_mid`) |
 
 ## RTP attributes
 

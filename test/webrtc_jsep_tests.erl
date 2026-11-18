@@ -37,6 +37,24 @@ av_data(J0) ->
     {ok, _, J2} = webrtc_jsep:add_transceiver(video, #{}, J1),
     webrtc_jsep:add_data_channel(J2).
 
+%% RFC 8445 §10: every section announces ice2. RFC 8445 §14.2, RFC 8839
+%% §5.5: a Ta other than 50 ms is announced, and the default is not.
+ice_options_and_pacing_test() ->
+    {_, _, Offer, Answer} = exchange(av_data(new(#{ice_pacing => 20})), new()),
+    [?assertEqual([<<"trickle">>, <<"ice2">>], ?M:ice_options(M, D)) || D <- [Offer, Answer], M <- D#sdp.media],
+    ?assertEqual({ok, 20}, ?M:attr(ice_pacing, Offer)),
+    ?assertEqual(error, ?M:attr(ice_pacing, Answer)),
+    ?assertEqual(50, ?M:ice_pacing(Answer)).
+
+%% RFC 5888 §4: a mid is unique within a description.
+duplicate_mid_test() ->
+    {ok, O, _} = webrtc_jsep:create_offer(#{}, av_data(new())),
+    [M0, M1 | Rest] = O#sdp.media,
+    Mid0 = ?M:mid(M0),
+    Dup = M1#sdp_media{attributes = [case A of {mid, _} -> {mid, Mid0}; _ -> A end || A <- M1#sdp_media.attributes]},
+    ?assertEqual({error, duplicate_mid},
+                 webrtc_jsep:set_remote_description(offer, wire(O#sdp{media = [M0, Dup | Rest]}), new())).
+
 basic_test() ->
     {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
     {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),

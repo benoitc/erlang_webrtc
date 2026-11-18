@@ -40,6 +40,11 @@
 %% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
 %%     the target bitrate for all media sent on the connection; adapt
 %%     the encoders to it.</li>
+%% <li>`{max_bitrate, Mid, Bps}', `{max_bitrate, Mid, Rid, Bps}': the
+%%     peer limited what the stream may send with TMMBR (RFC 5104), in
+%%     payload bits per second, or lifted the limit (`infinity'). The
+%%     connection holds the stream to it, queuing and at worst dropping
+%%     packets; keep the encoder under it.</li>
 %% <li>`{circuit_breaker, Mid, Reason}': an RTP circuit breaker of
 %%     RFC 8083 triggered for the stream (`rtcp_timeout',
 %%     `media_timeout' or `congestion'). The transceiver's RTP streams
@@ -98,6 +103,7 @@
     send_rtp_packet/4,
     request_keyframe/2,
     request_keyframe/3,
+    request_max_bitrate/3,
     request_pause/2,
     request_pause/3,
     request_resume/2,
@@ -151,6 +157,10 @@ new_peer_connection() ->
 %%     `stun_servers' and `turn_servers', eight in all at most.</li>
 %% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
 %%     address).</li>
+%% <li>`ice_pacing': the interval between connectivity checks (Ta) in
+%%     ms, at least 5, default 50. Another value is announced with
+%%     `a=ice-pacing', and both sides use the higher of the two (RFC
+%%     8445 §14.2).</li>
 %% <li>`rtcp_mux_policy': `negotiate' (default) or `require', which
 %%     adds `a=rtcp-mux-only' to offers (RFC 8858). RTP and RTCP are
 %%     always multiplexed; codecs on payload types 64..95 are refused
@@ -275,6 +285,9 @@ new_pc(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
     %% RFC 8841 §6 gives 0 the meaning "any size"; we always have a
     %% memory bound, so a positive limit is required.
     {error, {badarg, max_message_size}};
+new_pc(#{ice_pacing := Ta}) when not is_integer(Ta); Ta < 5; Ta > 9999999999 ->
+    %% RFC 8445 §14.2: no more than one check every 5 ms.
+    {error, {badarg, ice_pacing}};
 new_pc(#{congestion_control := C}) when not is_map(C) ->
     {error, {badarg, congestion_control}};
 new_pc(#{codecs := Codecs} = Opts) when is_map(Codecs) ->
@@ -446,6 +459,15 @@ request_keyframe(Pc, Mid) ->
 request_keyframe(Pc, Mid, Opts) ->
     Key = layer(Mid, Opts),
     transport(Pc, Mid, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
+
+%% @doc Ask the remote sender of a transceiver to keep its streams under
+%% `Bps' bits per second, RTP headers and payload, with TMMBR (RFC 5104
+%% §4.2.1), or to lift the limit with `infinity'. Needs `ccm tmmbr'
+%% negotiated on both sides, `{error, not_negotiated}' otherwise. The
+%% request is repeated until the sender acknowledges it.
+-spec request_max_bitrate(pc(), binary(), pos_integer() | infinity) -> ok | {error, term()}.
+request_max_bitrate(Pc, Mid, Bps) when is_integer(Bps), Bps > 0; Bps =:= infinity ->
+    transport(Pc, Mid, fun(T) -> webrtc_transport:request_max_bitrate(T, Mid, Bps) end).
 
 %% @doc Ask the remote sender of a transceiver to pause its stream
 %% (RFC 7728 PAUSE), when both sides negotiated `ccm pause'. The answer

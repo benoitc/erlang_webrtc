@@ -44,6 +44,8 @@
     ice_ufrag :: binary(),
     ice_pwd :: binary(),
     ice_lite = false :: boolean(),
+    %% Our Ta in ms, announced with a=ice-pacing when not 50.
+    ice_pacing = 50 :: pos_integer(),
     fingerprints :: [webrtc_dtls_cert:fingerprint()],
     cname :: binary(),
     session_id :: non_neg_integer(),

@@ -33,6 +33,7 @@
     | {ice_ufrag, binary()}
     | {ice_pwd, binary()}
     | {ice_options, [binary(), ...]}
+    | {ice_pacing, non_neg_integer()}
     | {candidate, #sdp_candidate{}}
     | {fingerprint, fingerprint()}
     | {setup, setup()}
@@ -103,6 +104,7 @@ value(<<"group">>) -> {group, local};
 value(<<"ice-ufrag">>) -> {ice_ufrag, local};
 value(<<"ice-pwd">>) -> {ice_pwd, local};
 value(<<"ice-options">>) -> {ice_options, local};
+value(<<"ice-pacing">>) -> {ice_pacing, local};
 value(<<"candidate">>) -> {candidate, local};
 value(<<"fingerprint">>) -> {fingerprint, local};
 value(<<"setup">>) -> {setup, local};
@@ -183,6 +185,11 @@ parse_local(ice_options, V) ->
         error ->
             error
     end;
+%% RFC 8839 §5.5: pacing-value = 1*10DIGIT.
+parse_local(ice_pacing, V) when byte_size(V) =< 10 ->
+    webrtc_sdp_lex:parse_int(V);
+parse_local(ice_pacing, _) ->
+    error;
 parse_local(candidate, V) ->
     case webrtc_sdp_candidate:parse(<<"candidate:", V/binary>>) of
         {ok, C} -> {ok, C};
@@ -410,6 +417,8 @@ enc_local(ice_pwd, V) ->
     ok_or_bad(ice_chars(V, 22, 256), V);
 enc_local(ice_options, [_ | _] = Tags) ->
     lists:join($\s, [ok_or_bad(ice_chars(T, 1, 256), T) || T <- Tags]);
+enc_local(ice_pacing, N) when is_integer(N), N >= 0, N =< 9999999999 ->
+    integer_to_binary(N);
 enc_local(candidate, #sdp_candidate{} = C) ->
     webrtc_sdp_candidate:encode(C);
 enc_local(fingerprint, #{hash := H, value := Bytes} = F) ->

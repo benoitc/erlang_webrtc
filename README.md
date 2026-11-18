@@ -86,7 +86,7 @@ ok = webrtc:set_remote_description(Pc, answer, Answer).
 
 ## Send and forward media
 
-The library moves RTP payloads; encoding and decoding are up to you.
+The library moves RTP payloads and frames; encoding and decoding are up to you or a codec plugin (see below).
 
 ```erlang
 ok = webrtc:send_rtp(Pc, <<"0">>, OpusFrame, #{timestamp => Ts, codec => <<"opus">>}).

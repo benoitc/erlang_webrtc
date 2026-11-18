@@ -24,7 +24,9 @@ What works today, end to end and against independent implementations (see [INTER
 - DTLS 1.3 (RFC 9147) by default with fallback to DTLS 1.2 (use_srtp, extended master secret), connection IDs on request (1.2 and 1.3; 1.2 CIDs verified with mbedTLS and pion/dtls): 1.3 verified with OpenSSL 4.1 and Chromium in both roles, 1.2 with OTP ssl, OpenSSL, Pion and aiortc.
 - SRTP and SRTCP (AES-CM and AES-GCM profiles), with CSRCs and header extensions encrypted by cryptex (RFC 9335) when the peer accepts it, verified with Pion, and single elements such as the audio level encrypted with RFC 6904 when negotiated.
 - One transport for a BUNDLE group, or one per group or unbundled section, offered and answered, verified with Chromium and Firefox.
-- RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, forwarding without decoding.
+- RTP/RTCP with BUNDLE demultiplexing, sender and receiver reports, NACK with RTX, PLI and FIR, audio RED (RFC 2198) checked against Chromium and GStreamer, forwarding without decoding.
+- Frame assembly and a jitter buffer for VP8, VP9, H.264, AV1 and audio, checked against GStreamer's payloaders and ffmpeg, Chromium and Firefox.
+- The W3C statistics, with the decoder and encoder members from a codec plugin or the application.
 - SCTP over DTLS with data channels: reliable, unordered, partially reliable, large messages, channel close by stream reset, priorities through a weighted fair queueing scheduler.
 - JSEP offer/answer with answers and re-offers checked against the offer, renegotiation, rollback from offers and provisional answers, pranswer; a new DTLS certificate is accepted only with an ICE restart and starts a new association (RFC 8842).
 - Simulcast with rid negotiation and the rid / repaired-rid header extensions: receiving layers from Chromium, sending layers to Pion, asking Firefox for layers it then sends, per-layer NACK, RTX, keyframe requests and RTP stream pause and resume (RFC 7728, between Erlang peers).
@@ -33,7 +35,7 @@ What works today, end to end and against independent implementations (see [INTER
 
 The gaps that once mattered for a full WebRTC deployment are closed; what remains not implemented is listed per area, with the reason, in the pages below.
 
-Codec encoding and decoding are not part of the library. Opus, G.711, VP8 and H.264 are negotiated and their RTP payloads are transported and forwarded; producing or consuming the media is the application's job.
+Codec encoding and decoding are not part of the library. Opus, G.711, VP8, VP9, H.264 and AV1 are negotiated, packetized, assembled into frames and forwarded; producing or consuming the media is the application's job, or a codec plugin's (`webrtc_media_codec`).
 
 ## Specifications tracked
 

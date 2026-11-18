@@ -238,12 +238,13 @@ info_({'DOWN', _, process, T, Reason}, St) ->
 info_({'EXIT', T, Reason}, #st{transport = T} = St) ->
     ok = webrtc_registry:delete(self()),
     notify({connection_state, failed}, St),
-    {stop, {transport_exit, Reason}, St#st{transport = undefined}};
+    %% An expected end, reported as `failed': no crash report.
+    {stop, {shutdown, {transport_exit, Reason}}, St#st{transport = undefined}};
 info_({'EXIT', T, Reason}, St) ->
     case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
         [_] ->
             notify({connection_state, failed}, St),
-            {stop, {transport_exit, Reason}, St};
+            {stop, {shutdown, {transport_exit, Reason}}, St};
         [] ->
             {noreply, St}
     end;

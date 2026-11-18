@@ -15,7 +15,7 @@ Diagnostics go to stderr, which the controller saves next to the test logs.
 | `send` | `label`, `data`, `binary` (data is base64 when binary) | Send on a data channel. |
 | `create_channel` | channel spec | Open a new data channel after connection. |
 | `close_channel` | `label` | Close a data channel. |
-| `send_rtcp` | `kind`: `sli` | Pion: send RTCP about the video stream the Erlang side sends (SLI with First 1, Number 2, PictureID 3). |
+| `send_rtcp` | `kind`: `sli` or `rrr` | Pion: send RTCP about the video stream the Erlang side sends: SLI with First 1, Number 2, PictureID 3, or an RTCP-SR-REQ (RFC 6051). |
 | `stats` | | Emit `stats`. |
 | `close` | | Close the peer connection and exit. |
 
@@ -32,7 +32,7 @@ Diagnostics go to stderr, which the controller saves next to the test logs.
 | `message` | `label`, `data`, `binary` |
 | `track` | `mid`, `kind`, `ssrc`, `codec`, `rid` (Pion; empty without simulcast) |
 | `rtp` | `mid`, `count`, `bytes` (sent every 50 packets and on the first one), `rid` (Pion, per layer) |
-| `rtcp` | `kind`, `type` (`sli`), `ssrc`, `entries` (Pion: feedback received about its tracks) |
+| `rtcp` | `kind`, `type` (`sli`, `sr`), `ssrc`, `entries` (Pion: SLI received about its tracks, SR about the tracks it receives, with `t` its arrival in Unix ms) |
 | `stats` | `stats` |
 | `error` | `message` |
 

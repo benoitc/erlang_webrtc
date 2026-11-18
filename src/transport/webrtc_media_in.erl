@@ -409,7 +409,8 @@ deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M, How) ->
              recovered ->
                  M
          end,
-    M1 = audio_level(Mid, Pkt, learn(Ssrc, Mid, Now, M0#media{receivers = (M0#media.receivers)#{Ssrc => R1}})),
+    M1 = webrtc_media_sync:rtp_in(Mid, Pkt, Now,
+                                  audio_level(Mid, Pkt, learn(Ssrc, Mid, Now, M0#media{receivers = (M0#media.receivers)#{Ssrc => R1}}))),
     {Out, M2a} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
     {M2, PauseEvents} = webrtc_media_pause:rtp(Ssrc, M2a),
     case Pkt of
@@ -504,12 +505,18 @@ frames(Mid, Ssrc, Fun, Now, M) ->
             M1 = M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{frames = Fb}}},
             Rid = webrtc_media_rid:rid(Ssrc, M1#media.rids),
             {Events, M1a} = lists:foldl(
-                fun({frame, F}, {Acc, MA}) ->
+                fun({frame, F0}, {Acc, MA}) ->
+                        %% RFC 6051: the capture time on the sender's clock.
+                        {F, MA0} = case webrtc_media_sync:ntp_time(Ssrc, maps:get(timestamp, F0), MA) of
+                                       undefined -> {F0, MA};
+                                       NtpUs -> {F0#{ntp_time => NtpUs},
+                                                 webrtc_media_out:sset(in, Ssrc, #{playout_ntp => {NtpUs, erlang:system_time(microsecond)}}, MA)}
+                                   end,
                         Ev = {event, case Rid of
                                          undefined -> {frame, Mid, F};
                                          _ -> {frame, Mid, Rid, F}
                                      end},
-                        {Decoded, MB} = decode(Mid, Ssrc, F, MA),
+                        {Decoded, MB} = decode(Mid, Ssrc, F, MA0),
                         {Acc ++ [Ev | Decoded], MB};
                    ({plugin_feedback, _} = Pf, {Acc, MA}) ->
                         {Acc ++ [Pf], MA};
@@ -742,7 +749,7 @@ sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M0) ->
     case maps:find(Ssrc, M#media.receivers) of
         {ok, R} ->
             Rx = webrtc_rtp_stats:rx_sender_report(SR, Now, R#rcv.rx),
-            report_blocks(Rbs, Now, M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{rx = Rx}}});
+            report_blocks(Rbs, Now, webrtc_media_sync:sr_in(SR, M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{rx = Rx}}}));
         error ->
             report_blocks(Rbs, Now, M)
     end.
@@ -755,6 +762,8 @@ rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, Now, M) ->
     {lists:foldl(fun forget/2, M1, Ssrcs), Events ++ Acts};
 rtcp_packet2(#rtcp_tmmbr{sender_ssrc = From, entries = Entries}, Now, M) ->
     webrtc_media_limit:tmmbr(From, Entries, Now, webrtc_media_limit:touch(From, Now, M));
+rtcp_packet2(#rtcp_srreq{} = P, Now, M) ->
+    webrtc_media_sync:srreq(P, Now, M);
 rtcp_packet2(P, _Now, M) when is_record(P, rtcp_sli); is_record(P, rtcp_rpsi) ->
     webrtc_media_fb:received(P, M);
 rtcp_packet2(#rtcp_tmmbn{} = N, _Now, M) ->
@@ -809,7 +818,9 @@ report_blocks(Rbs, Now, M) ->
                             {ok, Us} -> Us div 1000;
                             undefined -> undefined
                         end,
-                    M1b = path_rtt(Rtt, M1),
+                    %% RFC 6051 §3.3: a non-zero LSR means the peer has an SR.
+                    M1a = case Lsr of 0 -> M1; _ -> webrtc_media_sync:acked(Ssrc, M1) end,
+                    M1b = path_rtt(Rtt, M1a),
                     {Events, Cc} = webrtc_cc:report(Mid, Rb, Rtt, Now, M1b#media.cc),
                     M2 = remote_inbound(Rb, Rtt, M1b#media{cc = Cc}),
                     {M2, Acts ++ [{event, E} || E <- Events]};

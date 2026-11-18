@@ -68,7 +68,16 @@
     %% reported to the owner.
     tmmbr :: undefined | webrtc_tmmbr:state(),
     limiter :: undefined | webrtc_rate_limit:state(),
-    limit = infinity :: non_neg_integer() | infinity
+    limit = infinity :: non_neg_integer() | infinity,
+    %% RFC 6051: the ntp-64 extension id when negotiated, whether the
+    %% peer has an SR for the stream, the timestamp of the last keyframe
+    %% that carried it, and whether the next packets carry it (after a
+    %% video keyframe, or an SR-REQ until our next SR).
+    ntp_ext :: undefined | pos_integer(),
+    sync_acked = false :: boolean(),
+    sync_key_ts :: undefined | non_neg_integer(),
+    sync_next = false :: boolean(),
+    sync_req = false :: boolean()
 }).
 
 -record(rcv, {
@@ -87,6 +96,12 @@
     keyframe = [] :: [pli | fir],
     %% Loss indications the stream negotiated (RFC 4585 §6.3.2, §6.3.3).
     loss_fb = [] :: [sli | rpsi],
+    %% RFC 6051: the sender's {NtpUs, RtpTs} mapping from SR or the NTP
+    %% header extensions, the last SR's NTP time (the upper bits of
+    %% ntp-56) and when the stream's first packet came.
+    sync :: undefined | {integer(), non_neg_integer()},
+    sr_ntp :: undefined | non_neg_integer(),
+    sync_from :: undefined | integer(),
     fir_seq = 0 :: 0..255,
     %% The codec plugin decoding the frames, with the codec it was
     %% started for.

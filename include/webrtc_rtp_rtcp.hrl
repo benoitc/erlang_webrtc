@@ -18,6 +18,7 @@
 -define(RTPFB_NACK, 1).
 -define(RTPFB_TMMBR, 3).
 -define(RTPFB_TMMBN, 4).
+-define(RTPFB_SRREQ, 5).
 -define(RTPFB_PAUSE, 9).
 -define(RTPFB_CCFB, 11).
 -define(RTPFB_TWCC, 15).
@@ -138,6 +139,13 @@
 
 %% Picture loss indication (RFC 4585 §6.3.1).
 -record(rtcp_pli, {
+    sender_ssrc = 0 :: rtcp_u32(),
+    media_ssrc = 0 :: rtcp_u32()
+}).
+
+%% RTCP rapid resynchronisation request (RFC 6051 §3.2): the receiver
+%% asks the sender of media_ssrc for an SR. No FCI.
+-record(rtcp_srreq, {
     sender_ssrc = 0 :: rtcp_u32(),
     media_ssrc = 0 :: rtcp_u32()
 }).

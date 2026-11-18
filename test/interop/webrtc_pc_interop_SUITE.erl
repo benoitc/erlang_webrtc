@@ -39,7 +39,8 @@
     peer_sends_frames/1,
     video_stats_agree/1,
     erlang_sends_video_fec/1,
-    slice_loss_indications/1
+    slice_loss_indications/1,
+    sr_on_request/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -70,7 +71,8 @@ cases() ->
         peer_sends_frames,
         video_stats_agree,
         erlang_sends_video_fec,
-        slice_loss_indications
+        slice_loss_indications,
+        sr_on_request
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -367,6 +369,32 @@ slice_loss_indications1(Config) ->
     _ = wait_erlang(Pc, fun({rtp, <<"0">>, #rtp{}}) -> true; (_) -> false end),
     ok = webrtc:send_slice_loss(Pc, <<"0">>, [{100, 7, 42}]),
     {ok, P4, _} = ?P:wait_event(P3, <<"rtcp">>, #{<<"type">> => <<"sli">>, <<"entries">> => [[100, 7, 42]]}),
+    put(peer, P4).
+
+%% RFC 6051 §3.2: Pion's RapidResynchronizationRequest gets an SR at
+%% once, long before the next regular one (reports at most every 5 s).
+sr_on_request(Config) ->
+    case ?config(peer, Config) of
+        pion -> sr_on_request1(Config);
+        _ -> {skip, "the peer cannot send RTCP-SR-REQ"}
+    end.
+
+sr_on_request1(Config) ->
+    {Pc, P0} = start(Config, #{rtcp_report_interval => 5000}),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"video">>]}),
+    [ok = webrtc:send_rtp(Pc, <<"0">>, <<N, 0, 0>>, #{timestamp => N * 3000, marker => true}) || N <- lists:seq(1, 20)],
+    {ok, P2a, _} = ?P:wait_event(P1, <<"rtcp">>, #{<<"type">> => <<"sr">>}),
+    %% The waits look at the recorded events: drop the SRs seen so far.
+    Sr = fun(#{<<"event">> := <<"rtcp">>, <<"type">> := <<"sr">>}) -> true; (_) -> false end,
+    P2 = lists:foldl(fun(E, Acc) -> ?P:forget(Acc, E) end, P2a, [E || E <- ?P:events(P2a), Sr(E)]),
+    T0 = erlang:system_time(millisecond),
+    P3 = ?P:cmd(P2, #{cmd => send_rtcp, kind => rrr}),
+    {ok, P4, #{<<"t">> := T}} = ?P:wait_event(P3, <<"rtcp">>, #{<<"type">> => <<"sr">>}),
+    %% Pion stamps the SR with its arrival time on the same host.
+    ct:log("SR ~b ms after the request", [T - T0]),
+    ?assert(T >= T0 - 1),
+    ?assert(T - T0 < 2000),
     put(peer, P4).
 
 %% The W3C statistics of both sides agree on the streams between them:

@@ -88,7 +88,7 @@ Inherits RTCReceivedRtpStreamStats.
 | firCount |  | Reported |
 | pliCount |  | Reported |
 | totalProcessingDelay |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
-| estimatedPlayoutTimestamp |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
+| estimatedPlayoutTimestamp |  | Reported with `frames` on the transceiver once a sync mapping is known (SR or RFC 6051): the sender's time of the last frame released, moved on by the time since, in ms since the Unix epoch. A codec plugin or `webrtc:report_media_stats/4` overrides it |
 | jitterBufferDelay |  | Reported with `frames` on the transceiver, from the frame buffer |
 | jitterBufferTargetDelay |  | Reported with `frames` on the transceiver, from the frame buffer |
 | jitterBufferEmittedCount |  | Reported with `frames` on the transceiver, from the frame buffer |

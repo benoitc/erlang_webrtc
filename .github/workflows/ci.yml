@@ -128,13 +128,16 @@ jobs:
         run: echo "MBEDTLS_PROGRAMS=$HOME/mbedtls" >> "$GITHUB_ENV"
       # GStreamer's rtpredenc and rtpreddec (RED, RFC 2198) and its video
       # encoders and payloaders, independent of libwebrtc; ffmpeg decodes
-      # the frames we put together.
+      # the frames we put together. The Python bindings drive its RFC 6051
+      # header extension (interop/gst/rtp_ntp.py).
       - name: Install GStreamer and ffmpeg
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad ffmpeg
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad ffmpeg \
+            python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
           gst-inspect-1.0 rtpredenc | head -1
+          gst-inspect-1.0 rtphdrextntp64 | head -1
       - name: Build peer adapters
         run: make -C interop all
       - name: Install headless browsers

@@ -45,6 +45,9 @@
 -define(URI_ABS_SEND_TIME, <<"http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time">>).
 -define(URI_TWCC, <<"http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01">>).
 -define(URI_TOFFSET, <<"urn:ietf:params:rtp-hdrext:toffset">>).
+%% RFC 6051 §3.3, recommended by RFC 8834 §5.2.1.
+-define(URI_NTP64, <<"urn:ietf:params:rtp-hdrext:ntp-64">>).
+-define(URI_NTP56, <<"urn:ietf:params:rtp-hdrext:ntp-56">>).
 -define(URI_PLAYOUT_DELAY, <<"http://www.webrtc.org/experiments/rtp-hdrext/playout-delay">>).
 -define(URI_ORIENTATION, <<"urn:3gpp:video-orientation">>).
 
@@ -134,7 +137,9 @@ default_extensions(audio) ->
         #{id => 5, uri => ?URI_AUDIO_LEVEL, encrypt => true},
         #{id => 2, uri => ?URI_ABS_SEND_TIME},
         #{id => 3, uri => ?URI_TWCC},
-        #{id => 4, uri => ?URI_MID}
+        #{id => 4, uri => ?URI_MID},
+        #{id => 6, uri => ?URI_NTP64},
+        #{id => 7, uri => ?URI_NTP56}
     ];
 default_extensions(video) ->
     [
@@ -145,7 +150,9 @@ default_extensions(video) ->
         #{id => 11, uri => ?URI_RRID},
         #{id => 13, uri => ?URI_ORIENTATION},
         #{id => 14, uri => ?URI_TOFFSET},
-        #{id => 12, uri => ?URI_PLAYOUT_DELAY}
+        #{id => 12, uri => ?URI_PLAYOUT_DELAY},
+        #{id => 6, uri => ?URI_NTP64},
+        #{id => 7, uri => ?URI_NTP56}
     ].
 
 %%====================================================================

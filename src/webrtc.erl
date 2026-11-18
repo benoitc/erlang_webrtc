@@ -237,8 +237,9 @@ new_peer_connection() ->
 %% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
 %%     extensions (RFC 9335), default `true'. Media is sent that way
 %%     when every section of the connection negotiated it.</li>
-%% <li>`video_fec': ULPFEC packets (RFC 5109, in RED: RFC 8854 §5.2)
-%%     sent per video packet when the peer negotiates them, `auto'
+%% <li>`video_fec': FEC packets sent per video packet, FlexFEC (RFC
+%%     8627) or ULPFEC in RED (RFC 5109, RFC 8854 §5.2), whichever the
+%%     peer negotiates, FlexFEC first: `auto'
 %%     (default: twice the fraction lost the peer reports, at most 0.5,
 %%     none without loss) or a number, 0.0 to send none.</li>
 %% <li>`frames': the `frames' option of transceivers added without it,

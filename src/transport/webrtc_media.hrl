@@ -55,6 +55,9 @@
     picture_id = 0 :: 0..16#7FFF,
     %% ULPFEC: the packets of the frame being sent, as protected.
     fec_group = [] :: [{0..65535, binary()}],
+    %% FlexFEC (RFC 8627): the repair stream and its sequence numbers.
+    fec_ssrc :: undefined | non_neg_integer(),
+    fec_seq = 0 :: 0..65535,
     plugin :: undefined | {module(), term()} | {off, term()}
 }).
 

@@ -332,6 +332,7 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
         retransmittedPacketsReceived => maps:get(retransmitted_packets_received, S, 0),
         retransmittedBytesReceived => maps:get(retransmitted_bytes_received, S, 0),
         headerBytesReceived => maps:get(header_bytes_received, S, 0),
+        fecSsrc => maps:get(fec_ssrc, S, undefined),
         rtxSsrc => maps:get(rtx_ssrc, S, undefined),
         remoteId => case Remote of [#{id := Rid}] -> Rid; [] -> undefined end,
         codec => Codec

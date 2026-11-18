@@ -80,9 +80,10 @@ route1(#rtp{ssrc = Ssrc} = Pkt, Now, M) ->
                 false ->
                     {webrtc_media_out:count(too_many_streams, M), []};
                 true ->
-                    case maps:find(Ssrc, M#media.rtx_ssrc) of
-                        {ok, Primary} -> rtx_in(Mid, Primary, Pkt, Now, M);
-                        error -> layer_in(Mid, Pkt, Now, M)
+                    case {maps:find(Ssrc, M#media.rtx_ssrc), is_codec(Mid, Pkt#rtp.pt, <<"flexfec">>, M)} of
+                        {_, true} -> flexfec_in(Mid, Pkt, Now, M);
+                        {{ok, Primary}, _} -> rtx_in(Mid, Primary, Pkt, Now, M);
+                        {error, _} -> layer_in(Mid, Pkt, Now, M)
                     end
             end
     end.
@@ -207,7 +208,64 @@ rtx_in(Mid, Primary, Pkt, Now, M) ->
 deliver(Mid, #rtp{pt = Pt} = Pkt, Now, M) ->
     case is_red(Mid, Pt, M) of
         true -> red_in(Mid, Pkt, Now, M);
-        false -> deliver1(Mid, Pkt, Now, M)
+        false -> flexfec_media(Mid, Pkt, Now, M)
+    end.
+
+is_codec(Mid, Pt, Name, M) ->
+    Codecs = maps:get(recv_codecs, maps:get(Mid, M#media.recv, #{}), []),
+    lists:any(fun(#{pt := P, name := N}) -> P =:= Pt andalso string:lowercase(N) =:= Name end, Codecs).
+
+has_codec(Mid, Name, M) ->
+    Codecs = maps:get(recv_codecs, maps:get(Mid, M#media.recv, #{}), []),
+    lists:any(fun(#{name := N}) -> string:lowercase(N) =:= Name end, Codecs).
+
+%% FlexFEC (RFC 8627): a source packet, its bytes as received, goes to the
+%% stream's recovery when the transceiver negotiated FlexFEC.
+flexfec_media(Mid, #rtp{ssrc = Ssrc, seq = Seq} = Pkt, Now, #media{raw = Raw} = M) when is_binary(Raw) ->
+    case has_codec(Mid, <<"flexfec">>, M) andalso Raw of
+        <<_:16, Seq:16, _:32, Ssrc:32, _/binary>> ->
+            case seen(Ssrc, Seq, M) of
+                true ->
+                    {webrtc_media_out:count(fec_duplicate, M), []};
+                false ->
+                    {M1, A1} = deliver1(Mid, Pkt, Now, M),
+                    {M2, A2} = fec_step(Mid, Ssrc, fun(F) -> webrtc_ulpfec:media(Seq, Raw, F) end, Now, M1),
+                    {M2, A1 ++ A2}
+            end;
+        _ ->
+            deliver1(Mid, Pkt, Now, M)
+    end;
+flexfec_media(Mid, Pkt, Now, M) ->
+    deliver1(Mid, Pkt, Now, M).
+
+%% A FlexFEC repair packet: the stream it protects is its CSRC (§4.2.1).
+flexfec_in(Mid, #rtp{ssrc = FecSsrc, csrcs = Csrcs, payload = P}, Now, M0) ->
+    M = learn(FecSsrc, Mid, Now, M0),
+    case webrtc_flexfec:decode(P, length(Csrcs)) of
+        {ok, #{blocks := [Block]} = F} when length(Csrcs) =:= 1 ->
+            [Ssrc] = Csrcs,
+            case maps:is_key(Ssrc, M#media.receivers) of
+                true ->
+                    M1 = webrtc_media_out:sset(in, Ssrc, #{fec_ssrc => FecSsrc}, M),
+                    fec_step(Mid, Ssrc, fun(Rx) -> webrtc_ulpfec:repair({Ssrc, Block, F, byte_size(P)}, Rx) end, Now, M1);
+                false ->
+                    {webrtc_media_out:count(fec_unknown_source, M), []}
+            end;
+        {ok, _} ->
+            %% Several protected SSRCs: not recovered here.
+            {webrtc_media_out:count(fec_multi_source, M), []};
+        {retransmission, Bin} ->
+            case webrtc_rtp:decode(Bin, #{extensions => parse}) of
+                {ok, #rtp{ssrc = S, seq = Sq} = Src} ->
+                    case maps:is_key(S, M#media.receivers) andalso not seen(S, Sq, M) of
+                        true -> deliver1(Mid, Src, Now, webrtc_media_out:count(fec_retransmission, M));
+                        false -> {M, []}
+                    end;
+                {error, _} ->
+                    {webrtc_media_out:count(dropped, M), []}
+            end;
+        {error, _} ->
+            {webrtc_media_out:count(dropped, M), []}
     end.
 
 is_red(Mid, Pt, M) ->

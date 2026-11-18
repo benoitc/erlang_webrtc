@@ -706,13 +706,13 @@ rtcp_packet(#rtcp_fir{entries = Entries}, _Now, M) ->
         Entries
     );
 rtcp_packet(#rtcp_sr{ssrc = Ssrc} = SR, Now, M0) ->
-    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, M0),
+    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, webrtc_media_limit:touch(Ssrc, Now, M0)),
     {M1, Acts} = sender_report(SR, Now, M),
     {M1, Coll ++ Acts};
 rtcp_packet(#rtcp_sdes{chunks = Chunks}, _Now, M) ->
     {M#media{rids = webrtc_media_rid:sdes(Chunks, M#media.ssrc_mid, M#media.rids)}, []};
 rtcp_packet(#rtcp_rr{ssrc = Ssrc, reports = Rbs}, Now, M0) ->
-    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, M0),
+    {M, Coll} = webrtc_media_out:ssrc_collision(Ssrc, webrtc_media_limit:touch(Ssrc, Now, M0)),
     {M1, Acts} = report_blocks(Rbs, Now, M),
     {M1, Coll ++ Acts};
 rtcp_packet(Other, Now, M) ->
@@ -734,9 +734,15 @@ sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M0) ->
     end.
 
 %% RFC 3550 §6.6: the source left; its state goes with it.
-rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, _Now, M) ->
+rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, Now, M) ->
     Events = [{event, {bye, maps:get(S, M#media.ssrc_mid, undefined), S}} || S <- Ssrcs],
-    {lists:foldl(fun forget/2, M, Ssrcs), Events};
+    %% Their TMMBR limits go too (RFC 5104 §4.2.1.2).
+    {M1, Acts} = webrtc_media_limit:bye(Ssrcs, Now, M),
+    {lists:foldl(fun forget/2, M1, Ssrcs), Events ++ Acts};
+rtcp_packet2(#rtcp_tmmbr{sender_ssrc = From, entries = Entries}, Now, M) ->
+    webrtc_media_limit:tmmbr(From, Entries, Now, webrtc_media_limit:touch(From, Now, M));
+rtcp_packet2(#rtcp_tmmbn{} = N, _Now, M) ->
+    {webrtc_media_limit:tmmbn(N, M), []};
 rtcp_packet2(#rtcp_xr{ssrc = From, blocks = Blocks}, _Now, M) ->
     {lists:foldl(fun(B, Acc) -> xr_block(From, B, Acc) end, M, Blocks), []};
 rtcp_packet2(#rtcp_pause{} = P, Now, M) ->

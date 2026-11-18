@@ -31,6 +31,7 @@
     fingerprint_change_refused/1,
     max_message_size_wired/1,
     ice_pacing_negotiated/1,
+    tmmbr_limits_sender/1,
     fingerprint_change_ends_association/1,
     remote_ice_restart_rolled_back/1,
     pranswer_connects/1,
@@ -73,6 +74,7 @@ all() ->
         fingerprint_change_refused,
         max_message_size_wired,
         ice_pacing_negotiated,
+        tmmbr_limits_sender,
         fingerprint_change_ends_association,
         remote_ice_restart_rolled_back,
         pranswer_connects,
@@ -1120,6 +1122,44 @@ ice_pacing_negotiated(_Config) ->
     ?assertEqual(100, Ta(B)),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 5104 §4.2, RFC 8834 §5.1.6: B asks A to keep its video under
+%% 200 kb/s; A is told and holds the stream to it while trying to send
+%% 800 kb/s.
+tmmbr_limits_sender(_Config) ->
+    A = pc(),
+    B = pc(),
+    av(A),
+    av(B),
+    ?S:connect(A, B),
+    ok = webrtc:send_rtp(A, <<"1">>, <<"first">>, #{timestamp => 1, marker => true}),
+    _ = rtp(B, <<"1">>, <<"first">>),
+    ok = webrtc:request_max_bitrate(B, <<"1">>, 200000),
+    {ok, {max_bitrate, <<"1">>, Bps}} = ?S:wait(A, fun({max_bitrate, <<"1">>, _}) -> true; (_) -> false end, 5000),
+    ?assert(Bps =< 200000),
+    Payload = binary:copy(<<1>>, 1000),
+    T0 = erlang:monotonic_time(millisecond),
+    [begin
+         ok = webrtc:send_rtp(A, <<"1">>, Payload, #{timestamp => N * 900, marker => true}),
+         timer:sleep(10)
+     end || N <- lists:seq(1, 200)],
+    timer:sleep(500),
+    Got = count_rtp(B, <<"1">>, 1000, 0),
+    Ms = erlang:monotonic_time(millisecond) - T0,
+    %% 1000 byte payloads at 200 kb/s: 25 per second, plus one burst.
+    Allowed = Ms * 25 div 1000 + 3,
+    ct:log("received ~p of 200 payloads in ~p ms, ~p allowed", [Got, Ms, Allowed]),
+    ?assert(Got =< Allowed),
+    ?assert(Got >= Allowed div 2),
+    webrtc:close(A),
+    webrtc:close(B).
+
+count_rtp(Pc, Mid, Size, N) ->
+    receive
+        {webrtc, Pc, {rtp, Mid, #rtp{payload = P}}} when byte_size(P) =:= Size -> count_rtp(Pc, Mid, Size, N + 1)
+    after 0 ->
+        N
+    end.
 
 %% RFC 8841 §6: the max-message-size we announce is what SCTP accepts;
 %% the peer honours the one it was given.

@@ -19,6 +19,7 @@
     audio_level/2,
     nack_timeouts/2,
     pace/4,
+    enqueue/3,
     pick_pt/2,
     is_repair/1,
     red_pt/1,
@@ -91,9 +92,15 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     AudioLevel = maps:get(?URI_AUDIO_LEVEL, SendExt, undefined),
     TwccExt = maps:get(?URI_TWCC, SendExt, undefined),
     {Pause, HoldOff} = pause(Sec, Old),
+    Tmmbr = case webrtc_media_limit:negotiated(Cs) of
+                false -> undefined;
+                true when is_record(Old, snd), Old#snd.tmmbr =/= undefined -> Old#snd.tmmbr;
+                true -> webrtc_tmmbr:new()
+            end,
     case Old of
         #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff,
-                          audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc)};
+                          audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc),
+                          tmmbr = Tmmbr};
         undefined ->
             #snd{
                 mid = Mid,
@@ -112,7 +119,8 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 hold_off = HoldOff,
                 audio_level_ext = AudioLevel,
                 fec_ssrc = maps:get(fec_ssrc, Sec, undefined),
-                fec_seq = rand16()
+                fec_seq = rand16(),
+                tmmbr = Tmmbr
             }
     end.
 
@@ -226,7 +234,7 @@ fec_packets(Key, Group, Ts, {flex, Flex}, Now, M) ->
         S0,
         Payloads
     ),
-    M1 = count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}}),
+    M1 = webrtc_media_limit:charge(Key, Pkts, Now, count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}})),
     egress([{Key, P, flexfec, Now} || P <- Pkts], Now, M1);
 fec_packets(Key, Group, Ts, {ulp, Red, Ulp}, Now, M) ->
     S0 = maps:get(Key, M#media.senders),
@@ -243,7 +251,7 @@ fec_packets(Key, Group, Ts, {ulp, Red, Ulp}, Now, M) ->
         S0,
         Payloads
     ),
-    M1 = count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}}),
+    M1 = webrtc_media_limit:charge(Key, Pkts, Now, count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}})),
     egress([{Key, P, fec, Now} || P <- Pkts], Now, M1).
 
 %% `video_fec': a fixed rate, or with `auto' twice the fraction lost the
@@ -262,9 +270,16 @@ chunk(L, N) when length(L) =< N -> [L];
 chunk(L, N) -> {A, B} = lists:split(N, L), [A | chunk(B, N)].
 
 %% Queue packets in the pacer, then protect and send what it releases.
-pace(Class, Items, Now, M) ->
+%% A stream under a TMMBR limit goes through its limiter first.
+pace(Class, Items, Now, M0) ->
+    {Admitted, M} = webrtc_media_limit:admit([{Class, I} || I <- Items], Now, M0),
+    enqueue(Admitted, Now, M).
+
+%% @doc Queue `[{Class, {Key, Pkt, Rtx}}]' in the pacer and send what it
+%% releases.
+enqueue(Items, Now, M) ->
     {Out, Cc} = lists:foldl(
-        fun({K, P, R}, {Acc, C}) ->
+        fun({Class, {K, P, R}}, {Acc, C}) ->
             %% The time it was queued, for totalPacketSendDelay.
             {O, C1} = webrtc_cc:enqueue({Class, wire_size(P), {K, P, R, Now}}, Now, C),
             {Acc ++ O, C1}
@@ -524,7 +539,9 @@ probes(Probes, Now, M) ->
     %% With transport-cc the probes carry its sequence numbers; with RFC
     %% 8888 feedback their own RTP sequence numbers are reported.
     Ccfb = webrtc_cc:ccfb_send(M#media.cc),
-    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined orelse Ccfb] of
+    %% Not on a stream held to a TMMBR limit.
+    case [S || S = #snd{kind = video, twcc_ext = E} <- maps:values(M#media.senders), E =/= undefined orelse Ccfb,
+               not webrtc_media_limit:limited(S)] of
         [] ->
             {[], M};
         Senders ->

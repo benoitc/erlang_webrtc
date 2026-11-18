@@ -40,6 +40,11 @@
 %% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
 %%     the target bitrate for all media sent on the connection; adapt
 %%     the encoders to it.</li>
+%% <li>`{max_bitrate, Mid, Bps}', `{max_bitrate, Mid, Rid, Bps}': the
+%%     peer limited what the stream may send with TMMBR (RFC 5104), in
+%%     payload bits per second, or lifted the limit (`infinity'). The
+%%     connection holds the stream to it, queuing and at worst dropping
+%%     packets; keep the encoder under it.</li>
 %% <li>`{circuit_breaker, Mid, Reason}': an RTP circuit breaker of
 %%     RFC 8083 triggered for the stream (`rtcp_timeout',
 %%     `media_timeout' or `congestion'). The transceiver's RTP streams
@@ -98,6 +103,7 @@
     send_rtp_packet/4,
     request_keyframe/2,
     request_keyframe/3,
+    request_max_bitrate/3,
     request_pause/2,
     request_pause/3,
     request_resume/2,
@@ -453,6 +459,15 @@ request_keyframe(Pc, Mid) ->
 request_keyframe(Pc, Mid, Opts) ->
     Key = layer(Mid, Opts),
     transport(Pc, Mid, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
+
+%% @doc Ask the remote sender of a transceiver to keep its streams under
+%% `Bps' bits per second, RTP headers and payload, with TMMBR (RFC 5104
+%% §4.2.1), or to lift the limit with `infinity'. Needs `ccm tmmbr'
+%% negotiated on both sides, `{error, not_negotiated}' otherwise. The
+%% request is repeated until the sender acknowledges it.
+-spec request_max_bitrate(pc(), binary(), pos_integer() | infinity) -> ok | {error, term()}.
+request_max_bitrate(Pc, Mid, Bps) when is_integer(Bps), Bps > 0; Bps =:= infinity ->
+    transport(Pc, Mid, fun(T) -> webrtc_transport:request_max_bitrate(T, Mid, Bps) end).
 
 %% @doc Ask the remote sender of a transceiver to pause its stream
 %% (RFC 7728 PAUSE), when both sides negotiated `ccm pause'. The answer

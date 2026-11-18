@@ -62,7 +62,13 @@
     %% Header extension form of the stream: `auto' when
     %% extmap-allow-mixed was negotiated, else one form throughout
     %% (RFC 8285 §6).
-    ext_form = auto :: webrtc_rtp_ext:form()
+    ext_form = auto :: webrtc_rtp_ext:form(),
+    %% TMMBR limits on the stream when ccm tmmbr is negotiated (RFC 5104
+    %% §4.2), the token bucket that follows them and the last limit
+    %% reported to the owner.
+    tmmbr :: undefined | webrtc_tmmbr:state(),
+    limiter :: undefined | webrtc_rate_limit:state(),
+    limit = infinity :: non_neg_integer() | infinity
 }).
 
 -record(rcv, {
@@ -117,6 +123,9 @@
     rtcp_opts = #{} :: map(),
     %% Feedback waiting for the RTCP bandwidth, oldest first.
     pending_fb = [] :: list(),
+    %% Our TMMBR requests per mid: the bit rate and the senders whose
+    %% TMMBN answered them (webrtc_media_limit).
+    limit_req = #{} :: #{binary() => {pos_integer() | infinity, [non_neg_integer()]}},
     %% Every section negotiated rtcp-rsize (RFC 5506).
     reduced_size = false :: boolean(),
     %% Every section negotiated cryptex (RFC 9335): what we send has its

@@ -22,7 +22,8 @@
     single_forms/1,
     fmtp/2,
     same_codec/2,
-    pause_params/1
+    pause_params/1,
+    is_tmmbr/1
 ]).
 
 -export_type([extension/0]).
@@ -62,13 +63,14 @@ default_codecs(audio) ->
             ?FB(<<"transport-cc">>),
             %% RFC 8888 congestion control feedback, for peers without
             %% transport-cc.
-            ?FB(<<"ack">>, <<"ccfb">>)
+            ?FB(<<"ack">>, <<"ccfb">>),
+            ?FB(<<"ccm">>, <<"tmmbr">>)
         ]),
         %% RFC 8854 §4.2: redundant audio (RFC 2198), received and
         %% used (§7), sent when a send asks for it.
         codec(63, <<"red">>, 48000, 2, [<<"111/111">>], []),
-        codec(0, <<"PCMU">>, 8000, 1, [], []),
-        codec(8, <<"PCMA">>, 8000, 1, [], []),
+        codec(0, <<"PCMU">>, 8000, 1, [], [?FB(<<"ccm">>, <<"tmmbr">>)]),
+        codec(8, <<"PCMA">>, 8000, 1, [], [?FB(<<"ccm">>, <<"tmmbr">>)]),
         codec(126, <<"telephone-event">>, 8000, 1, [<<"0-15">>], [])
     ];
 default_codecs(video) ->
@@ -77,6 +79,8 @@ default_codecs(video) ->
         ?FB(<<"transport-cc">>),
         ?FB(<<"ack">>, <<"ccfb">>),
         ?FB(<<"ccm">>, <<"fir">>),
+        %% RFC 5104 §4.2, required by RFC 8834 §5.1.6.
+        ?FB(<<"ccm">>, <<"tmmbr">>),
         ?FB(<<"nack">>),
         ?FB(<<"nack">>, <<"pli">>),
         %% RFC 7728 pause and resume; point to point, so no hold-off.
@@ -230,8 +234,27 @@ answer_codec(#{name := N} = O, L) ->
         end,
     LFb = maps:get(rtcp_fb, L),
     OFb = maps:get(rtcp_fb, O),
-    Fb = [F || F <- OFb, lists:member(F, LFb), pause_params(F) =:= undefined],
-    O#{fmtp => Fmtp, rtcp_fb => Fb ++ answer_pause(OFb, LFb)}.
+    Fb = [F || F <- OFb, lists:member(F, LFb), pause_params(F) =:= undefined, not is_tmmbr(F)],
+    O#{fmtp => Fmtp, rtcp_fb => Fb ++ answer_tmmbr(OFb, LFb) ++ answer_pause(OFb, LFb)}.
+
+%% @doc True for a `ccm tmmbr' line, with or without `smaxpr' (RFC 5104
+%% §7.1).
+-spec is_tmmbr(map()) -> boolean().
+is_tmmbr(#{type := T, param := P}) when is_binary(P) ->
+    string:lowercase(T) =:= <<"ccm">> andalso
+        case binary:split(P, <<" ">>, [global, trim_all]) of
+            [Tmmbr | _] -> string:lowercase(Tmmbr) =:= <<"tmmbr">>;
+            [] -> false
+        end;
+is_tmmbr(_) ->
+    false.
+
+%% TMMBR is answered without smaxpr: we set no packet rate limit.
+answer_tmmbr(OFb, LFb) ->
+    case lists:any(fun is_tmmbr/1, OFb) andalso lists:any(fun is_tmmbr/1, LFb) of
+        true -> [#{type => <<"ccm">>, param => <<"tmmbr">>}];
+        false -> []
+    end.
 
 %% RFC 7728 §9: we implement every message (config 1, the default) and
 %% answer `nowait' only when it was offered.

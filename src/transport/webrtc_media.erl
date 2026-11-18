@@ -31,7 +31,10 @@
 %% `{keyframe_request, Mid}', `{keyframe_request, Mid, Rid}',
 %% `{rtcp, Mid, Packet}' (feedback the application may act on, such as
 %% REMB or TWCC), `{bye, Mid, Ssrc}', `{bandwidth_estimate, Bps}' (the
-%% target bitrate for everything sent on the transport changed) and
+%% target bitrate for everything sent on the transport changed),
+%% `{max_bitrate, Mid, Bps}' and `{max_bitrate, Mid, Rid, Bps}' (the
+%% payload bit rate a TMMBR limit allows on the stream, or `infinity',
+%% see `webrtc_media_limit') and
 %% `{circuit_breaker, Mid, Reason}' (RFC 8083, see
 %% `webrtc_circuit_breaker').
 -module(webrtc_media).
@@ -55,6 +58,7 @@
     send_packet/4,
     resume/3,
     request_keyframe/3,
+    request_max_bitrate/4,
     request_pause/4,
     set_congestion_control/3,
     handle_packet/3,
@@ -466,6 +470,15 @@ keyframe_requests(Ssrcs, Now, M0) ->
                             end, {[], M0}, Ssrcs),
     webrtc_media_out:send_feedback(Pkts, Now, M).
 
+%% @doc Ask the senders of a transceiver to keep their streams under
+%% `Bps' (RTP headers and payload) with TMMBR (RFC 5104 §4.2.1), or to
+%% lift our limit with `infinity'. Repeated with the regular reports
+%% until each sender answers with a TMMBN.
+-spec request_max_bitrate(binary(), pos_integer() | infinity, integer(), state()) ->
+    {ok, [{send, binary()}], state()} | {error, not_negotiated}.
+request_max_bitrate(Mid, Bps, Now, M) ->
+    webrtc_media_limit:request(Mid, Bps, Now, M).
+
 %% @doc Ask the remote sender of a transceiver, or of one simulcast
 %% layer with `{Mid, Rid}', to pause or resume its stream (RFC 7728).
 -spec request_pause(sender_key(), pause | resume, integer(), state()) ->
@@ -516,7 +529,9 @@ next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc} = M) ->
             Acc1 = case N of undefined -> Acc; _ -> webrtc_media_out:tmin(webrtc_nack:next_timeout(N), Acc) end,
             case Fb of undefined -> Acc1; _ -> webrtc_media_out:tmin(webrtc_frame_buffer:next_timeout(Fb), Acc1) end
         end,
-        webrtc_media_out:tmin(webrtc_media_out:tmin(R, webrtc_cc:next_timeout(Cc)), webrtc_media_pause:next_timeout(M)),
+        webrtc_media_out:tmin(webrtc_media_out:tmin(webrtc_media_out:tmin(R, webrtc_cc:next_timeout(Cc)),
+                                                     webrtc_media_pause:next_timeout(M)),
+                              webrtc_media_limit:next_timeout(M)),
         maps:values(Rs)
     ).
 
@@ -529,7 +544,11 @@ handle_timeout(Now, M0) ->
     {M2b, A1a} = webrtc_media_out:nack_timeouts(Now, M1),
     {M2, A1b} = webrtc_media_in:frame_timeouts(Now, M2b),
     A1 = A1a ++ A1b,
-    {PauseFb, PauseEvents, M2a} = webrtc_media_pause:timeouts(Now, M2),
+    {PauseFb, PauseEvents0, M2c} = webrtc_media_pause:timeouts(Now, M2),
+    %% TMMBR hold-offs, silent owners and limited streams.
+    {Limited, LimitActs, M2d} = webrtc_media_limit:timeouts(Now, M2c),
+    {LimitSends, M2a} = webrtc_media_out:enqueue(Limited, Now, M2d),
+    PauseEvents = PauseEvents0 ++ LimitActs ++ LimitSends,
     M3 = rtcp_session(Now, M2a),
     Pending = M3#media.pending_fb ++ Fb ++ PauseFb,
     case webrtc_rtcp_sched:expire(Now, M3#media.rtcp) of
@@ -538,7 +557,7 @@ handle_timeout(Now, M0) ->
             %% the PAUSED repeats (RFC 7728 §6.2).
             M4 = webrtc_media_in:expire_idle(Now, M3#media{rtcp = R, pending_fb = []}),
             {Repeats, M4a} = webrtc_media_pause:report(M4),
-            {A2, M5} = webrtc_media_out:reports(Now, Pending ++ Repeats, M4a),
+            {A2, M5} = webrtc_media_out:reports(Now, Pending ++ Repeats ++ webrtc_media_limit:repeats(M4a), M4a),
             {M5, A0 ++ A1 ++ PauseEvents ++ A2};
         {wait, R} ->
             {A2, M4} = webrtc_media_out:send_feedback(Pending, Now, M3#media{rtcp = R, pending_fb = []}),

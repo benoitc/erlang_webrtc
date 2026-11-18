@@ -133,7 +133,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | ICE-TCP, peer offers: the same, the peer sends | | | Pass (6) | Pass (6) |
 | Erlang offers without BUNDLE (`bundle => false`): audio, video and data each on their own ICE and DTLS transport, data channel echo and Opus received | Skipped (7) | Skipped (8) | Pass (9) | Pass |
 | The peer sends VP8, VP9, H.264 and AV1 in turn, Erlang receives frames (`frames => true`): each one parses, as many frames and key frames as the peer encoded | Skipped (15) | Skipped (15) | Pass | Pass (16) |
-| Erlang sends VP8 with ULPFEC in RED, drops 8% of its datagrams, no NACK negotiated: the peer decodes many more frames with FEC than without | Skipped (17) | Skipped (17) | Pass (54 against 37) | Pass (59 against 33) |
+| Erlang sends VP8 with ULPFEC in RED, no NACK negotiated, and drops the last packet of every fifth frame: with FEC the peer decodes every frame, without it the frames until the next key frame are lost | Skipped (17) | Skipped (17) | Pass (60 against 20) | Pass (60 against 20) |
 
 1. Firefox is the installed release (160 on the development machine), driven over WebDriver BiDi with puppeteer-core. On macOS it is started through launchd: a Firefox started from a terminal inherits the terminal's privacy restrictions and cannot read its profile. Without an installed Firefox the suite falls back to Playwright's build.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.

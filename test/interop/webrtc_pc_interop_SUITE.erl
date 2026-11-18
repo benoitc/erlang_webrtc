@@ -500,10 +500,11 @@ parses(Codec, #{data := D, keyframe := Key, width := W, height := H}) ->
             {ok, [{2, <<>>} | _]} = webrtc_rtp_av1:obus(D)
     end.
 
-%% Erlang sends VP8 with ULPFEC in RED (RFC 8854 §5.2) and drops 8% of
-%% what it sends, without NACK so that only FEC can repair: the browser
-%% decodes many more frames with one FEC packet for two media packets
-%% than without.
+%% Erlang sends VP8 with ULPFEC in RED (RFC 8854 §5.2), without NACK so
+%% that only FEC can repair, and drops the same media packets with and
+%% without FEC: the last packet of every fifth frame. With FEC the
+%% browser decodes nearly every frame, without it the frames after each
+%% loss wait for the next key frame.
 erlang_sends_video_fec(Config) ->
     case ?config(peer, Config) of
         P when P =:= chromium; P =:= firefox ->
@@ -514,22 +515,31 @@ erlang_sends_video_fec(Config) ->
                     {Without, 0} = fec_run(Config, 0.0),
                     ct:log("frames decoded: ~b with FEC (~b FEC packets), ~b without", [With, Sent, Without]),
                     ?assert(Sent > 0),
-                    %% A frame stays lost when a packet and its FEC packet,
-                    %% or two packets of one group, are lost: then until
-                    %% the next key frame (one in six).
-                    ?assert(With >= Without + 10),
-                    ?assert(With >= 50)
+                    ?assert(With >= 58),
+                    ?assert(Without =< With - 15)
             end;
         _ ->
             {skip, "the peer's statistics are not W3C ones"}
     end.
+
+%% The last media packet (marker bit set) of frames 2, 7, 12... The RTP
+%% header is not encrypted by SRTP; STUN, DTLS and RTCP pass.
+drop_frame_ends(_Dest, <<2:2, _:6, 1:1, _:7, _Seq:16, Ts:32, _/binary>> = Bin, S) ->
+    <<_, B1, _/binary>> = Bin,
+    case B1 >= 192 andalso B1 =< 223 of
+        true -> {[{0, Bin}], S};
+        false when Ts >= 1000, ((Ts - 1000) div 3000) rem 5 =:= 2 -> {[], S};
+        false -> {[{0, Bin}], S}
+    end;
+drop_frame_ends(_Dest, Bin, S) ->
+    {[{0, Bin}], S}.
 
 fec_run(Config, Rate) ->
     NoNack = [C#{rtcp_fb => [F || F <- Fb, F =/= #{type => <<"nack">>, param => undefined}]}
               || #{rtcp_fb := Fb} = C <- webrtc_jsep_caps:default_codecs(video)],
     {Pc, P0} = start(Config, #{video_fec => Rate, congestion_control => #{probing => false},
                                codecs => #{video => NoNack},
-                               outbound_filter => webrtc_impair:filter(#{loss => 0.08, seed => 11})}),
+                               outbound_filter => {fun drop_frame_ends/3, #{}}}),
     {ok, _} = webrtc:add_transceiver(Pc, video, #{direction => sendonly}),
     P1 = erlang_offer(Pc, P0, #{}),
     Answer = iolist_to_binary(webrtc:remote_description(Pc)),

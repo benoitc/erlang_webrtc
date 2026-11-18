@@ -293,7 +293,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
     Ssrcs =
         case Sending andalso not SendRids of
             false -> [];
-            true -> ssrc_attrs(T, HasRtx, J)
+            true -> ssrc_attrs(T, HasRtx, has_flexfec(Codecs), J)
         end,
     Attrs =
         [{rtcp, #{port => 9, connection => ?NULL_C}}] ++
@@ -314,9 +314,15 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
     },
     add_candidates(Sec, Ctx).
 
-ssrc_attrs(T, HasRtx, J) ->
-    Ssrcs = [T#tr.ssrc] ++ [T#tr.rtx_ssrc || HasRtx],
-    Group = [{ssrc_group, #{semantics => <<"FID">>, ssrcs => Ssrcs}} || HasRtx],
+has_flexfec(Codecs) ->
+    lists:any(fun(#{name := N}) -> string:lowercase(N) =:= <<"flexfec">> end, Codecs).
+
+%% RTX grouped by FID (RFC 4588 §8), the FlexFEC repair stream by FEC-FR
+%% (RFC 5956 §4.3, RFC 8627 §7.1).
+ssrc_attrs(T, HasRtx, HasFec, J) ->
+    Ssrcs = [T#tr.ssrc] ++ [T#tr.rtx_ssrc || HasRtx] ++ [T#tr.fec_ssrc || HasFec],
+    Group = [{ssrc_group, #{semantics => <<"FID">>, ssrcs => [T#tr.ssrc, T#tr.rtx_ssrc]}} || HasRtx] ++
+        [{ssrc_group, #{semantics => <<"FEC-FR">>, ssrcs => [T#tr.ssrc, T#tr.fec_ssrc]}} || HasFec],
     Group ++
         lists:flatmap(
             fun(S) ->

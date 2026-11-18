@@ -15,6 +15,8 @@
     extensions :: [webrtc_jsep_caps:extension()],
     ssrc :: 0..16#FFFFFFFF,
     rtx_ssrc :: 0..16#FFFFFFFF,
+    %% The FlexFEC repair stream (RFC 8627), grouped with ssrc by FEC-FR.
+    fec_ssrc :: 0..16#FFFFFFFF,
     %% Simulcast encodings (RFC 8853); the first one uses ssrc/rtx_ssrc.
     %% Empty when the transceiver sends a single stream without a rid.
     encodings = [] :: [webrtc_jsep_simulcast:encoding()],

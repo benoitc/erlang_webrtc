@@ -151,6 +151,7 @@ media_params(T, L, R, {Local, Remote, J}) ->
         recv_encrypted => webrtc_jsep_caps:encrypted_ids(Recv),
         ssrc => T#tr.ssrc,
         rtx_ssrc => T#tr.rtx_ssrc,
+        fec_ssrc => T#tr.fec_ssrc,
         frames => T#tr.frames,
         codec_plugin => T#tr.codec_plugin,
         cname => undefined,
@@ -180,11 +181,13 @@ remote_ssrcs(R) ->
     Ssrcs = webrtc_sdp_media:attrs(ssrc, R),
     Groups = webrtc_sdp_media:attrs(ssrc_group, R),
     Rtx = maps:from_list([{P, X} || #{semantics := <<"FID">>, ssrcs := [P, X]} <- Groups]),
-    Primary = lists:usort([S || #{ssrc := S} <- Ssrcs]) -- maps:values(Rtx),
+    Fec = maps:from_list([{P, X} || #{semantics := <<"FEC-FR">>, ssrcs := [P, X]} <- Groups]),
+    Primary = lists:usort([S || #{ssrc := S} <- Ssrcs]) -- (maps:values(Rtx) ++ maps:values(Fec)),
     [
         #{
             ssrc => S,
             rtx_ssrc => maps:get(S, Rtx, undefined),
+            fec_ssrc => maps:get(S, Fec, undefined),
             cname => hd([V || #{ssrc := S1, attribute := <<"cname">>, value := V} <- Ssrcs, S1 =:= S] ++ [undefined])
         }
      || S <- Primary

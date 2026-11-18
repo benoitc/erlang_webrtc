@@ -81,6 +81,7 @@ new(Opts) ->
         cname = maps:get(cname, Opts, <<"webrtc">>),
         ecn = maps:get(ecn, Opts, false),
         rtcp_ssrc = rand32(),
+        video_fec = maps:get(video_fec, Opts, auto),
         cc = webrtc_cc:new(maps:get(cc, Opts, #{})),
         rtcp_opts = maps:with([report_interval], maps:get(rtcp, Opts, #{}))
     }.
@@ -100,7 +101,8 @@ configure(Sections, #media{} = M) ->
     SsrcMid = maps:from_list(
         lists:append([
             [{Ssrc, Mid} || #{ssrc := Ssrc} <- Rs] ++
-                [{X, Mid} || #{rtx_ssrc := X} <- Rs, is_integer(X)]
+                [{X, Mid} || #{rtx_ssrc := X} <- Rs, is_integer(X)] ++
+                [{X, Mid} || #{fec_ssrc := X} <- Rs, is_integer(X)]
          || #{mid := Mid, remote_ssrcs := Rs} <- Sections
         ])
     ),
@@ -422,7 +424,9 @@ send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
             end
     end.
 
-send_packet(Mid, S, Pkt0, Now, M) ->
+send_packet(Mid, S, Pkt00, Now, M) ->
+    %% With ULPFEC negotiated, video goes in RED (RFC 8854 §5.2).
+    Pkt0 = webrtc_media_out:fec_wrap(S, Pkt00),
     Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs,
                    ext = webrtc_media_out:header_ext(S, Pkt0#rtp.ext)},
     Next = (S#snd.seq + 1) band 16#FFFF,
@@ -577,9 +581,13 @@ stats(#media{} = M) ->
         receivers => maps:map(
             fun(Ssrc, R) ->
                 Info = (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)},
+                Info1 = case R#rcv.fec of
+                            undefined -> Info;
+                            F -> Info#{fec => webrtc_ulpfec:stats(F)}
+                        end,
                 case R#rcv.frames of
-                    undefined -> Info;
-                    Fb -> Info#{frames => webrtc_frame_buffer:stats(Fb)}
+                    undefined -> Info1;
+                    Fb -> Info1#{frames => webrtc_frame_buffer:stats(Fb)}
                 end
             end,
             M#media.receivers

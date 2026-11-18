@@ -101,7 +101,14 @@ default_codecs(video) ->
         ),
         rtx(103, 102),
         codec(45, <<"AV1">>, 90000, undefined, [], Fb),
-        rtx(46, 45)
+        rtx(46, 45),
+        %% RFC 8854 §5.2: ULPFEC (RFC 5109) in RED (RFC 2198), with the
+        %% payload types browsers use.
+        codec(116, <<"red">>, 90000, undefined, [], []),
+        rtx(117, 116),
+        codec(118, <<"ulpfec">>, 90000, undefined, [], []),
+        %% RFC 8627 FlexFEC on its own SSRC, repair window 200 ms.
+        codec(119, <<"flexfec">>, 90000, undefined, [{<<"repair-window">>, <<"200000">>}], [])
     ].
 
 codec(Pt, Name, Rate, Ch, Fmtp, Fb) ->
@@ -152,11 +159,12 @@ answer_codecs(Offered0, Local) ->
      || O <- Offered, not is_rtx(O), {ok, L} <- [find_match(O, Local)]
     ],
     %% RED is kept with the offer's fmtp, which names the offer's
-    %% payload types, and only when all of those are kept.
+    %% payload types, and only when all of those are kept, or without
+    %% fmtp.
     Kept0 = [Pt || #{pt := Pt, name := N} <- Primary, string:lowercase(N) =/= <<"red">>],
     Primary1 = [case string:lowercase(N) of <<"red">> -> red_answer(C, Offered, Kept0); _ -> C end
                 || #{name := N} = C <- Primary],
-    Primary2 = [C || C <- Primary1, C =/= drop],
+    Primary2 = [C || C <- Primary1, C =/= drop, repair_window_ok(C, Offered)],
     Kept = [Pt || #{pt := Pt} <- Primary2],
     Rtx = [
         O#{fmtp => [{<<"apt">>, integer_to_binary(Apt)}]}
@@ -164,12 +172,49 @@ answer_codecs(Offered0, Local) ->
     ],
     order_like(Offered, Primary2 ++ Rtx).
 
+%% RFC 8627 §5.2.1: a receiver that cannot keep the source packets of
+%% the offered repair window rejects FlexFEC; we keep up to 1 s (and 160
+%% packets). The parameter is required.
+-define(MAX_REPAIR_WINDOW_US, 1000000).
+repair_window_ok(#{name := N, pt := Pt}, Offered) ->
+    case string:lowercase(N) of
+        <<"flexfec">> ->
+            [O] = [O || #{pt := P} = O <- Offered, P =:= Pt],
+            case repair_window(maps:get(fmtp, O, [])) of
+                {ok, Us} -> Us =< ?MAX_REPAIR_WINDOW_US;
+                error -> false
+            end;
+        _ ->
+            true
+    end.
+
+%% repair-window=US, or repair-window:US as the second example of RFC
+%% 8627 §7.1.2 writes it.
+repair_window(Params) ->
+    case [V || P <- Params, V <- window_value(P)] of
+        [V | _] ->
+            try {ok, binary_to_integer(V)} catch error:badarg -> error end;
+        [] ->
+            error
+    end.
+
+window_value({K, V}) ->
+    case string:lowercase(K) of <<"repair-window">> -> [V]; _ -> [] end;
+window_value(B) when is_binary(B) ->
+    case binary:split(B, <<":">>) of
+        [K, V] -> window_value({K, V});
+        _ -> []
+    end.
+
 red_answer(#{pt := Pt} = C, Offered, Kept) ->
     [O] = [O || #{pt := P} = O <- Offered, P =:= Pt],
     Fmtp = maps:get(fmtp, O, []),
     Pts = lists:append([[binary_to_integer(P) || P <- binary:split(F, <<"/">>, [global]), P =/= <<>>]
                         || F <- Fmtp, is_binary(F)]),
-    case Pts =/= [] andalso lists:all(fun(P) -> lists:member(P, Kept) end, Pts) of
+    %% RFC 2198 §5: video RED (RFC 8854 §5.2), ours without fmtp, is
+    %% offered without one too and names no payload types.
+    Video = maps:get(fmtp, C, []) =:= [] andalso Fmtp =:= [],
+    case lists:all(fun(P) -> lists:member(P, Kept) end, Pts) andalso (Pts =/= [] orelse Video) of
         true -> C#{fmtp => Fmtp};
         false -> drop
     end.

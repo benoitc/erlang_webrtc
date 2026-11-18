@@ -22,6 +22,8 @@
 %%     (TL0PICIDX), a higher layer frame when its base frame left and
 %%     every frame between them did, or it is a layer sync frame;</li>
 %% <li>VP9 in flexible mode: when every picture it references left;</li>
+%% <li>VP8 and VP9 with picture IDs only: the picture after the last one
+%%     that left;</li>
 %% <li>other video (H.264, AV1, and VP8 and VP9 without picture IDs):
 %%     when it follows the last frame that left with no packet missing;
 %%     </li>
@@ -47,7 +49,7 @@
 
 -include("webrtc_rtp.hrl").
 
--export([new/1, push/4, lost/3, timeout/2, next_timeout/1, set_rtt/2, stats/1]).
+-export([new/1, push/4, padding/3, lost/3, timeout/2, next_timeout/1, set_rtt/2, stats/1]).
 
 -export_type([state/0, frame/0, action/0]).
 
@@ -108,6 +110,9 @@
     pkts = gb_trees:empty() :: gb_trees:tree(integer(), #pkt{}),
     %% Sequence numbers the sender will not repeat.
     lost = [] :: [integer()],
+    %% Sequence numbers of packets that carry no media (FEC, padding):
+    %% no frame misses them.
+    fillers = [] :: [integer()],
     %% The last packet and timestamp of the frames that left or were
     %% dropped: anything at or before them is late.
     done_seq :: undefined | integer(),
@@ -191,6 +196,27 @@ default(V, _) -> V.
 
 late(Seq, Ts, #fb{done_seq = DS, done_ts = DT}) ->
     (DS =/= undefined andalso Seq =< DS) orelse (DT =/= undefined andalso Ts =< DT).
+
+%% @doc A packet of the stream that carries no media (an FEC packet,
+%% padding): its sequence number is no gap.
+-spec padding(0..65535, integer(), state()) -> {[action()], state()}.
+padding(Seq0, Now, #fb{last_seq = Last} = St) ->
+    Seq = webrtc_rtp_seq:seq_unwrap(Seq0, Last),
+    St1 = St#fb{last_seq = max(Seq, default(Last, Seq))},
+    case St1#fb.done_seq of
+        D when is_integer(D), Seq =< D -> process(Now, St1);
+        _ -> process(Now, St1#fb{fillers = lists:sublist(lists:usort([Seq | St1#fb.fillers]), ?MAX_PACKETS)})
+    end.
+
+%% The first sequence number below Seq that is not a filler.
+below(Seq, #fb{fillers = F}) ->
+    below_list(Seq, F).
+
+below_list(Seq, F) ->
+    case lists:member(Seq - 1, F) of
+        true -> below_list(Seq - 1, F);
+        false -> Seq - 1
+    end.
 
 %% @doc The sender will not repeat these packets (NACK gave up on them).
 -spec lost([0..65535], integer(), state()) -> {[action()], state()}.
@@ -309,15 +335,15 @@ repair_time(_) -> ?REORDER.
 %% A packet the frame misses (or one missing before it) will not come.
 lost_in(_F, #fb{lost = []}) ->
     false;
-lost_in(#f{first = First, last = Last, pkts = Pkts}, #fb{lost = Lost, done_seq = Done}) ->
+lost_in(#f{first = First, last = Last, pkts = Pkts}, #fb{lost = Lost, done_seq = Done, fillers = F}) ->
     From = case Done of undefined -> First; _ -> Done + 1 end,
-    Have = [S || #pkt{seq = S} <- Pkts],
+    Have = [S || #pkt{seq = S} <- Pkts] ++ F,
     lists:any(fun(S) -> S >= From andalso S =< Last andalso not lists:member(S, Have) end, Lost).
 
 %% Packets are missing between the last frame done and this one; before
 %% any frame is done, earlier packets may still come.
 gap_before(_F, #fb{done_seq = undefined}) -> true;
-gap_before(#f{first = First}, #fb{done_seq = Done}) -> First > Done + 1.
+gap_before(#f{first = First}, #fb{done_seq = Done} = St) -> below(First, St) > Done.
 
 %%====================================================================
 %% Decodability
@@ -362,8 +388,16 @@ decodable(C, #{pid := {Bits, Pid}, tl0 := Tl0} = I, _F, Gap, #fb{tl0 = {Last, Ba
         _ ->
             wait_or(Gap, never)
     end;
-decodable(_, _, #f{first = First}, Gap, #fb{last_end = End}) ->
-    case First =:= End + 1 of
+%% VP8 and VP9 with picture IDs and no temporal layers: the frame after
+%% the last one left, by picture ID (as libwebrtc's reference finders),
+%% so a lost packet that carried no media (an FEC packet) costs nothing.
+decodable(C, #{pid := {Bits, Pid}}, _F, Gap, #fb{pids = [Last | _]}) when C =:= vp8; C =:= vp9 ->
+    case Pid =:= (Last + 1) band ((1 bsl Bits) - 1) of
+        true -> yes;
+        false -> wait_or(Gap, never)
+    end;
+decodable(_, _, #f{first = First}, Gap, #fb{last_end = End} = St) ->
+    case below(First, St) =:= End of
         true -> yes;
         false -> wait_or(Gap, never)
     end.
@@ -401,12 +435,13 @@ group([#pkt{ts = Ts} | _] = Pkts, St, Acc) ->
     {Mine, Rest} = lists:splitwith(fun(#pkt{ts = T}) -> T =:= Ts end, Pkts),
     group(Rest, St, [frame(Mine, Acc, St) | Acc]).
 
-frame([#pkt{seq = First, ts = Ts, info = I} | _] = Pkts, Before, #fb{kind = Kind, done_seq = Done}) ->
+frame([#pkt{seq = First, ts = Ts, info = I} | _] = Pkts, Before, #fb{kind = Kind, done_seq = Done} = St) ->
     #pkt{seq = Last} = lists:last(Pkts),
+    Below = below(First, St),
     Start = Kind =:= audio orelse maps:get(start, I) =:= true orelse
-        (Done =/= undefined andalso First =:= Done + 1) orelse
+        (Done =/= undefined andalso Below =:= Done) orelse
         case Before of
-            [#f{last = L} | _] -> L =:= First - 1;
+            [#f{last = L} | _] -> L =:= Below;
             [] -> false
         end,
     %% Every packet from the first to the one with the marker bit.
@@ -506,9 +541,9 @@ keyframe_request(Now, #fb{kind = video, keyframe_at = At, rtt = Rtt} = St) ->
 keyframe_request(_Now, St) ->
     {[], St}.
 
-remove(#f{pkts = Pkts, last = Last}, #fb{pkts = T, lost = Lost} = St) ->
+remove(#f{pkts = Pkts, last = Last}, #fb{pkts = T, lost = Lost, fillers = F} = St) ->
     St#fb{pkts = lists:foldl(fun(#pkt{seq = S}, Acc) -> gb_trees:delete(S, Acc) end, T, Pkts),
-          lost = [S || S <- Lost, S > Last]}.
+          lost = [S || S <- Lost, S > Last], fillers = [S || S <- F, S > Last - 64]}.
 
 max_done(Last, #fb{done_seq = undefined}) -> Last;
 max_done(Last, #fb{done_seq = D}) -> max(Last, D).

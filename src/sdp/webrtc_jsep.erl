@@ -185,6 +185,7 @@ new_tr(Kind, Dir, #jsep{next_id = Id, caps = Caps, frames = Frames, codec_plugin
         extensions = Exts,
         ssrc = ssrc(),
         rtx_ssrc = ssrc(),
+        fec_ssrc = ssrc(),
         stream_id = token(12),
         track_id = token(12)
     }.
@@ -849,17 +850,17 @@ negotiated(#jsep{} = J) ->
 change_ssrc(Mid, Old, New, #jsep{transceivers = Trs} = J) ->
     J#jsep{transceivers = [case T#tr.mid of Mid -> swap_ssrc(Old, New, T); _ -> T end || T <- Trs]}.
 
-swap_ssrc(Old, New, #tr{ssrc = S, rtx_ssrc = R, encodings = Es} = T) ->
+swap_ssrc(Old, New, #tr{ssrc = S, rtx_ssrc = R, fec_ssrc = F, encodings = Es} = T) ->
     Sw = fun(X) when X =:= Old -> New; (X) -> X end,
-    T#tr{ssrc = Sw(S), rtx_ssrc = Sw(R),
+    T#tr{ssrc = Sw(S), rtx_ssrc = Sw(R), fec_ssrc = Sw(F),
          encodings = [maps:map(fun(K, V) when K =:= ssrc; K =:= rtx_ssrc -> Sw(V); (_, V) -> V end, E) || E <- Es]}.
 
 %% Our SSRCs that the remote description also uses are replaced before
 %% any media goes out with them.
 avoid_ssrcs(#sdp{media = Ms}, #jsep{transceivers = Trs} = J) ->
     Remote = lists:usort([S || M <- Ms, #{ssrc := S} <- webrtc_sdp_media:attrs(ssrc, M)]),
-    Mine = [X || #tr{ssrc = A, rtx_ssrc = B, encodings = Es} <- Trs,
-                 X <- [A, B | [maps:get(K, E) || E <- Es, K <- [ssrc, rtx_ssrc], is_map_key(K, E)]]],
+    Mine = [X || #tr{ssrc = A, rtx_ssrc = B, fec_ssrc = C, encodings = Es} <- Trs,
+                 X <- [A, B, C | [maps:get(K, E) || E <- Es, K <- [ssrc, rtx_ssrc], is_map_key(K, E)]]],
     case [S || S <- Remote, lists:member(S, Mine)] of
         [] ->
             J;

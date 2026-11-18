@@ -53,6 +53,11 @@
     %% The next VP8 and VP9 picture ID of send_frame, and the codec
     %% plugin encoding what send_media gets.
     picture_id = 0 :: 0..16#7FFF,
+    %% ULPFEC: the packets of the frame being sent, as protected.
+    fec_group = [] :: [{0..65535, binary()}],
+    %% FlexFEC (RFC 8627): the repair stream and its sequence numbers.
+    fec_ssrc :: undefined | non_neg_integer(),
+    fec_seq = 0 :: 0..65535,
     plugin :: undefined | {module(), term()} | {off, term()}
 }).
 
@@ -73,7 +78,9 @@
     fir_seq = 0 :: 0..255,
     %% The codec plugin decoding the frames, with the codec it was
     %% started for.
-    plugin :: undefined | {module(), term(), binary()} | {off, term()}
+    plugin :: undefined | {module(), term(), binary()} | {off, term()},
+    %% ULPFEC recovery (RFC 5109), when ulpfec is negotiated.
+    fec :: undefined | webrtc_ulpfec:receiver()
 }).
 
 -record(media, {
@@ -128,6 +135,12 @@
     %% W3C media-source and media-playout members reported by mid
     %% (webrtc_media_report).
     sources = #{} :: #{binary() => map()},
+    %% The decrypted bytes of the packet being dispatched: ULPFEC protects
+    %% the packets as sent.
+    raw :: undefined | binary(),
+    %% FEC packets per video packet sent with ULPFEC: `auto' follows the
+    %% loss the peer reports.
+    video_fec = auto :: auto | float(),
     playouts = #{} :: #{binary() => map()},
     %% Per stream, for the W3C statistics: counters and the last reports
     %% by {in, RemoteSsrc} or {out, OurSsrc} (webrtc_stats).

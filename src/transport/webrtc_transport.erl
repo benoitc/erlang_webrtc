@@ -118,6 +118,7 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                     ecn => lists:all(fun({S, _}) -> webrtc_transport_net:ecn_capable(S) end, Sockets),
                     cname => maps:get(cname, Opts, <<"webrtc">>),
                     cc => maps:get(congestion_control, Opts, #{}),
+                    video_fec => maps:get(video_fec, Opts, auto),
                     rtcp => #{report_interval => maps:get(rtcp_report_interval, Opts, 1000)}
                 }),
                 srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),

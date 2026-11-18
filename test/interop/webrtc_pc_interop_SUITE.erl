@@ -37,7 +37,8 @@
     erlang_offers_encrypted_audio_level/1,
     peer_sends_audio_level/1,
     peer_sends_frames/1,
-    video_stats_agree/1
+    video_stats_agree/1,
+    erlang_sends_video_fec/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -66,7 +67,8 @@ cases() ->
         erlang_offers_encrypted_audio_level,
         peer_sends_audio_level,
         peer_sends_frames,
-        video_stats_agree
+        video_stats_agree,
+        erlang_sends_video_fec
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -497,6 +499,78 @@ parses(Codec, #{data := D, keyframe := Key, width := W, height := H}) ->
         <<"av1">> ->
             {ok, [{2, <<>>} | _]} = webrtc_rtp_av1:obus(D)
     end.
+
+%% Erlang sends VP8 with ULPFEC in RED (RFC 8854 §5.2), without NACK so
+%% that only FEC can repair, and drops the same media packets with and
+%% without FEC: the last packet of every fifth frame. With FEC the
+%% browser decodes nearly every frame, without it the frames after each
+%% loss wait for the next key frame.
+erlang_sends_video_fec(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox ->
+            case fec_run(Config, 0.5) of
+                {skip, _} = Skip ->
+                    Skip;
+                {With, Sent} ->
+                    {Without, 0} = fec_run(Config, 0.0),
+                    ct:log("frames decoded: ~b with FEC (~b FEC packets), ~b without", [With, Sent, Without]),
+                    ?assert(Sent > 0),
+                    ?assert(With >= 58),
+                    ?assert(Without =< With - 15)
+            end;
+        _ ->
+            {skip, "the peer's statistics are not W3C ones"}
+    end.
+
+%% The last media packet (marker bit set) of frames 2, 7, 12... The RTP
+%% header is not encrypted by SRTP; STUN, DTLS and RTCP pass.
+drop_frame_ends(_Dest, <<2:2, _:6, 1:1, _:7, _Seq:16, Ts:32, _/binary>> = Bin, S) ->
+    <<_, B1, _/binary>> = Bin,
+    case B1 >= 192 andalso B1 =< 223 of
+        true -> {[{0, Bin}], S};
+        false when Ts >= 1000, ((Ts - 1000) div 3000) rem 5 =:= 2 -> {[], S};
+        false -> {[{0, Bin}], S}
+    end;
+drop_frame_ends(_Dest, Bin, S) ->
+    {[{0, Bin}], S}.
+
+fec_run(Config, Rate) ->
+    NoNack = [C#{rtcp_fb => [F || F <- Fb, F =/= #{type => <<"nack">>, param => undefined}]}
+              || #{rtcp_fb := Fb} = C <- webrtc_jsep_caps:default_codecs(video)],
+    {Pc, P0} = start(Config, #{video_fec => Rate, congestion_control => #{probing => false},
+                               codecs => #{video => NoNack},
+                               outbound_filter => {fun drop_frame_ends/3, #{}}}),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{direction => sendonly}),
+    P1 = erlang_offer(Pc, P0, #{}),
+    Answer = iolist_to_binary(webrtc:remote_description(Pc)),
+    Result =
+        case binary:match(Answer, <<"ulpfec/90000">>) of
+            nomatch ->
+                put(peer, P1),
+                {skip, "the peer answered without ulpfec"};
+            _ ->
+                Frames = webrtc_test_frames:frames(vp8),
+                [begin
+                     ok = webrtc:send_frame(Pc, <<"0">>, D, #{timestamp => 1000 + I * 3000, keyframe => K}),
+                     timer:sleep(33)
+                 end || {I, #{data := D, key := K}} <- lists:enumerate(0, lists:append(lists:duplicate(5, Frames)))],
+                timer:sleep(1500),
+                P2 = ?P:cmd(P1, #{cmd => stats}),
+                {ok, P3, #{<<"stats">> := Theirs}} = ?P:wait_event(P2, <<"stats">>, #{}),
+                put(peer, P3),
+                [In | _] = [S || S <- maps:values(Theirs), is_map(S), maps:get(<<"type">>, S, x) =:= <<"inbound-rtp">>,
+                                 maps:get(<<"kind">>, S, x) =:= <<"video">>],
+                ct:log("rate ~p, the peer: ~p", [Rate, maps:with([<<"framesDecoded">>, <<"packetsLost">>, <<"nackCount">>,
+                                                                  <<"fecPacketsReceived">>], In)]),
+                Media = maps:get(media, maps:get(transport, webrtc:get_stats(Pc))),
+                {maps:get(<<"framesDecoded">>, In, 0), maps:get(fec_sent, maps:get(counters, Media), 0)}
+        end,
+    ?P:stop(get(peer)),
+    webrtc:close(Pc),
+    erase(peer),
+    erase(pc),
+    flush(),
+    Result.
 
 %% Erlang sends VP8 frames: the frames, their size and the header bytes
 %% we count as sent are those the browser counts as received.

@@ -54,6 +54,9 @@
     %% ICE-TCP listeners (RFC 6544): [{ListenRef, ListenSocket, Addr}],
     %% and the number of the next accepted connection.
     tcp_listeners = [] :: [{reference(), term(), {inet:ip_address(), inet:port_number()}}],
+    %% Processes opening stream connections (TURN over TCP and TLS,
+    %% active ICE-TCP); they never outlive the transport.
+    workers = [] :: [pid()],
     next_accept = 1 :: pos_integer(),
     %% Host name candidates (mDNS, FQDN) being resolved.
     mdns :: webrtc_mdns_client:client(),

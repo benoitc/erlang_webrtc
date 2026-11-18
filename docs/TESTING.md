@@ -10,6 +10,8 @@ This page explains how the test suites are organized, how to run each layer, and
 | Properties (round trips, hostile input) | `test/prop_*.erl` | `rebar3 proper` | nothing |
 | Erlang to Erlang over UDP | `test/e2e/*_SUITE.erl` | `rebar3 ct --dir test/e2e` | loopback |
 | Interop | `test/interop/*_SUITE.erl` | `rebar3 ct --dir test/interop` | adapters, see below |
+| Lifecycle | `test/e2e/webrtc_lifecycle_SUITE.erl` | `rebar3 ct --dir test/e2e --suite webrtc_lifecycle_SUITE` (`LIFECYCLE_PAIRS` short pairs, default 200) | nothing |
+| Soak | `bench/webrtc_soak.erl` | `make soak DURATION=60 WORKERS=4`, by hand before a release | nothing |
 | Benchmarks | `bench/` | by hand, see each module doc | nothing |
 
 `make test-all` runs everything that does not need extra tooling plus the interop suites; a peer that is missing is reported as skipped.

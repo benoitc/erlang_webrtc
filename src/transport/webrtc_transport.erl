@@ -53,7 +53,7 @@
     stats/1,
     set_app/2
 ]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, format_status/1]).
 %% Internal, for webrtc_transport_net and webrtc_transport_secure.
 -export([to_pc/2, to_app/2, now_ms/0]).
 
@@ -63,6 +63,10 @@
 %% API (called by webrtc_pc)
 %%====================================================================
 
+%% `Opts' may come wrapped in a fun, kept out of supervisor reports
+%% (they print start arguments, not a fun's environment).
+start_link(Opts) when is_function(Opts, 0) ->
+    start_link(Opts());
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
@@ -104,7 +108,9 @@ set_app(T, Pid) -> gen_server:call(T, {set_app, Pid}).
 
 init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
     %% The transport never outlives its peer connection, whatever the
-    %% reason it went away.
+    %% reason it went away. It traps exits so that a supervisor shutdown
+    %% still runs terminate/2 (close_notify, TURN deletion).
+    process_flag(trap_exit, true),
     _ = monitor(process, Pc),
     IceOpts = (maps:with(
         [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, server_fallbacks, consent, nomination, ta], Opts
@@ -142,7 +148,24 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
             })}
     end.
 
-handle_call(gather, _From, St) ->
+
+%% Callbacks run through webrtc_redact:guard/2: a crash stops the
+%% process with a reason that carries no state (keys, credentials).
+handle_call(Msg, From, St) -> webrtc_redact:guard(fun() -> call_(Msg, From, St) end, St).
+handle_cast(Msg, St) -> webrtc_redact:guard(fun() -> cast_(Msg, St) end, St).
+handle_info(Msg, St) -> webrtc_redact:guard(fun() -> info_(Msg, St) end, St).
+
+%% Crash reports and sys:get_status/1 show a summary, never the state.
+format_status(Status) ->
+    webrtc_redact:status(case Status of #{state := #st{} = St} -> summary(St); _ -> #{} end, Status).
+
+summary(St) ->
+    #{pc => St#st.pc, owner => St#st.app, dtls_role => St#st.dtls_role, connected => St#st.connected,
+      finished => St#st.finished, ice_usable => St#st.ice_usable,
+      ice => try webrtc_ice_agent:connection_state(St#st.ice) catch _:_ -> unknown end, sockets => length(St#st.sockets),
+      streams => map_size(St#st.streams), received => St#st.received, dropped => St#st.dropped}.
+
+call_(gather, _From, St) ->
     Tcp = [{Ref, Addr} || {Ref, _, Addr} <- St#st.tcp_listeners],
     %% TCP candidates first: gathering may complete within gather/3, and
     %% candidates after end-of-candidates are ignored (RFC 8838 §14).
@@ -151,11 +174,11 @@ handle_call(gather, _From, St) ->
         {I2, A2} = webrtc_ice_agent:gather(St#st.sockets, Now, I1),
         {I2, A1 ++ A2}
     end, ok);
-handle_call({set_remote_ice, U, P, Ta}, _From, St) ->
+call_({set_remote_ice, U, P, Ta}, _From, St) ->
     run(St, fun(Now, I) ->
         webrtc_ice_agent:set_remote_credentials(U, P, Now, webrtc_ice_agent:set_remote_pacing(Ta, I))
     end, ok);
-handle_call({add_remote_candidate, Cand}, _From, St) ->
+call_({add_remote_candidate, Cand}, _From, St) ->
     %% Host names are resolved first (draft-ietf-mmusic-mdns-ice-candidates).
     case webrtc_mdns_client:remote_candidate(Cand, St#st.mdns) of
         {add, Value, M} ->
@@ -165,12 +188,12 @@ handle_call({add_remote_candidate, Cand}, _From, St) ->
         {error, R, M} ->
             {reply, {error, R}, St#st{mdns = M}}
     end;
-handle_call(end_of_candidates, _From, St) ->
+call_(end_of_candidates, _From, St) ->
     case webrtc_mdns_client:end_of_candidates(St#st.mdns) of
         {now, M} -> run(St#st{mdns = M}, fun(Now, I) -> webrtc_ice_agent:end_of_candidates(Now, I) end, ok);
         {deferred, M} -> {reply, ok, St#st{mdns = M}}
     end;
-handle_call({restart_ice, U, P}, _From, St) ->
+call_({restart_ice, U, P}, _From, St) ->
     {I1, Acts} = webrtc_ice_agent:restart(#{ufrag => U, pwd => P}, now_ms(), St#st.ice),
     %% The pair ICE selects next is a new path, even on the same
     %% addresses (connection ID rotation).
@@ -181,10 +204,10 @@ handle_call({restart_ice, U, P}, _From, St) ->
     St1 = lists:foldl(fun webrtc_transport_net:local_candidate/2, St0, webrtc_ice_agent:local_candidates(I1)),
     to_pc({gathering_state, complete}, St1),
     {reply, ok, arm(St1)};
-handle_call({configure, Neg}, _From, St) ->
+call_({configure, Neg}, _From, St) ->
     St1 = webrtc_transport_secure:update_marks(webrtc_transport_secure:configure_engines(Neg, St)),
     {reply, ok, arm(St1)};
-handle_call(Msg, _From, #st{finished = true} = St) when
+call_(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= send_rtp;
     element(1, Msg) =:= send_frame;
     element(1, Msg) =:= send_media;
@@ -199,68 +222,68 @@ handle_call(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= resume_stream
 ->
     {reply, {error, closed}, St};
-handle_call({send_rtp, Mid, Payload, Opts}, _From, St) ->
+call_({send_rtp, Mid, Payload, Opts}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send(Mid, Payload, Opts, Now, M) end, St);
-handle_call({send_frame, Mid, Frame, Opts}, _From, St) ->
+call_({send_frame, Mid, Frame, Opts}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send_frame(Mid, Frame, Opts, Now, M) end, St);
-handle_call({send_media, Mid, Raw, Opts}, _From, St) ->
+call_({send_media, Mid, Raw, Opts}, _From, St) ->
     %% The plugin may report an error: events go to the owner.
     case webrtc_media:send_media(Mid, Raw, Opts, now_ms(), St#st.media) of
         {ok, Acts, M1} -> {reply, ok, arm(webrtc_transport_secure:media_actions(Acts, St#st{media = M1}))};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({send_rtp_packet, Mid, Pkt}, _From, St) ->
+call_({send_rtp_packet, Mid, Pkt}, _From, St) ->
     media_send(fun(Now, M) -> webrtc_media:send_packet(Mid, Pkt, Now, M) end, St);
-handle_call({request_keyframe, Mid}, _From, St) ->
+call_({request_keyframe, Mid}, _From, St) ->
     {Acts, M} = webrtc_media:request_keyframe(Mid, now_ms(), St#st.media),
     St1 = webrtc_transport_net:transmit(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
-handle_call({request_max_bitrate, Mid, Bps}, _From, St) ->
+call_({request_max_bitrate, Mid, Bps}, _From, St) ->
     case webrtc_media:request_max_bitrate(Mid, Bps, now_ms(), St#st.media) of
         {ok, Acts, M} -> {reply, ok, arm(webrtc_transport_net:transmit(Acts, St#st{media = M}))};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({send_loss_indication, Key, Fb}, _From, St) ->
+call_({send_loss_indication, Key, Fb}, _From, St) ->
     case webrtc_media:send_loss_indication(Key, Fb, now_ms(), St#st.media) of
         {ok, Acts, M} -> {reply, ok, arm(webrtc_transport_net:transmit(Acts, St#st{media = M}))};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({request_pause, Key, Type}, _From, St) ->
+call_({request_pause, Key, Type}, _From, St) ->
     case webrtc_media:request_pause(Key, Type, now_ms(), St#st.media) of
         {ok, Acts, M} -> {reply, ok, arm(webrtc_transport_net:transmit(Acts, St#st{media = M}))};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({resume_stream, Mid}, _From, St) ->
+call_({resume_stream, Mid}, _From, St) ->
     case webrtc_media:resume(Mid, now_ms(), St#st.media) of
         {ok, M} -> {reply, ok, St#st{media = M}};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({set_congestion_control, Opts}, _From, St) ->
+call_({set_congestion_control, Opts}, _From, St) ->
     {Acts, M} = webrtc_media:set_congestion_control(Opts, now_ms(), St#st.media),
     St1 = webrtc_transport_secure:media_actions(Acts, St#st{media = M}),
     {reply, ok, arm(St1)};
-handle_call({open_channel, Label, Opts}, From, #st{dcep = undefined} = St) ->
+call_({open_channel, Label, Opts}, From, #st{dcep = undefined} = St) ->
     {noreply, St#st{pending_channels = St#st.pending_channels ++ [{From, Label, Opts}]}};
-handle_call({open_channel, Label, Opts}, _From, St) ->
+call_({open_channel, Label, Opts}, _From, St) ->
     {Reply, St1} = webrtc_transport_secure:do_open_channel(Label, Opts, St),
     {reply, Reply, arm(St1)};
-handle_call({send_data, Id, Type, Data}, _From, #st{dcep = D} = St) when D =/= undefined ->
+call_({send_data, Id, Type, Data}, _From, #st{dcep = D} = St) when D =/= undefined ->
     case webrtc_dcep:send(Id, Type, Data, now_ms(), D) of
         {ok, D1, Acts} -> {reply, ok, arm(webrtc_transport_secure:dcep_actions(Acts, St#st{dcep = D1}))};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({send_data, _, _, _}, _From, St) ->
+call_({send_data, _, _, _}, _From, St) ->
     {reply, {error, not_connected}, St};
-handle_call({close_channel, Id}, _From, #st{dcep = D} = St) when D =/= undefined ->
+call_({close_channel, Id}, _From, #st{dcep = D} = St) when D =/= undefined ->
     case webrtc_dcep:close_channel(Id, now_ms(), D) of
         {ok, D1, Acts} -> {reply, ok, arm(webrtc_transport_secure:dcep_actions(Acts, St#st{dcep = D1}))};
         {error, _} = E -> {reply, E, St}
     end;
-handle_call({close_channel, _}, _From, St) ->
+call_({close_channel, _}, _From, St) ->
     {reply, {error, not_connected}, St};
-handle_call({set_app, Pid}, _From, St) ->
+call_({set_app, Pid}, _From, St) ->
     {reply, ok, St#st{app = Pid}};
-handle_call(stats, _From, St) ->
+call_(stats, _From, St) ->
     Stats = #{
         addresses => [A || {_, A} <- St#st.sockets],
         dropped => St#st.dropped,
@@ -277,50 +300,54 @@ handle_call(stats, _From, St) ->
     },
     {reply, Stats, St}.
 
-handle_cast({report_media_stats, Mid, Dir, Report}, St) ->
+cast_({report_media_stats, Mid, Dir, Report}, St) ->
     {Bad, M} = webrtc_media:report_stats(Mid, Dir, Report, St#st.media),
     _ = [logger:debug("webrtc: media stats dropped for ~s: ~p", [Mid, B]) || B <- Bad],
     {noreply, St#st{media = M}};
-handle_cast(_Msg, St) ->
+cast_(_Msg, St) ->
     {noreply, St}.
 
-handle_info({udp, Sock, IP, Port, Bin}, St) ->
+info_({udp, Sock, IP, Port, Bin}, St) ->
     St1 = webrtc_transport_net:datagram(Sock, {IP, Port}, Bin, now_ms(), St),
     {noreply, arm(St1)};
-handle_info({udp, Sock, IP, Port, Anc, Bin}, St) ->
+info_({udp, Sock, IP, Port, Anc, Bin}, St) ->
     %% recvtos / recvtclass: the ECN codepoint is the low two bits.
     Ecn = case Anc of [{tos, T} | _] -> T band 3; [{tclass, T} | _] -> T band 3; _ -> 0 end,
     St1 = webrtc_transport_net:datagram(Sock, {IP, Port}, Bin, now_ms(), St, Ecn),
     {noreply, arm(St1)};
-handle_info({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
+info_({'DOWN', _Ref, process, Pc, _Reason}, #st{pc = Pc} = St) ->
     {stop, normal, St};
-handle_info({delayed_send, Sock, Dest, Bin}, St) ->
+info_({delayed_send, Sock, Dest, Bin}, St) ->
     webrtc_transport_net:udp_send(Sock, Dest, Bin),
     {noreply, St};
-handle_info({delayed_send, Sock, Dest, Bin, Ecn}, St) ->
+info_({delayed_send, Sock, Dest, Bin, Ecn}, St) ->
     webrtc_transport_net:udp_send(Sock, Dest, Bin, Ecn),
     {noreply, St};
-handle_info({ice_tcp_accept, ListenRef, Sock}, St) ->
+info_({ice_tcp_accept, ListenRef, Sock}, St) ->
     {noreply, arm(webrtc_transport_net:tcp_accepted(ListenRef, Sock, St))};
-handle_info({turn_stream, Ref, Result}, St) ->
-    {noreply, arm(webrtc_transport_net:stream_opened(Ref, Result, St))};
-handle_info({Tag, Sock, Data}, St) when Tag =:= tcp; Tag =:= ssl ->
+info_({turn_stream, Ref, Result}, St) ->
+    {noreply, arm(webrtc_transport_net:stream_opened(Ref, Result, prune_workers(St)))};
+info_({Tag, Sock, Data}, St) when Tag =:= tcp; Tag =:= ssl ->
     {noreply, arm(webrtc_transport_net:stream_data(Sock, Data, St))};
-handle_info({Tag, Sock}, St) when Tag =:= tcp_closed; Tag =:= ssl_closed ->
+info_({Tag, Sock}, St) when Tag =:= tcp_closed; Tag =:= ssl_closed ->
     {noreply, arm(webrtc_transport_net:stream_closed(Sock, closed, St))};
-handle_info({Tag, Sock, Reason}, St) when Tag =:= tcp_error; Tag =:= ssl_error ->
+info_({Tag, Sock, Reason}, St) when Tag =:= tcp_error; Tag =:= ssl_error ->
     {noreply, arm(webrtc_transport_net:stream_closed(Sock, Reason, St))};
-handle_info({Tag, Sock}, St) when Tag =:= tcp_passive; Tag =:= ssl_passive ->
+info_({Tag, Sock}, St) when Tag =:= tcp_passive; Tag =:= ssl_passive ->
     {noreply, webrtc_transport_net:stream_passive(Sock, St)};
-handle_info({udp_passive, Sock}, St) ->
+info_({udp_passive, Sock}, St) ->
     ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
     {noreply, St};
-handle_info({timeout, Ref, tick}, #st{timer = {Ref, _}} = St) ->
+info_({timeout, Ref, tick}, #st{timer = {Ref, _}} = St) ->
     St1 = tick(now_ms(), St#st{timer = undefined}),
     {noreply, arm(St1)};
-handle_info({timeout, _Ref, tick}, St) ->
+info_({timeout, _Ref, tick}, St) ->
     {noreply, St};
-handle_info(Other, St) ->
+%% A connect worker that ended, or the peer connection's link when it
+%% started us alone (its monitor stops us).
+info_({'EXIT', _, _}, St) ->
+    {noreply, St};
+info_(Other, St) ->
     %% Resolved host names: add the candidates, then a deferred
     %% end-of-candidates.
     case webrtc_mdns_client:handle_info(Other, St#st.mdns) of
@@ -352,7 +379,9 @@ terminate(_Reason, St0) ->
     _ = webrtc_transport_net:close_streams(St2),
     _ = [gen_tcp:close(L) || {_, L, _} <- St2#st.tcp_listeners],
     _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
-    ok.
+    _ = webrtc_transport_net:kill_workers(St2),
+    %% No queued message (credentials, datagrams) in a crash report.
+    webrtc_redact:flush().
 
 %%====================================================================
 %% Driving the engines
@@ -436,3 +465,7 @@ tmin(A, B) -> min(A, B).
 
 now_ms() ->
     erlang:monotonic_time(millisecond).
+
+%% Connect workers that have finished.
+prune_workers(St) ->
+    St#st{workers = [W || W <- St#st.workers, is_process_alive(W)]}.

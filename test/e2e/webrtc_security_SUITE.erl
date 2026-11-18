@@ -8,6 +8,7 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
+    no_secrets_in_crash_logs/1,
     spoofed_traffic_dropped/1,
     unauthenticated_stun_flood/1,
     garbage_flood/1,
@@ -35,7 +36,8 @@ all() ->
         stuck_transport_killed_on_close,
         turn_allocation_deleted_on_close,
         nothing_sent_after_peer_close,
-        no_state_in_caller
+        no_state_in_caller,
+        no_secrets_in_crash_logs
     ].
 
 init_per_suite(Config) ->
@@ -306,3 +308,56 @@ no_state_in_caller(_Config) ->
     ],
     ?assertEqual(Dict0, get()),
     ?assertEqual([], [P || P <- Pcs, ets:lookup(webrtc_transports, P) =/= []]).
+
+%% A crashing peer connection or transport, and sys:get_status/1, show
+%% neither the DTLS private key nor the ICE and TURN credentials.
+no_secrets_in_crash_logs(_Config) ->
+    Turn = <<"turn-credential-0d9c2e">>,
+    Cert = webrtc_dtls_cert:generate(),
+    %% One pair whose transport crashes, one whose peer connection does:
+    %% neither call races the other process's end.
+    {A1, B1, T1, Pwds1} = secret_pair(Cert, Turn),
+    {A2, B2, T2, Pwds2} = secret_pair(Cert, Turn),
+    #{key := Key} = Cert,
+    KeyDer = public_key:der_encode('ECPrivateKey', Key),
+    Secrets = Pwds1 ++ Pwds2 ++ [Turn, <<"ECPrivateKey">>, base64:encode(KeyDer),
+                                 iolist_to_binary(io_lib:format("~w", [binary:part(KeyDer, 7, 16)]))],
+    Status = iolist_to_binary(io_lib:format("~p~n~p", [sys:get_status(A1), sys:get_status(T1)])),
+    ok = webrtc_test_log:capture(secrets),
+    try
+        process_flag(trap_exit, true),
+        %% An unknown call: function_clause with the state as argument.
+        Crash = fun(P, M) -> try gen_server:call(P, M) catch exit:_ -> ok end end,
+        Crash(T1, {bogus, hd(Pwds1)}),
+        Crash(A2, {bogus, hd(Pwds2)}),
+        Logs = collect_logs(<<>>, 3000),
+        ct:log("~s", [Logs]),
+        ?assertNotEqual(<<>>, Logs),
+        [?assertEqual(nomatch, binary:match(Logs, S), S) || S <- Secrets],
+        [?assertEqual(nomatch, binary:match(Status, S), S) || S <- Secrets],
+        _ = T2
+    after
+        webrtc_test_log:release(secrets),
+        [webrtc:close(P) || P <- [A1, B1, A2, B2]]
+    end.
+
+%% A connected pair: A with the certificate and a TURN credential; its
+%% transport and local and remote ICE passwords.
+secret_pair(Cert, Turn) ->
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, certificate => Cert,
+                                           ice_servers => [#{urls => [<<"turn:127.0.0.1:9?transport=udp">>],
+                                                             username => <<"u">>, credential => Turn}]}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    ok = webrtc:create_data_channel(A, <<"x">>, #{}),
+    ?S:connect(A, B),
+    {match, [LocalPwd]} = re:run(webrtc:local_description(A), <<"a=ice-pwd:(\\S+)">>, [{capture, all_but_first, binary}]),
+    {match, [RemotePwd]} = re:run(webrtc:remote_description(A), <<"a=ice-pwd:(\\S+)">>, [{capture, all_but_first, binary}]),
+    [{A, T}] = ets:lookup(webrtc_transports, A),
+    {A, B, T, [LocalPwd, RemotePwd]}.
+
+collect_logs(Acc, Wait) ->
+    receive
+        {log, L} -> collect_logs(<<Acc/binary, L/binary>>, 500)
+    after Wait ->
+        Acc
+    end.

@@ -866,13 +866,26 @@ count(Key, N, #media{counters = C} = M) ->
 %% @doc Add N to a counter of stream {Dir, Ssrc}.
 -spec scount(in | out, non_neg_integer(), atom(), integer(), #media{}) -> #media{}.
 scount(Dir, Ssrc, Key, N, #media{streams = Ss} = M) ->
-    S = maps:get({Dir, Ssrc}, Ss, #{}),
-    M#media{streams = Ss#{{Dir, Ssrc} => S#{Key => maps:get(Key, S, 0) + N}}}.
+    case room(Dir, Ssrc, Ss) of
+        true ->
+            S = maps:get({Dir, Ssrc}, Ss, #{}),
+            M#media{streams = Ss#{{Dir, Ssrc} => S#{Key => maps:get(Key, S, 0) + N}}};
+        false ->
+            count(streams_full, M)
+    end.
+
+%% A last defense: no more stream entries than streams we may send and
+%% receive.
+room(Dir, Ssrc, Ss) ->
+    is_map_key({Dir, Ssrc}, Ss) orelse map_size(Ss) < 2 * ?MAX_STREAMS.
 
 %% @doc Set values of stream {Dir, Ssrc}.
 -spec sset(in | out, non_neg_integer(), map(), #media{}) -> #media{}.
 sset(Dir, Ssrc, Values, #media{streams = Ss} = M) ->
-    M#media{streams = Ss#{{Dir, Ssrc} => maps:merge(maps:get({Dir, Ssrc}, Ss, #{}), Values)}}.
+    case room(Dir, Ssrc, Ss) of
+        true -> M#media{streams = Ss#{{Dir, Ssrc} => maps:merge(maps:get({Dir, Ssrc}, Ss, #{}), Values)}};
+        false -> count(streams_full, M)
+    end.
 
 rand16() ->
     <<S:16>> = crypto:strong_rand_bytes(2),

@@ -258,6 +258,8 @@ run_up(P, Frags) ->
         _ -> none
     end.
 
+%% First and Last come from run_down/run_up over the fragments held, so
+%% the range covers only fragments present.
 take_run(First, Last, Frags) ->
     {_, _, Ppid, _} = maps:get(First, Frags),
     Parts = [element(4, maps:get(P, Frags)) || P <- lists:seq(First, Last)],

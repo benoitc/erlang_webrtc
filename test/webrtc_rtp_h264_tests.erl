@@ -160,3 +160,40 @@ interleaved_errors_test_() ->
         ?_assertEqual({error, truncated}, ?H264:depacketize_interleaved(<<16#7A, 0, 0, 0, 9, 0, 0>>)),
         ?_test(never_crashes(fun ?H264:depacketize_interleaved/1, element(2, ?H264:mtap([{slice(20, 1), 3, 9}], 24))))
     ].
+
+%% A picture order count cycle of 2^31 - 1 frames in 13 bytes: §7.4.2.1.1
+%% allows 255. Parsed in a process with a 100,000 word heap limit.
+sps_poc_cycle_bound_test() ->
+    %% id 0, log2_max_frame_num 0, poc type 1, delta_pic_order_always_zero,
+    %% two offsets of 0, then the cycle length.
+    Bits = <<1:1, 1:1, 2#010:3, 0:1, 1:1, 1:1, 0:31, 1:1, 0:31, 0:1>>,
+    Sps = <<16#67, 66, 0, 30, Bits/bitstring>>,
+    ?assert(is_binary(Sps)),
+    Self = self(),
+    {Pid, Ref} = spawn_monitor(fun() ->
+        process_flag(max_heap_size, #{size => 100000, kill => true, error_logger => false}),
+        Self ! {self(), webrtc_rtp_h264:sps_size(Sps)}
+    end),
+    receive
+        {Pid, R} -> ?assertEqual(error, R);
+        {'DOWN', Ref, process, Pid, Why} -> ?assertEqual(answered, Why)
+    after 5000 ->
+        ?assert(false)
+    end.
+
+%% Fields beyond their §7.4.2.1.1 range are refused.
+sps_field_ranges_test() ->
+    Ue = fun(V) -> N = length(integer_to_list(V + 1, 2)), <<0:(N - 1), (V + 1):N>> end,
+    Sps = fun(Fields) ->
+              Body = << <<F/bitstring>> || F <- Fields >>,
+              Pad = (8 - bit_size(Body) rem 8) rem 8,
+              <<16#67, 66, 0, 30, Body/bitstring, 0:Pad>>
+          end,
+    %% id, log2_max_frame_num_minus4, poc type 2, refs, gaps, w, h,
+    %% frame_mbs_only, direct8x8, crop, vui, stop bit.
+    Good = fun(Id, Refs, W) -> Sps([Ue(Id), Ue(0), Ue(2), Ue(Refs), <<0:1>>, Ue(W), Ue(10), <<1:1, 0:1, 0:1, 0:1, 1:1>>]) end,
+    ?assertEqual({ok, {320, 176}}, webrtc_rtp_h264:sps_size(Good(0, 1, 19))),
+    ?assertEqual(error, webrtc_rtp_h264:sps_size(Good(32, 1, 19))),
+    ?assertEqual(error, webrtc_rtp_h264:sps_size(Good(0, 17, 19))),
+    ?assertEqual({ok, {1056 * 16, 176}}, webrtc_rtp_h264:sps_size(Good(0, 1, 1055))),
+    ?assertEqual(error, webrtc_rtp_h264:sps_size(Good(0, 1, 2048))).

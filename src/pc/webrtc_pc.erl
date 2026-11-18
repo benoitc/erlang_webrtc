@@ -8,7 +8,7 @@
 -include("webrtc_ice.hrl").
 
 -export([start_link/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, format_status/1]).
 
 -record(st, {
     app :: pid(),
@@ -50,15 +50,25 @@
     restart_timer :: undefined | reference(),
     auto_restarts = 0 :: non_neg_integer(),
     %% Helper process calling the `signaling' function.
-    signaler :: undefined | pid()
+    signaler :: undefined | pid(),
+    %% The supervisor of this peer connection's subtree, which starts
+    %% the transports (webrtc_peer_sup); undefined when started alone.
+    peer_sup :: undefined | pid()
 }).
 
 -define(MAX_EARLY_CANDIDATES, 64).
+%% Messages waiting for the signaling helper.
+-define(MAX_SIGNALER_QUEUE, 64).
 %% Restarts tried for one incident before ICE is reported failed.
 -define(MAX_AUTO_RESTARTS, 3).
 %% The ICE agent's limit (webrtc_ice_agent).
 -define(MAX_ICE_SERVERS, 8).
 
+%% `Opts' may come wrapped in a fun: a supervisor prints its children's
+%% start arguments in its reports, never a fun's environment, and these
+%% hold the certificate's key and the TURN credentials.
+start_link(Opts) when is_function(Opts, 0) ->
+    start_link(Opts());
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
@@ -82,12 +92,30 @@ init(#{owner := App} = Opts0) ->
         max_message_size => maps:get(max_message_size, Opts, 262144)
     })),
     Signaler = case maps:get(signaling, Opts, undefined) of
-        F when is_function(F, 2) -> spawn_link(fun() -> signaler(F) end);
+        F when is_function(F, 2) -> Pc = self(), proc_lib:spawn_link(fun() -> signaler_init(F, Pc) end);
         _ -> undefined
     end,
-    {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler}}.
+    {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler,
+             peer_sup = maps:get(peer_sup, Opts0, undefined)}}.
 
-handle_call({add_transceiver, Kind, TOpts}, _From, St) ->
+
+%% Callbacks run through webrtc_redact:guard/2: a crash stops the
+%% process with a reason that carries no state (keys, credentials).
+handle_call(Msg, From, St) -> webrtc_redact:guard(fun() -> call_(Msg, From, St) end, St).
+handle_cast(Msg, St) -> webrtc_redact:guard(fun() -> cast_(Msg, St) end, St).
+handle_info(Msg, St) -> webrtc_redact:guard(fun() -> info_(Msg, St) end, St).
+
+%% Crash reports and sys:get_status/1 show a summary, never the state.
+format_status(Status) ->
+    webrtc_redact:status(case Status of #{state := #st{} = St} -> summary(St); _ -> #{} end, Status).
+
+summary(St) ->
+    #{owner => St#st.app, transport => St#st.transport, extra_transports => maps:keys(St#st.extra),
+      signaling => try webrtc_jsep:signaling_state(St#st.jsep) catch _:_ -> unknown end, ice => St#st.ice_state,
+      gathering => St#st.gathering, dtls => St#st.dtls_state, connection => St#st.connection,
+      auto_restarts => St#st.auto_restarts}.
+
+call_({add_transceiver, Kind, TOpts}, _From, St) ->
     case webrtc_jsep:add_transceiver(Kind, TOpts, St#st.jsep) of
         {ok, Id, J} ->
             notify(negotiation_needed, St),
@@ -95,13 +123,13 @@ handle_call({add_transceiver, Kind, TOpts}, _From, St) ->
         {error, _} = E ->
             {reply, E, St}
     end;
-handle_call({set_direction, Id, Dir}, _From, St) ->
+call_({set_direction, Id, Dir}, _From, St) ->
     reply_jsep(webrtc_jsep:set_direction(Id, Dir, St#st.jsep), St);
-handle_call({stop_transceiver, Id}, _From, St) ->
+call_({stop_transceiver, Id}, _From, St) ->
     reply_jsep(webrtc_jsep:stop_transceiver(Id, St#st.jsep), St);
-handle_call(transceivers, _From, St) ->
+call_(transceivers, _From, St) ->
     {reply, webrtc_jsep:transceivers(St#st.jsep), St};
-handle_call({create_data_channel, Label, COpts}, _From, St) ->
+call_({create_data_channel, Label, COpts}, _From, St) ->
     J = webrtc_jsep:add_data_channel(St#st.jsep),
     St1 = St#st{jsep = J},
     case St1#st.sctp_up of
@@ -119,41 +147,41 @@ handle_call({create_data_channel, Label, COpts}, _From, St) ->
             end,
             {reply, Reply, St1#st{pending_channels = St1#st.pending_channels ++ [{Label, COpts}]}}
     end;
-handle_call({create_offer, Opts}, _From, St) ->
+call_({create_offer, Opts}, _From, St) ->
     reply_sdp(create(offer, Opts, St), St);
-handle_call({create_answer, Opts}, _From, St) ->
+call_({create_answer, Opts}, _From, St) ->
     reply_sdp(create(answer, Opts, St), St);
-handle_call({set_local_description, Type, Sdp}, _From, St) ->
+call_({set_local_description, Type, Sdp}, _From, St) ->
     reply_set(set_local(Type, Sdp, St), St);
-handle_call({set_remote_description, Type, Sdp}, _From, St) ->
+call_({set_remote_description, Type, Sdp}, _From, St) ->
     reply_set(set_remote(Type, Sdp, St), St);
-handle_call({add_ice_candidate, Cand, Mid}, From, St) ->
+call_({add_ice_candidate, Cand, Mid}, From, St) ->
     case extra_of_mid(Mid, St) of
         {ok, #{pid := T}} when Cand =:= end_of_candidates -> {reply, webrtc_transport:end_of_candidates(T), St};
         {ok, #{pid := T}} -> {reply, webrtc_transport:add_remote_candidate(T, Cand), St};
-        error -> handle_call({add_ice_candidate, Cand}, From, St)
+        error -> call_({add_ice_candidate, Cand}, From, St)
     end;
-handle_call({add_ice_candidate, Cand}, _From, St) ->
+call_({add_ice_candidate, Cand}, _From, St) ->
     case webrtc_jsep:remote_view(St#st.jsep) of
         %% RFC 9429 §4.1.17: candidates need a remote description.
         undefined -> {reply, {error, no_remote_description}, St};
         _ -> add_candidate(Cand, St)
     end;
-handle_call(restart_ice, _From, St) ->
+call_(restart_ice, _From, St) ->
     {reply, ok, restart_now(St)};
-handle_call(transport_pid, _From, #st{transport = T} = St) when is_pid(T) ->
+call_(transport_pid, _From, #st{transport = T} = St) when is_pid(T) ->
     {reply, {ok, T}, St};
-handle_call(transport_pid, _From, St) ->
+call_(transport_pid, _From, St) ->
     {reply, {error, not_connected}, St};
-handle_call(local_description, _From, St) ->
+call_(local_description, _From, St) ->
     {reply, encode_opt(webrtc_jsep:local_description(St#st.jsep)), St};
-handle_call(remote_description, _From, St) ->
+call_(remote_description, _From, St) ->
     {reply, encode_opt(webrtc_jsep:remote_description(St#st.jsep)), St};
-handle_call(signaling_state, _From, St) ->
+call_(signaling_state, _From, St) ->
     {reply, webrtc_jsep:signaling_state(St#st.jsep), St};
-handle_call(connection_state, _From, St) ->
+call_(connection_state, _From, St) ->
     {reply, St#st.connection, St};
-handle_call({get_stats, w3c}, _From, St) ->
+call_({get_stats, w3c}, _From, St) ->
     Transports =
         [{K, webrtc_transport:stats(T)} || {K, T} <- [{0, St#st.transport} || is_pid(St#st.transport)]] ++
             [{K, webrtc_transport:stats(P)} || K := #{pid := P} <- St#st.extra],
@@ -167,7 +195,7 @@ handle_call({get_stats, w3c}, _From, St) ->
         transports => Transports,
         servers => stats_servers(St#st.opts)
     }), St};
-handle_call(get_stats, _From, St) ->
+call_(get_stats, _From, St) ->
     Transport =
         case St#st.transport of
             undefined -> undefined;
@@ -176,7 +204,7 @@ handle_call(get_stats, _From, St) ->
     Extra = #{K => webrtc_transport:stats(P) || K := #{pid := P} <- St#st.extra},
     {reply, #{connection_state => St#st.connection, ice_state => St#st.ice_state, transport => Transport,
               transports => Extra}, St};
-handle_call({controlling_process, Pid}, _From, St) ->
+call_({controlling_process, Pid}, _From, St) ->
     demonitor(St#st.app_mon, [flush]),
     case St#st.transport of
         undefined -> ok;
@@ -184,34 +212,43 @@ handle_call({controlling_process, Pid}, _From, St) ->
     end,
     _ = [ok = webrtc_transport:set_app(X, Pid) || _ := #{pid := X} <- St#st.extra],
     {reply, ok, St#st{app = Pid, app_mon = monitor(process, Pid)}};
-handle_call(close, _From, St) ->
+call_(close, _From, St) ->
     {stop, normal, ok, close_now(St)}.
 
-handle_cast(_Msg, St) ->
+cast_(_Msg, St) ->
     {noreply, St}.
 
-handle_info({webrtc_transport, T, Event}, #st{transport = T} = St) ->
+info_({webrtc_transport, T, Event}, #st{transport = T} = St) ->
     {noreply, transport_event(Event, St)};
-handle_info({webrtc_transport, T, Event}, St) ->
+info_({webrtc_transport, T, Event}, St) ->
     case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
         [K] -> {noreply, extra_event(K, Event, St)};
         [] -> {noreply, St}
     end;
-handle_info({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
+info_({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
     {stop, normal, close_now(St)};
-handle_info({'EXIT', T, Reason}, #st{transport = T} = St) ->
-    ets:delete(webrtc_transports, self()),
+info_({'DOWN', _, process, T, Reason}, #st{transport = T} = St) when is_pid(T) ->
+    info_({'EXIT', T, Reason}, St);
+info_({'DOWN', _, process, T, Reason}, St) ->
+    %% A transport after the first; another monitor is of no concern.
+    case [P || _ := #{pid := P} <- St#st.extra, P =:= T] of
+        [_ | _] -> info_({'EXIT', T, Reason}, St);
+        [] -> {noreply, St}
+    end;
+info_({'EXIT', T, Reason}, #st{transport = T} = St) ->
+    ok = webrtc_registry:delete(self()),
     notify({connection_state, failed}, St),
-    {stop, {transport_exit, Reason}, St#st{transport = undefined}};
-handle_info({'EXIT', T, Reason}, St) ->
+    %% An expected end, reported as `failed': no crash report.
+    {stop, {shutdown, {transport_exit, Reason}}, St#st{transport = undefined}};
+info_({'EXIT', T, Reason}, St) ->
     case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
         [_] ->
             notify({connection_state, failed}, St),
-            {stop, {transport_exit, Reason}, St};
+            {stop, {shutdown, {transport_exit, Reason}}, St};
         [] ->
             {noreply, St}
     end;
-handle_info({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
+info_({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
     St = St0#st{restart_timer = undefined},
     Busy = St#st.local_restart orelse St#st.ice_pending =/= undefined,
     case troubled(St) of
@@ -223,7 +260,7 @@ handle_info({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
         _ ->
             {noreply, update_connection(St)}
     end;
-handle_info(_Other, St) ->
+info_(_Other, St) ->
     {noreply, St}.
 
 %% New ICE credentials for every transport; the application sends the
@@ -283,7 +320,10 @@ recovering(#st{opts = O, auto_restarts = N}) ->
 
 terminate(_Reason, St) ->
     _ = close_now(St),
-    ok.
+    _ = [exit(S, kill) || S <- [St#st.signaler], is_pid(S)],
+    %% A crash report lists the messages still queued: calls carrying
+    %% descriptions (ICE passwords) and candidates go first.
+    webrtc_redact:flush().
 
 %% The transport starts with our local description; until then trickled
 %% candidates are kept (bounded).
@@ -386,17 +426,33 @@ signaling(#st{signaler = undefined}) -> false;
 signaling(_) -> true.
 
 signal(Type, Sdp, #st{signaler = S}) ->
-    S ! {description, Type, Sdp},
-    ok.
+    to_signaler(S, {description, Type, Sdp}).
 
-signaler(Fun) ->
+%% The helper runs the application's function, which may be slow: past
+%% ?MAX_SIGNALER_QUEUE waiting messages new ones are dropped rather
+%% than queued without bound.
+to_signaler(S, Msg) ->
+    case process_info(S, message_queue_len) of
+        {message_queue_len, N} when N >= ?MAX_SIGNALER_QUEUE -> ok;
+        _ -> S ! Msg, ok
+    end.
+
+%% It ends with its peer connection, which also kills it on terminate
+%% in case the function never returns.
+signaler_init(Fun, Pc) ->
+    Mon = monitor(process, Pc),
+    signaler(Fun, Pc, Mon).
+
+signaler(Fun, Pc, Mon) ->
     receive
         {description, Type, Sdp} ->
             try Fun(Type, Sdp) catch _:_ -> ok end,
-            signaler(Fun);
+            signaler(Fun, Pc, Mon);
         {notify, To, Msg} ->
             To ! Msg,
-            signaler(Fun)
+            signaler(Fun, Pc, Mon);
+        {'DOWN', Mon, process, Pc, _} ->
+            ok
     end.
 
 %% Our automatic restart: offer it ourselves when nothing else is
@@ -502,8 +558,8 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
             ta => maps:get(ice_pacing, St#st.opts, 50)
         }
     ),
-    {ok, T} = webrtc_transport:start_link(TOpts),
-    true = ets:insert(webrtc_transports, {self(), T}),
+    {ok, T} = start_transport(TOpts, St),
+    ok = webrtc_registry:insert(self(), [{self(), T}]),
     ok = webrtc_transport:gather(T),
     St1 = flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role, topts = maps:without([ufrag, pwd], TOpts)})),
     ensure_extra(St1);
@@ -764,8 +820,7 @@ bundle_tag(St) ->
 close_now(#st{transport = undefined} = St) ->
     St;
 close_now(#st{transport = T} = St) ->
-    ets:delete(webrtc_transports, self()),
-    ets:match_delete(webrtc_transports, {{self(), '_'}, '_'}),
+    ok = webrtc_registry:delete(self()),
     _ = [ok = stop_transport(P) || _ := #{pid := P} <- St#st.extra],
     ok = stop_transport(T),
     notify({connection_state, closed}, St),
@@ -775,19 +830,36 @@ close_now(#st{transport = T} = St) ->
 %% callback) is killed, so it can never survive with its sockets. The
 %% link stays until the transport is gone.
 stop_transport(T) ->
+    Mon = monitor(process, T),
     try
         webrtc_transport:stop(T)
     catch
         exit:_ ->
             exit(T, kill),
             receive
-                {'EXIT', T, _} -> ok
+                {'DOWN', Mon, process, T, _} -> ok
             after 5000 -> ok
             end
     end,
+    demonitor(Mon, [flush]),
+    %% The link (started alone) or the monitor of start_transport/2.
     receive
         {'EXIT', T, _} -> ok
     after 0 -> ok
+    end,
+    receive
+        {'DOWN', _, process, T, _} -> ok
+    after 0 -> ok
+    end.
+
+%% Transports run under the peer connection's supervisor, monitored;
+%% a peer connection started alone links to them.
+start_transport(TOpts, #st{peer_sup = undefined}) ->
+    webrtc_transport:start_link(TOpts);
+start_transport(TOpts, #st{peer_sup = Sup}) ->
+    case webrtc_peer_sup:start_transport(Sup, TOpts) of
+        {ok, T} -> _ = monitor(process, T), {ok, T};
+        {error, _} = E -> E
     end.
 
 %%====================================================================
@@ -811,8 +883,8 @@ ensure_extra(#st{topts = TOpts} = St) ->
                 true ->
                     Acc;
                 false ->
-                    {ok, T} = webrtc_transport:start_link(TOpts#{ufrag => U, pwd => P}),
-                    true = ets:insert(webrtc_transports, [{{Pc, M}, T} || M <- Ms] ++ data_row(Pc, Ms, T, Acc)),
+                    {ok, T} = start_transport(TOpts#{ufrag => U, pwd => P}, Acc),
+                    ok = webrtc_registry:insert(Pc, [{{Pc, M}, T} || M <- Ms] ++ data_row(Pc, Ms, T, Acc)),
                     ok = webrtc_transport:gather(T),
                     X = #{pid => T, mids => Ms, remote => undefined, sent => 0, cands => [], ice => new, dtls => new,
                            local_restart => false},
@@ -967,8 +1039,7 @@ extra_event(K, Event, St) ->
 %% With `signaling', candidates go through the helper so the peer
 %% never gets one before the description it belongs to.
 notify({ice_candidate, _, _} = Event, #st{app = App, signaler = S}) when is_pid(S) ->
-    S ! {notify, App, {webrtc, self(), Event}},
-    ok;
+    to_signaler(S, {notify, App, {webrtc, self(), Event}});
 notify(Event, #st{app = App}) ->
     App ! {webrtc, self(), Event},
     ok.

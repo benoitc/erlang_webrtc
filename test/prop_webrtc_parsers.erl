@@ -24,6 +24,8 @@
     {candidate, fun webrtc_sdp_candidate:parse/1},
     {demux, fun webrtc_demux:classify/1},
     {mdns, fun webrtc_mdns_msg:decode/1},
+    {h264_sps, fun webrtc_rtp_h264:sps_size/1},
+    {av1_obus, fun webrtc_rtp_av1:obus/1},
     {mdns_resolver, fun(B) -> webrtc_mdns_resolver:handle_packet(multicast, B, 0, mdns_resolver()) end},
     {mdns_responder, fun(B) -> webrtc_mdns_responder:handle_query({{127, 0, 0, 1}, 5353}, 5353, B, 0, mdns_responder()) end}
 ]).
@@ -46,18 +48,65 @@ prop_decoders_never_raise() ->
         no_raise(<<Prefix/binary, Bin/binary>>)
     ).
 
+%% Each decoder runs in a process with a heap limit: a count read from
+%% the input must never size an allocation.
 no_raise(Input) ->
-    lists:all(
-        fun({Name, F}) ->
-            try
-                _ = F(Input),
-                true
-            catch
-                C:R -> io:format("~p raised ~p:~p on ~p~n", [Name, C, R, Input]), false
-            end
-        end,
-        ?DECODERS
-    ).
+    lists:all(fun({Name, F}) -> bounded(Name, F, Input) end, ?DECODERS).
+
+-define(MAX_HEAP_WORDS, 2000000).
+
+bounded(Name, F, Input) ->
+    {Pid, Ref} = spawn_monitor(fun() ->
+        process_flag(max_heap_size, #{size => ?MAX_HEAP_WORDS, kill => true, error_logger => false}),
+        exit(try _ = F(Input), ok catch C:R -> {raised, C, R} end)
+    end),
+    receive
+        {'DOWN', Ref, process, Pid, ok} -> true;
+        {'DOWN', Ref, process, Pid, Why} -> io:format("~p: ~p on ~p~n", [Name, Why, Input]), false
+    after 10000 ->
+        exit(Pid, kill),
+        io:format("~p: no answer on ~p~n", [Name, Input]),
+        false
+    end.
+
+%% H.264 sequence parameter sets built field by field (§7.3.2.1.1),
+%% with any value up to the largest Exp-Golomb code: sps_size/1 returns
+%% within the heap limit.
+prop_h264_sps_fields() ->
+    ?FORALL(Fields, sps_fields(), bounded(h264_sps, fun webrtc_rtp_h264:sps_size/1, sps(Fields))).
+
+ue_value() ->
+    oneof([range(0, 20), range(0, 1100), range(0, 16#FFFFFFFE)]).
+
+sps_fields() ->
+    {oneof([66, 77, 100]), byte(), range(0, 3), vector(14, ue_value()), list(ue_value()), vector(4, bool())}.
+
+sps({Profile, Level, PocType, V, Cycle, [Gaps, FrameMbs, Crop, Scaling]}) ->
+    [Id, Chroma, BdL, BdC, Log2Frame, Lsb, Refs, W, H, Cl, Cr, Ct, Cb, N] = V,
+    High = case Profile of 100 -> [ue(Chroma), ue(BdL), ue(BdC), <<0:1, (b(Scaling)):1>>]; _ -> [] end,
+    Poc = case PocType of
+              0 -> [ue(Lsb)];
+              1 -> [<<0:1>>, ue(1), ue(2), ue(N) | [ue(C) || C <- lists:sublist(Cycle, 300)]];
+              _ -> []
+          end,
+    Bits = [ue(Id) | High] ++ [ue(Log2Frame), ue(PocType) | Poc] ++
+        [ue(Refs), <<(b(Gaps)):1>>, ue(W), ue(H), <<(b(FrameMbs)):1>>] ++
+        [<<0:1>> || not FrameMbs] ++ [<<0:1, (b(Crop)):1>>] ++
+        case Crop of true -> [ue(Cl), ue(Cr), ue(Ct), ue(Cb)]; false -> [] end ++ [<<0:1, 1:1>>],
+    Body = << <<X/bitstring>> || X <- Bits >>,
+    Pad = (8 - bit_size(Body) rem 8) rem 8,
+    <<16#67, Profile, 0, Level, Body/bitstring, 0:Pad>>.
+
+ue(V) ->
+    N = bit_len(V + 1),
+    <<0:(N - 1), (V + 1):N>>.
+
+bit_len(X) -> bit_len(X, 0).
+bit_len(0, N) -> N;
+bit_len(X, N) -> bit_len(X bsr 1, N + 1).
+
+b(true) -> 1;
+b(false) -> 0.
 
 %% libwebrtc's corpora (webrtc_corpus_tests) as seeds: one to four
 %% mutations of a real message reach code that random bytes do not.

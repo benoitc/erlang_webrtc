@@ -77,3 +77,22 @@ Fair sharing is measured from the convergence time of RFC 8867 §4.1, which is 0
 ## Not measured yet
 
 Scheduler utilization under many concurrent media streams, recovery time after loss bursts at high rates, and the cost of pacing at high packet rates (the forwarding and capacity benchmarks run with pacing off).
+
+## Soak (make soak)
+
+`make soak DURATION=60 WORKERS=4`, one hour on Apple M4 Pro, OTP 29. Four workers create and close connected pairs without pause. Each pair carries audio, H.264 key frames whose SPS has a picture order count cycle of 2^31 frames, data channel messages and keyframe requests.
+
+| | Baseline | During (each minute) | After |
+|---|---|---|---|
+| Processes | 70 | 97 to 98 | 70 |
+| Ports | 1 | 7 to 9 | 1 |
+| `webrtc_transports` rows | 0 | 6 to 8 | 0 |
+| Ticket table entries | 1 (the key) | 1 | 1 |
+| Longest message queue | 0 | 80 to 102 | 4 |
+| Total memory | 55.4 MB | 60.4 to 62.1 MB | 55.7 MB |
+
+130,969 pairs were connected and closed. Every count came back to its baseline, and memory stayed within 1 MB of it. The longest queues belong to the transports of pairs being set up: 4 workers and 8 peer connections at a time.
+
+The lifecycle suite (`webrtc_lifecycle_SUITE`) checks the same return to the baseline in CI. It covers close, owner exit, kill of a peer connection or a transport, an application restart, a stuck codec plugin, and 200 abandoned and 200 short-lived connections.
+
+Not covered: multi-day runs, scheduler stress, forced VM resource exhaustion and distributed nodes.

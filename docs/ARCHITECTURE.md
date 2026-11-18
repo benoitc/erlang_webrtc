@@ -55,15 +55,20 @@ This split gives three things:
 
 ```
 webrtc_sup (one_for_one)
-  webrtc_pc_sup (simple_one_for_one, temporary children)
-    webrtc_pc            one per peer connection (gen_server)
-      webrtc_transport   linked to its webrtc_pc (gen_server)
+  webrtc_registry          owns webrtc_transports, monitors each peer connection
+  webrtc_pc_sup (one_for_one, temporary children)
+    webrtc_peer_sup        one per peer connection (one_for_all, auto_shutdown any_significant)
+      webrtc_pc            significant, temporary (gen_server)
+      webrtc_transport     one per BUNDLE group, temporary, monitored by webrtc_pc (gen_server)
 ```
 
 - `webrtc_pc` owns the signaling state, the local and remote descriptions, the transceivers and the data channel registry. It is the process the application talks to.
 - `webrtc_transport` owns the UDP sockets and every engine of the transport. Media send calls go straight from the application to the transport process, so RTP forwarding does not pass through `webrtc_pc`. The process code is split in three modules over one state: `webrtc_transport` (API, callbacks, timer), `webrtc_transport_net` (sockets, received datagrams, ICE actions) and `webrtc_transport_secure` (DTLS, SRTP, media actions, SCTP).
 - Each transport process handles one ICE component. With BUNDLE (the WebRTC default) that is one per peer connection. Without it, or with several BUNDLE groups, `webrtc_pc` starts one transport per group or unbundled m= section and routes media calls to it by mid; the connection state aggregates them all.
 - Peer connections are independent. There is no global registry on the packet path.
+- The subtree of a peer connection ends with it, however it ends: close, crash, owner exit or `kill`. Its transports go with it (they trap exits so that their cleanup, close_notify and TURN deletion, still runs), and `webrtc_registry` removes its rows from `webrtc_transports`. Nothing is restarted: the JSEP and DTLS state of a peer connection cannot be rebuilt.
+- The signaling helper (option `signaling`) and the workers opening TCP and TLS connections are short lived processes linked to their owner, which kills them when it stops.
+- Crash reports and `sys:get_status/1` show a summary of the peer connection and transport states, never their keys or credentials (`webrtc_redact`).
 
 Sockets are opened in `{active, N}` mode so the transport process gets a bounded burst of datagrams and re-arms. Outgoing queues are bounded. When the SCTP send buffer is full the API returns `{error, buffer_full}` and the application receives a `buffered_amount_low` event when it can send again. When the media pacer queue is full it drops the oldest video packet and counts it (see below).
 

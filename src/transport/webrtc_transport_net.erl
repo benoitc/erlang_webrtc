@@ -23,6 +23,7 @@
     send_out/2,
     send_out_ect/2,
     send_out_tos/3,
+    kill_workers/1,
     set_stream_dscp/2,
     transmit/2,
     stream_opened/3,
@@ -114,8 +115,7 @@ ice_actions(Acts, St) ->
 ice_action({send, {Kind, _} = Ref, _Dest, Bin}, St) when Kind =:= stream; Kind =:= tcp ->
     stream_send(Ref, Bin, St);
 ice_action({connect, Ref, Params}, St) ->
-    connect(Ref, Params),
-    St;
+    St#st{workers = [connect(Ref, Params) | St#st.workers]};
 ice_action({open_udp, Ref, #{local := IP}}, St) ->
     %% A TURN allocation retried from a new local port (RFC 8656 §7.4).
     case open_socket({IP, 0}) of
@@ -317,15 +317,26 @@ inet_family(tls, S) -> case ssl:sockname(S) of {ok, {IP, _}} when tuple_size(IP)
 %%====================================================================
 
 %% Opened from another process so the transport keeps serving packets;
-%% the socket is handed over before the result is sent.
+%% the socket is handed over before the result is sent. The worker is
+%% linked and the transport kills it when it stops (see
+%% kill_workers/1), so none outlives it.
 connect(Ref, #{transport := ice_tcp, remote := {IP, Port}, local := Local} = P) ->
-    Self = self(),
-    _ = spawn(fun() -> Self ! {turn_stream, Ref, open(tcp, IP, Port, Local, P, Self)} end),
-    ok;
+    worker(Ref, fun(Self) -> open(tcp, IP, Port, Local, P, Self) end);
 connect(Ref, #{server := {IP, Port}, transport := Kind, local := Local} = P) ->
+    worker(Ref, fun(Self) -> open(Kind, IP, Port, Local, P, Self) end).
+
+worker(Ref, Open) ->
     Self = self(),
-    _ = spawn(fun() -> Self ! {turn_stream, Ref, open(Kind, IP, Port, Local, P, Self)} end),
-    ok.
+    proc_lib:spawn_link(fun() ->
+        Result = try Open(Self) catch _:R -> {error, R} end,
+        Self ! {turn_stream, Ref, Result}
+    end).
+
+%% @doc Kill the connect workers still running.
+-spec kill_workers(#st{}) -> #st{}.
+kill_workers(St) ->
+    _ = [exit(W, kill) || W <- St#st.workers],
+    St#st{workers = []}.
 
 open(Kind, IP, Port, Local, P, Owner) ->
     Tcp = [binary, {active, false}, {nodelay, true}, {ip, Local}],

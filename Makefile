@@ -1,6 +1,6 @@
 REBAR ?= rebar3
 
-.PHONY: all compile test test-protocol test-e2e test-interop test-network test-security test-all dialyzer xref fmt bench profile clean
+.PHONY: all compile test test-protocol test-e2e test-interop test-network test-security test-all dialyzer xref fmt bench profile soak clean
 
 all: compile
 
@@ -58,6 +58,14 @@ profile:
 	erl -noshell -pa _build/test/lib/*/ebin -pa _build/test/lib/webrtc/bench \
 	    -pa _build/test/lib/webrtc/test/support \
 	    -eval 'webrtc_profile:run(), halt().'
+
+## A soak run of churning connections, DURATION minutes (default 60):
+## the node must come back to its baseline.
+soak:
+	$(REBAR) as test compile
+	erl -noshell -pa _build/test/lib/*/ebin -pa _build/test/lib/webrtc/bench \
+	    -pa _build/test/lib/webrtc/test/support \
+	    -eval 'webrtc_soak:run().'
 
 clean:
 	$(REBAR) clean

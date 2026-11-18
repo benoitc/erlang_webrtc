@@ -63,6 +63,10 @@
 %% API (called by webrtc_pc)
 %%====================================================================
 
+%% `Opts' may come wrapped in a fun, kept out of supervisor reports
+%% (they print start arguments, not a fun's environment).
+start_link(Opts) when is_function(Opts, 0) ->
+    start_link(Opts());
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
@@ -104,7 +108,9 @@ set_app(T, Pid) -> gen_server:call(T, {set_app, Pid}).
 
 init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
     %% The transport never outlives its peer connection, whatever the
-    %% reason it went away.
+    %% reason it went away. It traps exits so that a supervisor shutdown
+    %% still runs terminate/2 (close_notify, TURN deletion).
+    process_flag(trap_exit, true),
     _ = monitor(process, Pc),
     IceOpts = (maps:with(
         [role, lite, remote_lite, ufrag, pwd, stun_servers, turn_servers, server_fallbacks, consent, nomination, ta], Opts
@@ -336,6 +342,10 @@ info_({timeout, Ref, tick}, #st{timer = {Ref, _}} = St) ->
     St1 = tick(now_ms(), St#st{timer = undefined}),
     {noreply, arm(St1)};
 info_({timeout, _Ref, tick}, St) ->
+    {noreply, St};
+%% A connect worker that ended, or the peer connection's link when it
+%% started us alone (its monitor stops us).
+info_({'EXIT', _, _}, St) ->
     {noreply, St};
 info_(Other, St) ->
     %% Resolved host names: add the candidates, then a deferred

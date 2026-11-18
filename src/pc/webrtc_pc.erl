@@ -50,7 +50,10 @@
     restart_timer :: undefined | reference(),
     auto_restarts = 0 :: non_neg_integer(),
     %% Helper process calling the `signaling' function.
-    signaler :: undefined | pid()
+    signaler :: undefined | pid(),
+    %% The supervisor of this peer connection's subtree, which starts
+    %% the transports (webrtc_peer_sup); undefined when started alone.
+    peer_sup :: undefined | pid()
 }).
 
 -define(MAX_EARLY_CANDIDATES, 64).
@@ -61,6 +64,11 @@
 %% The ICE agent's limit (webrtc_ice_agent).
 -define(MAX_ICE_SERVERS, 8).
 
+%% `Opts' may come wrapped in a fun: a supervisor prints its children's
+%% start arguments in its reports, never a fun's environment, and these
+%% hold the certificate's key and the TURN credentials.
+start_link(Opts) when is_function(Opts, 0) ->
+    start_link(Opts());
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
@@ -87,7 +95,8 @@ init(#{owner := App} = Opts0) ->
         F when is_function(F, 2) -> Pc = self(), proc_lib:spawn_link(fun() -> signaler_init(F, Pc) end);
         _ -> undefined
     end,
-    {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler}}.
+    {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler,
+             peer_sup = maps:get(peer_sup, Opts0, undefined)}}.
 
 
 %% Callbacks run through webrtc_redact:guard/2: a crash stops the
@@ -218,6 +227,14 @@ info_({webrtc_transport, T, Event}, St) ->
     end;
 info_({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
     {stop, normal, close_now(St)};
+info_({'DOWN', _, process, T, Reason}, #st{transport = T} = St) when is_pid(T) ->
+    info_({'EXIT', T, Reason}, St);
+info_({'DOWN', _, process, T, Reason}, St) ->
+    %% A transport after the first; another monitor is of no concern.
+    case [P || _ := #{pid := P} <- St#st.extra, P =:= T] of
+        [_ | _] -> info_({'EXIT', T, Reason}, St);
+        [] -> {noreply, St}
+    end;
 info_({'EXIT', T, Reason}, #st{transport = T} = St) ->
     ok = webrtc_registry:delete(self()),
     notify({connection_state, failed}, St),
@@ -540,7 +557,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
             ta => maps:get(ice_pacing, St#st.opts, 50)
         }
     ),
-    {ok, T} = webrtc_transport:start_link(TOpts),
+    {ok, T} = start_transport(TOpts, St),
     ok = webrtc_registry:insert(self(), [{self(), T}]),
     ok = webrtc_transport:gather(T),
     St1 = flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role, topts = maps:without([ufrag, pwd], TOpts)})),
@@ -812,19 +829,36 @@ close_now(#st{transport = T} = St) ->
 %% callback) is killed, so it can never survive with its sockets. The
 %% link stays until the transport is gone.
 stop_transport(T) ->
+    Mon = monitor(process, T),
     try
         webrtc_transport:stop(T)
     catch
         exit:_ ->
             exit(T, kill),
             receive
-                {'EXIT', T, _} -> ok
+                {'DOWN', Mon, process, T, _} -> ok
             after 5000 -> ok
             end
     end,
+    demonitor(Mon, [flush]),
+    %% The link (started alone) or the monitor of start_transport/2.
     receive
         {'EXIT', T, _} -> ok
     after 0 -> ok
+    end,
+    receive
+        {'DOWN', _, process, T, _} -> ok
+    after 0 -> ok
+    end.
+
+%% Transports run under the peer connection's supervisor, monitored;
+%% a peer connection started alone links to them.
+start_transport(TOpts, #st{peer_sup = undefined}) ->
+    webrtc_transport:start_link(TOpts);
+start_transport(TOpts, #st{peer_sup = Sup}) ->
+    case webrtc_peer_sup:start_transport(Sup, TOpts) of
+        {ok, T} -> _ = monitor(process, T), {ok, T};
+        {error, _} = E -> E
     end.
 
 %%====================================================================
@@ -848,7 +882,7 @@ ensure_extra(#st{topts = TOpts} = St) ->
                 true ->
                     Acc;
                 false ->
-                    {ok, T} = webrtc_transport:start_link(TOpts#{ufrag => U, pwd => P}),
+                    {ok, T} = start_transport(TOpts#{ufrag => U, pwd => P}, Acc),
                     ok = webrtc_registry:insert(Pc, [{{Pc, M}, T} || M <- Ms] ++ data_row(Pc, Ms, T, Acc)),
                     ok = webrtc_transport:gather(T),
                     X = #{pid => T, mids => Ms, remote => undefined, sent => 0, cands => [], ice => new, dtls => new,

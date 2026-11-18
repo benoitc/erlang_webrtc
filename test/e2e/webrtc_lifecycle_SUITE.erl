@@ -27,12 +27,15 @@ end_per_suite(_) -> ok.
 init_per_testcase(_, Config) -> ?S:flush(), Config.
 end_per_testcase(_, _) -> ?S:flush(), ok.
 
-%% The processes linked to a peer connection: its transports and its
-%% signaling helper.
-linked(Pc) ->
-    {links, L} = process_info(Pc, links),
-    Sups = [whereis(webrtc_pc_sup)],
-    [P || P <- L, is_pid(P), not lists:member(P, Sups)].
+%% The processes linked to a process, its supervisor aside.
+linked(Pid) ->
+    {links, L} = process_info(Pid, links),
+    Parent = case process_info(Pid, parent) of {parent, P} -> P; _ -> undefined end,
+    [P || P <- L, is_pid(P), P =/= Parent, P =/= whereis(webrtc_pc_sup)].
+
+%% The transports of a peer connection and its signaling helper.
+owned(Pc) ->
+    lists:usort([T || {_, T} <- rows(Pc)] ++ linked(Pc)).
 
 wait_dead(Pids, Ms) ->
     Deadline = erlang:monotonic_time(millisecond) + Ms,
@@ -64,7 +67,7 @@ close_ends_helpers(_Config) ->
     {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
     ok = webrtc:create_data_channel(A, <<"c">>, #{}),
     ?S:connect(A, B),
-    Linked = linked(A),
+    Linked = owned(A),
     ?assert(length(Linked) >= 2),
     ok = webrtc:close(A),
     ok = webrtc:close(B),
@@ -81,7 +84,7 @@ killed_peer_rows_removed(_Config) ->
     ok = webrtc:create_data_channel(A, <<"k">>, #{}),
     ?S:connect(A, B),
     ?assert(length(rows(A)) >= 2),
-    Linked = linked(A),
+    Linked = owned(A),
     exit(A, kill),
     ?assert(wait_until(fun() -> rows(A) =:= [] end, 2000)),
     ?assertEqual(ok, wait_dead(Linked, 6000)),
@@ -97,7 +100,7 @@ slow_signaling_bounded(_Config) ->
     ok = webrtc:create_data_channel(A, <<"s">>, #{}),
     ?S:connect(A, B),
     [T | _] = [T || {_, T} <- rows(A)],
-    [Helper] = linked(A) -- [T],
+    [Helper] = linked(A),
     %% The restart offer blocks the helper in the function; candidates
     %% from the transport keep coming.
     ok = webrtc:restart_ice(A),
@@ -122,8 +125,8 @@ connect_workers_end(_Config) ->
             {ok, Offer} = webrtc:create_offer(A, #{}),
             ok = webrtc:set_local_description(A, offer, Offer),
             [{_, T}] = ets:lookup(webrtc_transports, A),
-            ?assert(wait_until(fun() -> length(linked(T)) >= 2 end, 2000)),
-            Workers = linked(T) -- [A],
+            ?assert(wait_until(fun() -> length(linked(T)) >= 1 end, 2000)),
+            Workers = linked(T),
             ct:log("~p: workers ~p", [How, Workers]),
             case How of
                 close -> ok = webrtc:close(A);

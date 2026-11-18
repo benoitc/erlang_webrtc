@@ -24,9 +24,11 @@ set(Marks, S) ->
           mark_tx = #{T => V || T := {D, _} = V <- S#ice.mark_tx, lists:member(D, Keep)}}.
 
 %% @doc Marked copies of a consent request on `Via' to `To' with
-%% credentials `{LocalUfrag, RemoteUfrag}', key `RP' and priority.
--spec requests(term(), term(), {binary(), binary()}, binary(), non_neg_integer(), #ice{}) -> {#ice{}, [term()]}.
-requests(_Via, _To, _Users, _RP, _Now, #ice{marks = []} = S) ->
+%% credentials `{LocalUfrag, RemoteUfrag}', the remote key and the
+%% PRIORITY of the request.
+-spec requests(term(), term(), {binary(), binary()}, {binary(), pos_integer()}, integer(), #ice{}) ->
+    {#ice{}, [term()]}.
+requests(_Via, _To, _Users, _Key, _Now, #ice{marks = []} = S) ->
     {S, []};
 requests(Via, To, Users, {RP, Prio}, Now, S) when not is_tuple(Via), Via =/= none ->
     lists:foldl(
@@ -39,7 +41,7 @@ requests(Via, To, Users, {RP, Prio}, Now, S) when not is_tuple(Via), Via =/= non
         {S, []},
         S#ice.marks
     );
-requests(_Via, _To, _Users, _RP, _Now, S) ->
+requests(_Via, _To, _Users, _Key, _Now, S) ->
     %% Relayed and TCP paths are not probed.
     {S, []}.
 

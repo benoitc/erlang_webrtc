@@ -172,6 +172,7 @@ The frame members of received streams come from the frame buffer when you ask fo
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, processes, how a packet travels.
+- [docs/guides/data-channels.md](docs/guides/data-channels.md): talk to a browser over a data channel.
 - [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md): where things live and how to add a feature.
 - [docs/TESTING.md](docs/TESTING.md): test layers, interop adapters, reproducing failures.
 - [docs/COMPLIANCE.md](docs/COMPLIANCE.md) and [docs/INTEROP.md](docs/INTEROP.md).

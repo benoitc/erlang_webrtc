@@ -89,6 +89,10 @@ ULPFEC (RFC 5109) in RED is the video FEC browsers speak (RFC 8854 §5.2). GStre
 - One FEC packet per media packet: all 12 packets dropped come back, byte for byte the ones GStreamer sent.
 - `multipacket` at 50%: every packet GStreamer's masks leave recoverable comes back (4 of 7 dropped).
 
+## Guide examples (webrtc_examples_SUITE)
+
+The examples of [docs/guides](guides) run as written. `examples/browser_datachannel` serves its page with OTP's inets; headless Chromium and Firefox load it, post their offer, and get the greeting and the echo over the data channel. Playwright's Firefox does not start from a terminal on macOS, so the Firefox case runs on Linux.
+
 ## Harness control (webrtc_harness_SUITE)
 
 These runs connect independent implementations to each other through the controller, to prove the harness before it is used against this stack.

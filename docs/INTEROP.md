@@ -82,6 +82,10 @@ GStreamer encodes 90 frames of 320 x 240 and packetizes them with its own payloa
 
 Running it, and the property test with the same frames, found an IDR slice taken for the start of its access unit while the packet with its SPS and PPS was still on its way, and a frame put together with parameter sets that came after it.
 
+## Guide examples (webrtc_examples_SUITE)
+
+The examples of [docs/guides](guides) run as written. `examples/browser_datachannel` serves its page with OTP's inets; headless Chromium and Firefox load it, post their offer, and get the greeting and the echo over the data channel. Playwright's Firefox does not start from a terminal on macOS, so the Firefox case runs on Linux.
+
 ## Harness control (webrtc_harness_SUITE)
 
 These runs connect independent implementations to each other through the controller, to prove the harness before it is used against this stack.

@@ -82,6 +82,13 @@ GStreamer encodes 90 frames of 320 x 240 and packetizes them with its own payloa
 
 Running it, and the property test with the same frames, found an IDR slice taken for the start of its access unit while the packet with its SPS and PPS was still on its way, and a frame put together with parameter sets that came after it.
 
+## Video FEC against GStreamer (webrtc_ulpfec_gst_SUITE)
+
+ULPFEC (RFC 5109) in RED is the video FEC browsers speak (RFC 8854 §5.2). GStreamer's `rtpulpfecenc` and `rtpredenc` protect VP8 from `vp8enc`; packets are dropped; our decoder rebuilds them and ffmpeg decodes the frames.
+
+- One FEC packet per media packet: all 12 packets dropped come back, byte for byte the ones GStreamer sent.
+- `multipacket` at 50%: every packet GStreamer's masks leave recoverable comes back (4 of 7 dropped).
+
 ## Harness control (webrtc_harness_SUITE)
 
 These runs connect independent implementations to each other through the controller, to prove the harness before it is used against this stack.
@@ -126,6 +133,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 | ICE-TCP, peer offers: the same, the peer sends | | | Pass (6) | Pass (6) |
 | Erlang offers without BUNDLE (`bundle => false`): audio, video and data each on their own ICE and DTLS transport, data channel echo and Opus received | Skipped (7) | Skipped (8) | Pass (9) | Pass |
 | The peer sends VP8, VP9, H.264 and AV1 in turn, Erlang receives frames (`frames => true`): each one parses, as many frames and key frames as the peer encoded | Skipped (15) | Skipped (15) | Pass | Pass (16) |
+| Erlang sends VP8 with ULPFEC in RED, no NACK negotiated, and drops the last packet of every fifth frame: with FEC the peer decodes every frame, without it the frames until the next key frame are lost | Skipped (17) | Skipped (17) | Pass (60 against 20) | Pass (60 against 20) |
 
 1. Firefox is the installed release (160 on the development machine), driven over WebDriver BiDi with puppeteer-core. On macOS it is started through launchd: a Firefox started from a terminal inherits the terminal's privacy restrictions and cannot read its profile. Without an installed Firefox the suite falls back to Playwright's build.
 2. The Pion adapter has no media source of its own; Pion media is covered by the echo case.
@@ -141,6 +149,7 @@ The full Erlang peer connection (ICE, DTLS, SRTP, RTP/RTCP, SCTP, DCEP, JSEP) ag
 13. aiortc 1.16 cannot parse an `a=extmap` line with an extension attribute (see the findings).
 14. Chromium 149 answers without the audio level at all when it is offered in both forms.
 15. Only the browsers are given a codec to send.
+17. The case reads the peer's W3C statistics.
 16. VP8, VP9 and AV1. Firefox lists H.264 but encodes nothing without its OpenH264 plugin, which a fresh profile has not downloaded.
 5. Group `chromium_mdns`: Chromium launched with its default `WebRtcHideLocalIpsWithMdns` (adapter option `--mdns`, no media permission granted), so every host candidate is a `<uuid>.local` name. The group is skipped with the reason when IPv4 multicast to 224.0.0.251:5353 does not loop back on the test host.
 

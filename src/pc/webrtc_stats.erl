@@ -336,7 +336,13 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
         remoteId => case Remote of [#{id := Rid}] -> Rid; [] -> undefined end,
         codec => Codec
     }),
-    [maps:merge(maps:merge(Base, compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined))))),
+    Fec = case Rx of
+              #{fec := #{fec_packets_received := FR, fec_bytes_received := FB, fec_packets_discarded := FD}} ->
+                  #{fecPacketsReceived => FR, fecBytesReceived => FB, fecPacketsDiscarded => FD};
+              _ ->
+                  #{}
+          end,
+    [maps:merge(maps:merge(maps:merge(Base, Fec), compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined))))),
                 maps:get(reported, S, #{}))
      | Remote].
 

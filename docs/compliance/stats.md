@@ -80,9 +80,9 @@ Inherits RTCReceivedRtpStreamStats.
 | lastPacketReceivedTimestamp |  | Reported |
 | headerBytesReceived |  | Reported |
 | packetsDiscarded |  | Reported with `frames` on the transceiver, from the frame buffer: packets that came after their frame left |
-| fecBytesReceived |  | Not reported: No FEC yet |
-| fecPacketsReceived |  | Not reported: No FEC yet |
-| fecPacketsDiscarded |  | Not reported: No FEC yet |
+| fecBytesReceived |  | Reported with ULPFEC: payload bytes of the FEC packets |
+| fecPacketsReceived |  | Reported with ULPFEC |
+| fecPacketsDiscarded |  | Reported with ULPFEC: FEC packets whose packets all arrived or were recovered otherwise, or that came too late |
 | bytesReceived |  | Reported: payload octets |
 | nackCount |  | Reported |
 | firCount |  | Reported |
@@ -111,7 +111,7 @@ Inherits RTCReceivedRtpStreamStats.
 | retransmittedPacketsReceived |  | Reported: RTX (RFC 4588) |
 | retransmittedBytesReceived |  | Reported |
 | rtxSsrc |  | Reported |
-| fecSsrc |  | Not reported: No FEC yet |
+| fecSsrc |  | Not reported: ULPFEC travels on the media SSRC; FlexFEC, with its own SSRC, is not implemented yet |
 | totalCorruptionProbability |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | totalSquaredCorruptionProbability |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | corruptionMeasurements |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |

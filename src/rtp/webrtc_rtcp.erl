@@ -39,6 +39,7 @@
     | #rtcp_ccfb{}
     | #rtcp_pli{}
     | #rtcp_sli{}
+    | #rtcp_rpsi{}
     | #rtcp_fir{}
     | #rtcp_remb{}
     | #rtcp_xr{}

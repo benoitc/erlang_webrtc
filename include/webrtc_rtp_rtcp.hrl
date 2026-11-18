@@ -25,6 +25,7 @@
 %% PSFB FMT values.
 -define(PSFB_PLI, 1).
 -define(PSFB_SLI, 2).
+-define(PSFB_RPSI, 3).
 -define(PSFB_FIR, 4).
 -define(PSFB_AFB, 15).
 
@@ -146,6 +147,15 @@
     sender_ssrc = 0 :: rtcp_u32(),
     media_ssrc = 0 :: rtcp_u32(),
     entries = [] :: [{0..8191, 0..8191, 0..63}]
+}).
+
+%% Reference picture selection indication (RFC 4585 §6.3.3): the payload
+%% type and the native RPSI bit string, its meaning defined by the codec.
+-record(rtcp_rpsi, {
+    sender_ssrc = 0 :: rtcp_u32(),
+    media_ssrc = 0 :: rtcp_u32(),
+    pt = 0 :: 0..127,
+    bits = <<>> :: bitstring()
 }).
 
 %% Full intra request (RFC 5104 §4.3.1): entries are {Ssrc, SeqNr}.

@@ -77,6 +77,36 @@ sli_test() ->
         #rtcp_sli{sender_ssrc = 1, media_ssrc = 16#2a3b4c5d, entries = [{10, 20, 33}]}
     ).
 
+%% RFC 4585 §6.3.3, the packet of libwebrtc's former rpsi_unittest.cc
+%% (branch-heads/55): PB 24, payload type 100, the VP8 picture id
+%% 0x106143 as a 3 byte native string.
+rpsi_libwebrtc_test() ->
+    roundtrip(
+        b("83 ce 00 04 12 34 56 78 23 45 67 89 18 64 c1 c2 43 00 00 00"),
+        #rtcp_rpsi{sender_ssrc = 16#12345678, media_ssrc = 16#23456789, pt = 100, bits = <<16#c1, 16#c2, 16#43>>}
+    ).
+
+%% A native string of any bit length: 16 bits fill the first word, 17
+%% need 31 bits of padding.
+rpsi_padding_test() ->
+    roundtrip(b("83 ce 00 03 00 00 00 01 00 00 00 02 00 60 ab cd"),
+              #rtcp_rpsi{sender_ssrc = 1, media_ssrc = 2, pt = 96, bits = <<16#ab, 16#cd>>}),
+    roundtrip(b("83 ce 00 04 00 00 00 01 00 00 00 02 1f 60 ab cd 80 00 00 00"),
+              #rtcp_rpsi{sender_ssrc = 1, media_ssrc = 2, pt = 96, bits = <<16#ab, 16#cd, 1:1>>}),
+    roundtrip(b("83 ce 00 03 00 00 00 01 00 00 00 02 08 60 ab 00"),
+              #rtcp_rpsi{sender_ssrc = 1, media_ssrc = 2, pt = 96, bits = <<16#ab>>}).
+
+rpsi_errors_test_() ->
+    [?_assertMatch({error, _}, webrtc_rtcp:decode(b(H)))
+     || H <- [%% PB too large for the FCI: no native string left
+              "83 ce 00 03 00 00 00 01 00 00 00 02 10 60 ab cd",
+              %% PB of a whole word
+              "83 ce 00 04 00 00 00 01 00 00 00 02 20 60 ab cd 00 00 00 00",
+              %% the bit after PB must be zero
+              "83 ce 00 03 00 00 00 01 00 00 00 02 00 e0 ab cd",
+              %% no FCI
+              "83 ce 00 02 00 00 00 01 00 00 00 02"]].
+
 %% RFC 5104 §4.3.1: media SSRC 0, FCI SSRC + seq nr + 24 reserved bits.
 fir_test() ->
     roundtrip(

@@ -90,6 +90,16 @@ fci(?RTCP_PSFB, ?PSFB_SLI, S, M, Fci) ->
         Err ->
             Err
     end;
+%% RFC 4585 §6.3.3: PB counts the bits that pad the FCI to a 32-bit
+%% boundary, so it is below 32 and leaves a native string of at least one
+%% bit. Unlike libwebrtc's old parser, PB need not be a whole number of
+%% bytes.
+fci(?RTCP_PSFB, ?PSFB_RPSI, S, M, <<Pb:8, 0:1, Pt:7, Rest/binary>>) when Pb < 32, bit_size(Rest) > Pb ->
+    Len = bit_size(Rest) - Pb,
+    <<Bits:Len/bitstring, _:Pb>> = Rest,
+    {ok, #rtcp_rpsi{sender_ssrc = S, media_ssrc = M, pt = Pt, bits = Bits}};
+fci(?RTCP_PSFB, ?PSFB_RPSI, _, _, _) ->
+    {error, bad_rpsi};
 fci(?RTCP_PSFB, ?PSFB_FIR, S, M, Fci) ->
     case words(Fci, 8) of
         {ok, []} ->
@@ -191,6 +201,10 @@ encode(#rtcp_sli{sender_ssrc = S, media_ssrc = M, entries = [_ | _] = E}) ->
         is_integer(P) andalso P >= 0 andalso P < 64 orelse error(badarg)
     ],
     {?PSFB_SLI, ?RTCP_PSFB, [hdr(S, M), Fci]};
+encode(#rtcp_rpsi{sender_ssrc = S, media_ssrc = M, pt = Pt, bits = Bits})
+  when is_integer(Pt), Pt >= 0, Pt =< 127, is_bitstring(Bits), bit_size(Bits) > 0 ->
+    Pb = (32 - (16 + bit_size(Bits)) rem 32) rem 32,
+    {?PSFB_RPSI, ?RTCP_PSFB, [hdr(S, M), <<Pb:8, 0:1, Pt:7, Bits/bitstring, 0:Pb>>]};
 encode(#rtcp_fir{sender_ssrc = S, media_ssrc = M, entries = [_ | _] = E}) ->
     Fci = [
         <<Ssrc:32, Seq:8, 0:24>>

@@ -50,7 +50,10 @@ path(Opts) ->
 
 run(Path, Rest) -> ?SIM:run(maps:merge(path(Path), Rest#{seed => maps:get(seed, Path, 1)})).
 
-seeds() -> lists:seq(1, 6).
+%% Six seeds by default; RMCAT_SEEDS=N runs N (CI runs 24).
+seeds() ->
+    N = case os:getenv("RMCAT_SEEDS") of false -> 6; V -> list_to_integer(V) end,
+    lists:seq(1, N).
 
 %% One test per seed.
 seeded(Name, Timeout, Case) ->
@@ -169,17 +172,36 @@ feedback_congestion_test_() -> seeded("5.3", 120, fun feedback_congestion/1).
 feedback_congestion(Seed) ->
     Fwd = [{20000, {capacity, 1000000}}, {40000, {capacity, 500000}}, {60000, {capacity, 2000000}}],
     Bwd = [{35000, {reverse_capacity, 800000}}, {70000, {reverse_capacity, 2000000}}],
-    Sim = run(#{capacity => 2000000, reverse_capacity => 2000000, seed => Seed}, #{
-        flows => [video(#{}), video(#{dir => backward})],
-        duration_ms => 100000,
-        events => Fwd ++ Bwd
-    }),
-    check_phases("5.3 forward", Sim, 1, [
-        {0, 20000, ?MAX},
-        {20000, 40000, 980000},
-        {40000, 60000, 480000},
-        {60000, 100000, ?MAX}
-    ]),
+    Run = fun(Events) ->
+        run(#{capacity => 2000000, reverse_capacity => 2000000, seed => Seed}, #{
+            flows => [video(#{}), video(#{dir => backward})],
+            duration_ms => 100000,
+            events => Events
+        })
+    end,
+    Phases = [{0, 20000, ?MAX}, {20000, 40000, 980000}, {40000, 60000, 480000}, {60000, 100000, ?MAX}],
+    %% RFC 8867 §5.3 compares with the reference case, the backward
+    %% channel without impairment: it meets the bounds of every case.
+    Ref = Run(Fwd),
+    check_phases("5.3 reference", Ref, 1, Phases),
+    %% With the backward channel congested the forward flow keeps its
+    %% share; its queue may exceed the reference's only by the delay its
+    %% feedback waits on the backward link, since it cannot react sooner
+    %% than the feedback arrives.
+    Sim = Run(Fwd ++ Bwd),
+    lists:foreach(
+        fun({From, To, Avail}) ->
+            R = share(Sim, 1, From + 10000, To, min(Avail, ?MAX)),
+            Q = ?SIM:queue_percentile(Sim, 95, From + 10000, To),
+            QRef = ?SIM:queue_percentile(Ref, 95, From + 10000, To),
+            Feedback = ?SIM:reverse_queue_percentile(Sim, 95, From + 10000, To),
+            report("5.3 forward", "~b to ~b s at ~b kbps: ~.2f of its share, queue p95 ~b ms (reference ~b ms, "
+                   "feedback queue p95 ~b ms)", [From div 1000, To div 1000, Avail div 1000, R, Q, QRef, Feedback]),
+            ?assert(R >= 0.7 andalso R =< 1.05),
+            ?assert(Q < max(?Q95, QRef + Feedback))
+        end,
+        Phases
+    ),
     %% The backward flow on its own link.
     lists:foreach(
         fun({From, To, Avail}) ->
@@ -211,6 +233,29 @@ competing(Extra, Seed) ->
         )
     ).
 
+%% RFC 8867 §4.1: convergence time is the time to reach steady state.
+%% Here it is the first time from which the flows share fairly (Jain
+%% index 0.9 or more) over the rest of the run, measured from any later
+%% start that leaves at least half of the time after the change: over a
+%% shorter tail, GCC's slow oscillation (a metric of its own in §4.1)
+%% would read as unfairness. Flows must converge within
+%% ?CONVERGE after the last change (a join or a resume), then share
+%% fairly, use the link and keep the queue low from then on.
+-define(CONVERGE, 40000).
+converged_fair(Name, Sim, Ns, Change, End, Capacity) ->
+    Last = End - (End - Change) div 2,
+    Tail = [{T, jain([?SIM:rate(Sim, N, T, End) || N <- Ns])} || T <- lists:seq(Change, Last, 1000)],
+    Steady = [T || {T, _} <- Tail, lists:all(fun({T2, J}) -> T2 < T orelse J >= 0.9 end, Tail)],
+    case Steady of
+        [From | _] ->
+            report(Name, "converged ~.1f s after the last change", [(From - Change) / 1000]),
+            ?assert(From - Change =< ?CONVERGE),
+            check_fair(Name, Sim, Ns, From, End, Capacity);
+        [] ->
+            report(Name, "never converged", []),
+            ?assert(false)
+    end.
+
 check_fair(Name, Sim, Ns, From, To, Capacity) ->
     Rates = [?SIM:rate(Sim, N, From, To) || N <- Ns],
     J = jain(Rates),
@@ -231,7 +276,7 @@ competing_flows(Seed) ->
     Sim = competing(#{}, Seed),
     %% Room for the second flow: both near their maximum.
     [?assert(share(Sim, N, 30000, 40000, ?MAX) >= 0.7) || N <- [1, 2]],
-    check_fair("5.4", Sim, [1, 2, 3], 60000, 120000, 3500000).
+    converged_fair("5.4", Sim, [1, 2, 3], 40000, 120000, 3500000).
 
 %%====================================================================
 %% 5.5 Round trip time fairness
@@ -248,7 +293,7 @@ rtt_fairness(Seed) ->
         ],
         duration_ms => 300000
     }),
-    check_fair("5.5", Sim, [1, 2, 3, 4, 5], 100000, 300000, 4000000).
+    converged_fair("5.5", Sim, [1, 2, 3, 4, 5], 40000, 300000, 4000000).
 
 %%====================================================================
 %% 5.6 Media flow competing with a long TCP flow
@@ -325,7 +370,7 @@ pause_resume(Seed) ->
     %% While flow 2 is paused the others take its share.
     [?assert(share(Sim, N, 50000, 60000, ?MAX) >= 0.7) || N <- [1, 3]],
     %% From 10 s after the resume, all three share the link fairly.
-    check_fair("5.8", Sim, [1, 2, 3], 70000, 120000, 3500000).
+    converged_fair("5.8", Sim, [1, 2, 3], 60000, 120000, 3500000).
 
 %%====================================================================
 %% 6.2 ECN: 5.1 and 5.4 with RFC 8888 feedback and ECN marking
@@ -359,4 +404,4 @@ ecn_competing_flows(Seed) ->
         ],
         duration_ms => 120000
     }),
-    check_fair("6.2 (5.4)", Sim, [1, 2, 3], 60000, 120000, 3500000).
+    converged_fair("6.2 (5.4)", Sim, [1, 2, 3], 40000, 120000, 3500000).

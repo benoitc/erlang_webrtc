@@ -49,22 +49,22 @@ Apple M-series laptop, 14 schedulers, OTP 29.1.2, OpenSSL 4.1, loopback UDP. Tre
 
 ### Congestion control (RFC 8867)
 
-The RMCAT cases run in simulation on six seeds (`rebar3 eunit --module=webrtc_rmcat_tests`, about 45 s). Rates are averages from 10 s after each change; see the RMCAT rows of [compliance/rtp.md](compliance/rtp.md) for the bounds. The ranges are over the six seeds.
+The RMCAT cases run in simulation on six seeds (`rebar3 eunit --module=webrtc_rmcat_tests`, about 45 s), or on 24 with `RMCAT_SEEDS=24` (about 3 minutes). Rates are averages from 10 s after each change; see the RMCAT rows of [compliance/rtp.md](compliance/rtp.md) for the bounds. The ranges are over 24 seeds.
 
 | Case | Result |
 |---|---|
-| 5.1, one flow, capacity 1, 2.5, 0.6, 1 Mbps | 0.78 to 1.00 of the available rate, queue p95 at most 82 ms |
-| 5.2, two flows, capacity 4 to 1 Mbps | together 0.86 to 1.00 of the available rate, queue p95 at most 78 ms |
-| 5.3, media both ways | 0.88 to 1.00 of the share in each direction |
-| 5.4, three flows joining | Jain index 0.930 to 0.998, 0.93 to 0.95 of the link |
-| 5.5, RTT fairness | Jain index 0.951 to 0.985 |
-| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 171 to 204 / 326 to 390 kbps, TCP 1708 to 1740 / 1529 to 1575 kbps |
-| 5.7, against ten short TCP flows | media 297 to 385 kbps, never below the minimum |
-| 5.8, pause and resume | Jain index 0.940 to 0.989 after the resume |
-| 6.2, ECN (CoDel marking), one flow | 0.80 to 0.99 of the available rate, queue p95 at most 51 ms |
-| 6.2, ECN (CoDel marking), three flows | Jain index 0.902 to 0.999 |
+| 5.1, one flow, capacity 1, 2.5, 0.6, 1 Mbps | 0.84 to 1.00 of the available rate, queue p95 at most 98 ms |
+| 5.2, two flows, capacity 4 to 1 Mbps | together 0.85 to 1.00 of the available rate, queue p95 at most 73 ms |
+| 5.3, media both ways | reference 0.87 to 1.00, backward link congested 0.80 to 1.00 forward and 0.90 to 1.00 backward |
+| 5.4, three flows joining | Jain index 0.934 to 1.000, 0.93 to 0.95 of the link |
+| 5.5, RTT fairness | Jain index 0.945 to 0.997 |
+| 5.6, against a long TCP flow (300 / 1000 ms queue) | media 193 to 242 / 318 to 474 kbps, TCP 1672 to 1718 / 1447 to 1584 kbps |
+| 5.7, against ten short TCP flows | media 330 to 481 kbps, never below the minimum |
+| 5.8, pause and resume | Jain index 0.942 to 0.998 after the resume |
+| 6.2, ECN (CoDel marking), one flow | 0.82 to 1.00 of the available rate, queue p95 at most 58 ms |
+| 6.2, ECN (CoDel marking), three flows | Jain index 0.900 to 1.000 |
 
-Over 24 seeds, two runs out of 288 miss a bound by a small margin: a 5.3 phase with a queue p95 of 129 ms and a 5.4 Jain index of 0.898. Before these changes, 5.5 missed on 22 of the 24 seeds, 5.2 on 3 and 5.3 on 1.
+Fair sharing is measured from the convergence time of RFC 8867 §4.1, which is 0 s in almost every run and at most 6 s. Over 24 seeds, one run out of 288 misses a bound: the 5.3 reference on seed 20, with a queue p95 of 104 ms between 30 and 40 s. The flow creeps past the 1 Mbps capacity by its additive increase, and the trendline detector stays just under its threshold for 2 s while the queue grows. Before these changes two runs missed: a 5.3 phase at 129 ms and a 5.4 Jain index of 0.898.
 
 ## Where the time goes
 

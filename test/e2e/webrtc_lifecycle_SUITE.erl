@@ -10,13 +10,23 @@
     close_ends_helpers/1,
     killed_peer_rows_removed/1,
     slow_signaling_bounded/1,
-    connect_workers_end/1
+    connect_workers_end/1,
+    owner_death/1,
+    killed_transport/1,
+    application_restart/1,
+    stuck_codec_plugin/1,
+    abandoned_connections/1,
+    short_lived_pairs/1
 ]).
+
+-export([init/3, decode/2, encode/2, info/1]).
 
 -define(S, webrtc_test_signal).
 
 all() ->
-    [close_ends_helpers, killed_peer_rows_removed, slow_signaling_bounded, connect_workers_end].
+    [close_ends_helpers, killed_peer_rows_removed, slow_signaling_bounded, connect_workers_end,
+     owner_death, killed_transport, application_restart, stuck_codec_plugin, abandoned_connections,
+     short_lived_pairs].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -101,14 +111,18 @@ slow_signaling_bounded(_Config) ->
     ?S:connect(A, B),
     [T | _] = [T || {_, T} <- rows(A)],
     [Helper] = linked(A),
-    %% The restart offer blocks the helper in the function; candidates
-    %% from the transport keep coming.
-    ok = webrtc:restart_ice(A),
+    %% B restarts ICE; A answers through its helper, which blocks in the
+    %% function. Candidates from the transport keep coming.
+    ok = webrtc:restart_ice(B),
+    {ok, Offer} = webrtc:create_offer(B, #{}),
+    ok = webrtc:set_local_description(B, offer, Offer),
+    ok = webrtc:set_remote_description(A, offer, Offer),
+    ?assert(wait_until(fun() -> process_info(Helper, current_function) =:= {current_function, {timer, sleep, 1}} end, 2000)),
     Cand = <<"candidate:1 1 udp 2130706431 127.0.0.1 9 typ host">>,
     [A ! {webrtc_transport, T, {local_candidate, Cand}} || _ <- lists:seq(1, 500)],
     timer:sleep(300),
     {message_queue_len, N} = process_info(Helper, message_queue_len),
-    ct:log("helper queue ~b", [N]),
+    ct:log("helper queue ~b, at ~p", [N, process_info(Helper, current_function)]),
     ?assert(N =< 64),
     ok = webrtc:close(A),
     ?assertEqual(ok, wait_dead([Helper], 6000)),
@@ -137,3 +151,127 @@ connect_workers_end(_Config) ->
         end,
         [close, kill]
     ).
+
+%%====================================================================
+%% Back to the baseline
+%%====================================================================
+
+%% Processes, ports, registry rows and ticket table entries of the node.
+baseline() ->
+    #{processes => erlang:system_info(process_count), ports => erlang:system_info(port_count),
+      transports => ets:info(webrtc_transports, size), memory => erlang:memory(total)}.
+
+%% Wait until the counts come back to `Base' (a few processes of slack
+%% for the test framework), and report what is left.
+back_to(Base, Ms) ->
+    Ok = fun() ->
+             Now = baseline(),
+             maps:get(processes, Now) =< maps:get(processes, Base) + 5 andalso
+                 maps:get(ports, Now) =< maps:get(ports, Base) andalso
+                 maps:get(transports, Now) =< maps:get(transports, Base)
+         end,
+    case wait_until(Ok, Ms) of
+        true -> ok;
+        false -> {left, baseline(), Base}
+    end.
+
+pair() ->
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    ok = webrtc:create_data_channel(A, <<"p">>, #{}),
+    ?S:connect(A, B),
+    {A, B}.
+
+%% The owner exits: its peer connections end, and all they started.
+owner_death(_Config) ->
+    Base = baseline(),
+    Self = self(),
+    Owner = spawn(fun() -> {A, B} = pair(), Self ! {pair, A, B}, receive stop -> ok end end),
+    {A, B} = receive {pair, PA, PB} -> {PA, PB} end,
+    Owned = owned(A) ++ owned(B),
+    Owner ! stop,
+    ?assertEqual(ok, wait_dead([A, B | Owned], 6000)),
+    ?assertEqual(ok, back_to(Base, 6000)).
+
+%% A transport killed: the peer connection reports failed and ends with
+%% its subtree.
+killed_transport(_Config) ->
+    Base = baseline(),
+    {A, B} = pair(),
+    [{_, T}] = ets:lookup(webrtc_transports, A),
+    exit(T, kill),
+    {ok, _} = ?S:wait(A, fun({connection_state, failed}) -> true; (_) -> false end, 5000),
+    ?assertEqual(ok, wait_dead([A], 6000)),
+    webrtc:close(B),
+    ?assertEqual(ok, back_to(Base, 6000)).
+
+%% The application stops with connections open: nothing of them is
+%% left, and it starts again.
+application_restart(_Config) ->
+    Base = baseline(),
+    Pairs = [pair() || _ <- lists:seq(1, 5)],
+    Pcs = lists:append([[A, B] || {A, B} <- Pairs]),
+    ok = application:stop(webrtc),
+    ?assertEqual(ok, wait_dead(Pcs, 6000)),
+    {ok, _} = application:ensure_all_started(webrtc),
+    {A, B} = pair(),
+    webrtc:close(A),
+    webrtc:close(B),
+    ?assertEqual(ok, back_to(Base#{transports => 0}, 6000)).
+
+%% A codec plugin stuck in decode/2 blocks its transport; close still
+%% ends everything (the transport is killed after 5 s).
+stuck_codec_plugin(_Config) ->
+    Base = baseline(),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true, codec_plugins => #{audio => {?MODULE, stuck}}}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ?S:connect(A, B),
+    [ok = webrtc:send_rtp(A, <<"0">>, <<16#F8, 16#FF, 16#FE>>, #{timestamp => N * 960, marker => true}) || N <- lists:seq(1, 10)],
+    timer:sleep(500),
+    {Us, ok} = timer:tc(fun() -> webrtc:close(B) end),
+    ct:log("close took ~b ms", [Us div 1000]),
+    ?assert(Us < 8000000),
+    webrtc:close(A),
+    ?assertEqual(ok, back_to(Base, 8000)).
+
+%% A codec plugin whose decode never returns.
+init(_Kind, _Codec, stuck) -> {ok, stuck}.
+decode(_Frame, _St) -> timer:sleep(infinity).
+encode(_Raw, St) -> {ok, [], #{}, St}.
+info(_) -> #{implementation => <<"stuck">>}.
+
+%% Connections abandoned half way, before ICE connects.
+abandoned_connections(_Config) ->
+    Base = baseline(),
+    lists:foreach(
+        fun(_) ->
+            {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+            {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+            ok = webrtc:create_data_channel(A, <<"a">>, #{}),
+            {ok, Offer} = webrtc:create_offer(A, #{}),
+            ok = webrtc:set_local_description(A, offer, Offer),
+            ok = webrtc:set_remote_description(B, offer, Offer),
+            {ok, Answer} = webrtc:create_answer(B, #{}),
+            ok = webrtc:set_local_description(B, answer, Answer),
+            ok = webrtc:close(B),
+            ok = webrtc:set_remote_description(A, answer, Answer),
+            ok = webrtc:close(A)
+        end,
+        lists:seq(1, 200)
+    ),
+    ?S:flush(),
+    ?assertEqual(ok, back_to(Base, 10000)).
+
+%% Many short connected pairs (LIFECYCLE_PAIRS, 200 by default): the
+%% node comes back to where it was, memory within 20 MB.
+short_lived_pairs(_Config) ->
+    N = list_to_integer(os:getenv("LIFECYCLE_PAIRS", "200")),
+    Base = baseline(),
+    lists:foreach(fun(_) -> {A, B} = pair(), webrtc:close(A), webrtc:close(B), ?S:flush() end, lists:seq(1, N)),
+    ?assertEqual(ok, back_to(Base, 10000)),
+    erlang:garbage_collect(),
+    Grown = erlang:memory(total) - maps:get(memory, Base),
+    ct:log("~b pairs, memory ~+b bytes", [N, Grown]),
+    ?assert(Grown < 20 * 1024 * 1024).

@@ -58,7 +58,11 @@
     %% FlexFEC (RFC 8627): the repair stream and its sequence numbers.
     fec_ssrc :: undefined | non_neg_integer(),
     fec_seq = 0 :: 0..65535,
-    plugin :: undefined | {module(), term()} | {off, term()}
+    plugin :: undefined | {module(), term()} | {off, term()},
+    %% Header extension form of the stream: `auto' when
+    %% extmap-allow-mixed was negotiated, else one form throughout
+    %% (RFC 8285 §6).
+    ext_form = auto :: webrtc_rtp_ext:form()
 }).
 
 -record(rcv, {

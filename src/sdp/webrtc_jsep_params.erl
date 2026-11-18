@@ -128,6 +128,10 @@ media_params(_T, _L, undefined, _Ctx) ->
 media_params(_T, _L, #sdp_media{port = 0}, _Ctx) ->
     undefined;
 media_params(T, L, R, {Local, Remote, J}) ->
+    %% RFC 8285 §6: mixed one-byte and two-byte forms in a stream only
+    %% when both descriptions allow it, at session or media level.
+    Mixed = webrtc_sdp_media:find_attr(extmap_allow_mixed, L, Local) =:= {ok, true} andalso
+        webrtc_sdp_media:find_attr(extmap_allow_mixed, R, Remote) =:= {ok, true},
     RemoteCodecs = webrtc_sdp_media:codecs(R),
     LocalCodecs = webrtc_sdp_media:codecs(L),
     LX = webrtc_sdp_media:attrs(extmap, L),
@@ -148,6 +152,7 @@ media_params(T, L, R, {Local, Remote, J}) ->
         send_extensions => webrtc_jsep_caps:extension_map(Send),
         recv_extensions => webrtc_jsep_caps:extension_map(Recv),
         send_encrypted => webrtc_jsep_caps:encrypted_ids(Send),
+        ext_mixed => Mixed,
         recv_encrypted => webrtc_jsep_caps:encrypted_ids(Recv),
         ssrc => T#tr.ssrc,
         rtx_ssrc => T#tr.rtx_ssrc,

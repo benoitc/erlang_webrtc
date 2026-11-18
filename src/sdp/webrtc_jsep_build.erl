@@ -5,7 +5,7 @@
 -include("webrtc_sdp.hrl").
 -include("webrtc_jsep.hrl").
 
--export([offer/2, answer/2, session/2, media_kind/1, creds/3]).
+-export([offer/2, answer/2, media_kind/1, creds/3]).
 
 -define(PROTO_RTP, <<"UDP/TLS/RTP/SAVPF">>).
 -define(PROTO_SCTP, <<"UDP/DTLS/SCTP">>).
@@ -40,7 +40,7 @@ offer(_Opts, J0) ->
     J2 = ensure_creds(Groups, J1),
     Media = [offer_section(Slot, Setup, (ctx(Mid, Groups, J2))#{cryptex => J2#jsep.cryptex, rtcp_mux_only => J2#jsep.rtcp_mux_only}, J2)
              || {_, Mid, _} = Slot <- Slots],
-    Session = session(webrtc_jsep_transport:bundles(Groups), J2),
+    Session = session(webrtc_jsep_transport:bundles(Groups), true, J2),
     {Session#sdp{media = Media}, J2}.
 
 %% Transport of a section: its credentials and candidates; the first
@@ -180,11 +180,16 @@ answer(_Opts, #jsep{pending_remote = Offer} = J) ->
     ),
     J1 = ensure_creds(Groups, J),
     Cryptex = cryptex_mids(Groups, Offer, J1),
+    %% RFC 8285 §6: extmap-allow-mixed is answered where it was offered.
+    Mixed = webrtc_sdp_media:attr(extmap_allow_mixed, Offer) =:= {ok, true},
     Media = [
-        element(2, answer_section(I, M, Offer, Setup, (ctx(Mid, Groups, J1))#{cryptex => lists:member(Mid, Cryptex)}, J1))
+        element(2, answer_section(I, M, Offer, Setup, (ctx(Mid, Groups, J1))#{
+            cryptex => lists:member(Mid, Cryptex),
+            mixed => not Mixed andalso webrtc_sdp_media:attr(extmap_allow_mixed, M) =:= {ok, true}
+        }, J1))
      || {I, M} <- Sections, Mid <- [webrtc_sdp_media:mid(M)]
     ],
-    Session = session(webrtc_jsep_transport:bundles(Groups), J1),
+    Session = session(webrtc_jsep_transport:bundles(Groups), Mixed, J1),
     {Session#sdp{media = Media}, J1}.
 
 %% RFC 9335 §6.1: cryptex is answered for the RTP sections of a
@@ -258,7 +263,7 @@ answer_direction(Offered, Desired) ->
 %% Sections
 %%====================================================================
 
-session(Bundles, #jsep{} = J) ->
+session(Bundles, Mixed, #jsep{} = J) ->
     Group = [{group, #{semantics => <<"BUNDLE">>, mids => B}} || B <- Bundles, B =/= []],
     Lite = [{ice_lite, true} || J#jsep.ice_lite],
     %% RFC 8445 §14.2: a Ta other than the default must be announced.
@@ -272,7 +277,7 @@ session(Bundles, #jsep{} = J) ->
         },
         session_name = <<"-">>,
         times = [#sdp_time{}],
-        attributes = Group ++ [{extmap_allow_mixed, true}] ++ Lite ++ Pacing
+        attributes = Group ++ [{extmap_allow_mixed, true} || Mixed] ++ Lite ++ Pacing
     }.
 
 transport_attrs(Setup, #{creds := {U, P}}, J) ->
@@ -302,6 +307,7 @@ rtp_section(T, Mid, Dir, Codecs, Exts, Setup, Ctx, J, Rids) ->
             transport_attrs(Setup, Ctx, J) ++
             [{mid, Mid}] ++
             [{extmap, webrtc_jsep_caps:to_extmap(E)} || E <- Exts] ++
+            [{extmap_allow_mixed, true} || maps:get(mixed, Ctx, false)] ++
             [{direction, Dir}] ++ Msid ++
             [{rtcp_mux, true}] ++ [{rtcp_mux_only, true} || maps:get(rtcp_mux_only, Ctx, false)] ++
                 [{rtcp_rsize, true}] ++ [{cryptex, true} || maps:get(cryptex, Ctx, false)] ++

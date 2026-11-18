@@ -36,16 +36,45 @@
 senders(#{mid := Mid, send_rids := [_ | _] = Layers} = Sec, Old) ->
     Exts = maps:get(send_extensions, Sec, #{}),
     [
-        {{Mid, Rid}, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false)},
-                             maps:get({Mid, Rid}, Old, undefined)))#snd{
+        {{Mid, Rid}, ext_form(Sec, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false)},
+                                           maps:get({Mid, Rid}, Old, undefined)))#snd{
             rid = Rid,
             rid_ext = maps:get(?URI_RID, Exts, undefined),
             rrid_ext = maps:get(?URI_RRID, Exts, undefined)
-        }}
+        })}
      || #{rid := Rid, ssrc := S, rtx_ssrc := X} = L <- Layers
     ];
 senders(#{mid := Mid} = Sec, Old) ->
-    [{Mid, sender(Sec, maps:get(Mid, Old, undefined))}].
+    [{Mid, ext_form(Sec, sender(Sec, maps:get(Mid, Old, undefined)))}].
+
+%% RFC 8285 §6: without extmap-allow-mixed on both sides a stream keeps
+%% one form: one-byte when every element we send fits it (ids up to 14,
+%% 1 to 16 bytes), two-byte otherwise.
+ext_form(Sec, #snd{} = S) ->
+    case maps:get(ext_mixed, Sec, true) of
+        true ->
+            S#snd{ext_form = auto};
+        false ->
+            Ids = [I || I <- [S#snd.mid_ext, S#snd.rid_ext, S#snd.rrid_ext, S#snd.twcc_ext, S#snd.audio_level_ext],
+                        is_integer(I)],
+            Sdes = [V || {I, V} <- [{S#snd.mid_ext, S#snd.mid}, {S#snd.rid_ext, S#snd.rid}, {S#snd.rrid_ext, S#snd.rid}],
+                         is_integer(I), is_binary(V)],
+            Fits = lists:all(fun(I) -> I =< 14 end, Ids) andalso
+                lists:all(fun(V) -> byte_size(V) >= 1 andalso byte_size(V) =< 16 end, Sdes),
+            S#snd{ext_form = case Fits of true -> one_byte; false -> two_byte end}
+    end.
+
+%% Encode in the stream's header extension form.
+encode_rtp(#rtp{ext = [_ | _] = Ext} = Pkt, Form) when Form =/= auto ->
+    webrtc_rtp:encode(Pkt#rtp{ext = webrtc_rtp_ext:encode(Ext, #{form => Form})});
+encode_rtp(Pkt, _Form) ->
+    webrtc_rtp:encode(Pkt).
+
+ext_form_of(Key, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, #snd{ext_form = F}} -> F;
+        error -> auto
+    end.
 
 skey(#snd{mid = Mid, rid = undefined}) -> Mid;
 skey(#snd{mid = Mid, rid = Rid}) -> {Mid, Rid}.
@@ -167,7 +196,7 @@ fec_sent(Key, Pkt, Now, M) ->
                     {[], M};
                 Pts ->
                     Media = unwrap_red(Pkt, Pts),
-                    Group = [{Media#rtp.seq, webrtc_rtp:encode(Media)} | S#snd.fec_group],
+                    Group = [{Media#rtp.seq, encode_rtp(Media, S#snd.ext_form)} | S#snd.fec_group],
                     case Pkt#rtp.marker of
                         false ->
                             {[], M#media{senders = (M#media.senders)#{Key := S#snd{fec_group = Group}}}};
@@ -272,7 +301,7 @@ egress(Items, Now, M0) ->
                     {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
                 false ->
                     Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
-                    Plain = webrtc_rtp:encode(Pkt),
+                    Plain = encode_rtp(Pkt, ext_form_of(Key, M1)),
                     case webrtc_srtp:protect_rtp(Plain, M1#media.out) of
                         {ok, Srtp, Out} ->
                             %% Circuit breakers work per transceiver: all
@@ -522,7 +551,7 @@ probe({probe, Cluster, Size}, Mid, Key, Now, M) ->
         end,
     M1 = M#media{senders = (M#media.senders)#{Key := S1}},
     Wire = add_twcc(S#snd.twcc_ext, webrtc_cc:twcc_seq(M1#media.cc), Pkt),
-    case webrtc_srtp:protect_rtp(webrtc_rtp:encode(Wire), M1#media.out) of
+    case webrtc_srtp:protect_rtp(encode_rtp(Wire, S#snd.ext_form), M1#media.out) of
         {ok, Srtp, Out} ->
             Cc = webrtc_cc:sent_probe_rtp(Mid, Wire#rtp.ssrc, Wire#rtp.seq, byte_size(Srtp), Now, Cluster, M1#media.cc),
             {[out(Srtp, M1)], count(probe_sent, M1#media{out = Out, cc = Cc})};

@@ -64,7 +64,7 @@ prop_random_attribute() ->
     Names = [
         <<"rtpmap">>, <<"fmtp">>, <<"rtcp-fb">>, <<"extmap">>, <<"msid">>, <<"msid-semantic">>,
         <<"ssrc">>, <<"ssrc-group">>, <<"rid">>, <<"simulcast">>, <<"mid">>, <<"group">>,
-        <<"ice-ufrag">>, <<"ice-pwd">>, <<"ice-options">>, <<"candidate">>, <<"fingerprint">>,
+        <<"ice-ufrag">>, <<"ice-pwd">>, <<"ice-options">>, <<"ice-pacing">>, <<"candidate">>, <<"fingerprint">>,
         <<"setup">>, <<"tls-id">>, <<"connection">>, <<"sctp-port">>, <<"max-message-size">>,
         <<"sctpmap">>, <<"rtcp">>, <<"ptime">>, <<"maxptime">>, <<"framerate">>, <<"identity">>,
         <<"label">>, <<"content">>, <<"rtcp-mux">>, <<"sendrecv">>
@@ -310,6 +310,7 @@ attribute() ->
         {ice_ufrag, ice_chars(4, 32)},
         {ice_pwd, ice_chars(22, 40)},
         {ice_options, small_nonempty_list(ice_chars(1, 12))},
+        {ice_pacing, choose(0, 9999999999)},
         {candidate, candidate()},
         {fingerprint, fingerprint()},
         {setup, elements([actpass, active, passive, holdconn])},

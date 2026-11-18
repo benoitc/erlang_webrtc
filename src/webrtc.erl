@@ -151,6 +151,10 @@ new_peer_connection() ->
 %%     `stun_servers' and `turn_servers', eight in all at most.</li>
 %% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
 %%     address).</li>
+%% <li>`ice_pacing': the interval between connectivity checks (Ta) in
+%%     ms, at least 5, default 50. Another value is announced with
+%%     `a=ice-pacing', and both sides use the higher of the two (RFC
+%%     8445 §14.2).</li>
 %% <li>`rtcp_mux_policy': `negotiate' (default) or `require', which
 %%     adds `a=rtcp-mux-only' to offers (RFC 8858). RTP and RTCP are
 %%     always multiplexed; codecs on payload types 64..95 are refused
@@ -275,6 +279,9 @@ new_pc(#{max_message_size := M}) when not is_integer(M); M =< 0 ->
     %% RFC 8841 §6 gives 0 the meaning "any size"; we always have a
     %% memory bound, so a positive limit is required.
     {error, {badarg, max_message_size}};
+new_pc(#{ice_pacing := Ta}) when not is_integer(Ta); Ta < 5; Ta > 9999999999 ->
+    %% RFC 8445 §14.2: no more than one check every 5 ms.
+    {error, {badarg, ice_pacing}};
 new_pc(#{congestion_control := C}) when not is_map(C) ->
     {error, {badarg, congestion_control}};
 new_pc(#{codecs := Codecs} = Opts) when is_map(Codecs) ->

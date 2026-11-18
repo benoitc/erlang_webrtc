@@ -97,6 +97,7 @@
     add_host/4,
     remove_host/3,
     set_remote_credentials/4,
+    set_remote_pacing/2,
     add_remote_candidate/3,
     end_of_candidates/2,
     handle_packet/5,
@@ -159,7 +160,7 @@
 %% `pwd', `tiebreaker', `seed' (term for `rand:seed_s/2', for
 %% reproducible tie-breakers and jitter), `stun_servers' ([Addr]),
 %% `turn_servers' ([#{address, username, password}]), `components',
-%% `ta' (50 ms), `rc' (7), `rm' (16), `min_rto' (500), `max_check_rto'
+%% `ta' (50 ms, at least 5, RFC 8445 §14.2), `rc' (7), `rm' (16), `min_rto' (500), `max_check_rto'
 %% (2500), `max_rto', `max_pairs' (100), `max_remote' (remote
 %% candidates kept, signaled or peer-reflexive, 100), `pac_timeout' (39500),
 %% `eoc_timeout' (39500), `nomination' (`best' | `first'),
@@ -219,7 +220,8 @@ new(Opts) ->
     _ = [error({badarg, {server_address, A}}) || A <- S1#ice.stun_servers ++ [maps:get(address, Srv, undefined) || Srv <- S1#ice.turn_servers],
                                                 not ip_port(A)],
     _ = [error({badarg, {server_address, A}}) || K := V <- S1#ice.fallbacks, A <- [K | V], not ip_port(A)],
-    S1#ice{tx = webrtc_stun_tx:new(#{rto => S1#ice.min_rto, min_rto => S1#ice.min_rto,
+    is_integer(S1#ice.ta) andalso S1#ice.ta >= 5 orelse error({badarg, {ta, S1#ice.ta}}),
+    S1#ice{local_ta = S1#ice.ta, tx = webrtc_stun_tx:new(#{rto => S1#ice.min_rto, min_rto => S1#ice.min_rto,
                                     rc => S1#ice.rc, rm => S1#ice.rm, max_rto => S1#ice.max_rto})}.
 
 ip_port({IP, Port}) when is_integer(Port), Port > 0, Port =< 65535 -> is_tuple(IP) andalso inet:ntoa(IP) =/= {error, einval};
@@ -262,6 +264,13 @@ set_remote_credentials(U, P, Now, #ice{remote_ufrag = U, remote_pwd = P} = S) ->
     finish(Now, S, []);
 set_remote_credentials(_U, _P, _Now, _S) ->
     error(restart_required).
+
+%% @doc The peer's Ta (`a=ice-pacing', RFC 8839 §5.5; 50 ms when it
+%% sent none). Both agents use the higher of the two values (RFC 8445
+%% §14.2).
+-spec set_remote_pacing(non_neg_integer(), agent()) -> agent().
+set_remote_pacing(Ta, #ice{local_ta = L} = S) when is_integer(Ta), Ta >= 0 ->
+    S#ice{ta = max(L, Ta)}.
 
 %% @doc Add a remote candidate (record or `a=candidate' value). Ignored
 %% after end-of-candidates (RFC 8838 §14), for an unknown component,

@@ -62,7 +62,9 @@
     tiebreaker :: non_neg_integer(),
     rand :: rand:state(),
     components = [1] :: [1..256],
+    %% Ta in use: the higher of ours and the peer's (RFC 8445 §14.2).
     ta = 50 :: pos_integer(),
+    local_ta = 50 :: pos_integer(),
     rc = 7 :: pos_integer(),
     rm = 16 :: pos_integer(),
     min_rto = 500 :: pos_integer(),

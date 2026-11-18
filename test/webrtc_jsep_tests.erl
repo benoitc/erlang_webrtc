@@ -37,6 +37,15 @@ av_data(J0) ->
     {ok, _, J2} = webrtc_jsep:add_transceiver(video, #{}, J1),
     webrtc_jsep:add_data_channel(J2).
 
+%% RFC 8445 §10: every section announces ice2. RFC 8445 §14.2, RFC 8839
+%% §5.5: a Ta other than 50 ms is announced, and the default is not.
+ice_options_and_pacing_test() ->
+    {_, _, Offer, Answer} = exchange(av_data(new(#{ice_pacing => 20})), new()),
+    [?assertEqual([<<"trickle">>, <<"ice2">>], ?M:ice_options(M, D)) || D <- [Offer, Answer], M <- D#sdp.media],
+    ?assertEqual({ok, 20}, ?M:attr(ice_pacing, Offer)),
+    ?assertEqual(error, ?M:attr(ice_pacing, Answer)),
+    ?assertEqual(50, ?M:ice_pacing(Answer)).
+
 basic_test() ->
     {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
     {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),

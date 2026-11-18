@@ -261,6 +261,8 @@ answer_direction(Offered, Desired) ->
 session(Bundles, #jsep{} = J) ->
     Group = [{group, #{semantics => <<"BUNDLE">>, mids => B}} || B <- Bundles, B =/= []],
     Lite = [{ice_lite, true} || J#jsep.ice_lite],
+    %% RFC 8445 §14.2: a Ta other than the default must be announced.
+    Pacing = [{ice_pacing, J#jsep.ice_pacing} || J#jsep.ice_pacing =/= 50],
     #sdp{
         origin = #sdp_origin{
             username = <<"-">>,
@@ -270,14 +272,14 @@ session(Bundles, #jsep{} = J) ->
         },
         session_name = <<"-">>,
         times = [#sdp_time{}],
-        attributes = Group ++ [{extmap_allow_mixed, true}] ++ Lite
+        attributes = Group ++ [{extmap_allow_mixed, true}] ++ Lite ++ Pacing
     }.
 
 transport_attrs(Setup, #{creds := {U, P}}, J) ->
     [
         {ice_ufrag, U},
         {ice_pwd, P},
-        {ice_options, [<<"trickle">>]}
+        {ice_options, [<<"trickle">>, <<"ice2">>]}
     ] ++
         [{fingerprint, #{hash => H, value => V}} || {H, V} <- J#jsep.fingerprints] ++
         [{setup, Setup}, {tls_id, J#jsep.tls_id}].

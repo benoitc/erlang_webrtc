@@ -29,6 +29,7 @@
     direction/2,
     ice_credentials/2,
     ice_options/2,
+    ice_pacing/1,
     ice_lite/1,
     fingerprints/2,
     setup/2,
@@ -147,6 +148,15 @@ ice_options(M, S) ->
     case find_attr(ice_options, M, S) of
         {ok, Tags} -> Tags;
         error -> []
+    end.
+
+%% @doc The Ta the session asks for (`a=ice-pacing', session level,
+%% RFC 8839 §5.5), 50 ms when absent.
+-spec ice_pacing(#sdp{}) -> non_neg_integer().
+ice_pacing(S) ->
+    case attr(ice_pacing, S) of
+        {ok, Ta} -> Ta;
+        error -> 50
     end.
 
 %% @doc True when the session declares `a=ice-lite' (session level only).

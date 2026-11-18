@@ -321,6 +321,11 @@ malformed_test_() ->
         {lines(H ++ M ++ [<<"b=AS">>]), 6, bad_bandwidth},
         {lines(H ++ M ++ [<<"c=IN IP4">>]), 6, bad_connection},
         {lines(H ++ M ++ [<<"k=bogus">>]), 6, bad_key},
+        {lines(H ++ [<<"a=ice-pacing:">>]), 5, {bad_attribute, <<"ice-pacing">>}},
+        {lines(H ++ [<<"a=ice-pacing:-1">>]), 5, {bad_attribute, <<"ice-pacing">>}},
+        {lines(H ++ [<<"a=ice-pacing:5 ms">>]), 5, {bad_attribute, <<"ice-pacing">>}},
+        {lines(H ++ [<<"a=ice-pacing:12345678901">>]), 5, {bad_attribute, <<"ice-pacing">>}},
+        {lines(H ++ [<<"a=ice-pacing">>]), 5, {bad_attribute, <<"ice-pacing">>}},
         {lines(H ++ M ++ [<<"a=rtpmap:111 opus">>]), 6, {bad_attribute, <<"rtpmap">>}},
         {lines(H ++ M ++ [<<"a=rtpmap:128 opus/48000/2">>]), 6, {bad_attribute, <<"rtpmap">>}},
         {lines(H ++ M ++ [<<"a=rtpmap:111 opus/0">>]), 6, {bad_attribute, <<"rtpmap">>}},
@@ -536,6 +541,13 @@ attribute_helpers_test() ->
         ?M:ice_credentials(NoCreds, S2)
     ),
     ?assertEqual(error, ?M:setup(?M:delete_attrs(setup, A), Sdp)).
+
+%% RFC 8839 §5.5: session level, 50 ms when absent.
+ice_pacing_test() ->
+    Sdp = parse(lines(header() ++ [<<"a=ice-pacing:100">>, <<"m=audio 9 UDP/TLS/RTP/SAVPF 111">>])),
+    ?assertEqual(100, ?M:ice_pacing(Sdp)),
+    ?assertEqual(50, ?M:ice_pacing(parse(lines(header() ++ [<<"m=audio 9 UDP/TLS/RTP/SAVPF 111">>])))),
+    ?assertNotEqual(nomatch, binary:match(iolist_to_binary(webrtc_sdp:encode(Sdp)), <<"\r\na=ice-pacing:100\r\n">>)).
 
 misc_attributes_test() ->
     Fp1 = webrtc_sdp_samples:fp_sha256(),

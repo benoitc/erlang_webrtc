@@ -63,7 +63,7 @@
 %%====================================================================
 
 %% @doc Options: `ice_ufrag', `ice_pwd' and `fingerprints' (required);
-%% `ice_lite', `sctp_port', `max_message_size', `codecs' and
+%% `ice_lite', `ice_pacing' (our Ta in ms, default 50), `sctp_port', `max_message_size', `codecs' and
 %% `extensions' (maps keyed by `audio' and `video'; an extension with
 %% `encrypt => true' is offered encrypted, RFC 6904), and
 %% `encrypt_header_extensions': `accept' (default) answers an offered
@@ -92,6 +92,7 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
         ice_ufrag = U,
         ice_pwd = P,
         ice_lite = maps:get(ice_lite, Opts, false),
+        ice_pacing = maps:get(ice_pacing, Opts, 50),
         fingerprints = FPs,
         cname = token(16),
         tls_id = token(24),

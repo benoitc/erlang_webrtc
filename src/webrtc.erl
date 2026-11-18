@@ -444,12 +444,12 @@ send_media(Pc, Mid, Raw, Opts) ->
 %% is dropped. Any process can call it; it does not wait.
 -spec report_media_stats(pc(), binary(), inbound | outbound | source | playout, map()) -> ok.
 report_media_stats(Pc, Mid, Dir, Report) when Dir =:= inbound; Dir =:= outbound; Dir =:= source; Dir =:= playout ->
-    case ets:lookup(webrtc_transports, {Pc, Mid}) of
-        [{_, T}] -> webrtc_transport:report_media_stats(T, Mid, Dir, Report);
-        [] ->
-            case ets:lookup(webrtc_transports, Pc) of
-                [{_, T}] -> webrtc_transport:report_media_stats(T, Mid, Dir, Report);
-                [] -> ok
+    case webrtc_registry:lookup({Pc, Mid}) of
+        {ok, T} -> webrtc_transport:report_media_stats(T, Mid, Dir, Report);
+        error ->
+            case webrtc_registry:lookup(Pc) of
+                {ok, T} -> webrtc_transport:report_media_stats(T, Mid, Dir, Report);
+                error -> ok
             end
     end.
 
@@ -620,16 +620,16 @@ call(Pc, Msg) ->
 %% The transport of a mid (or of the data channel), when the sections
 %% are not all bundled; otherwise the only one.
 transport(Pc, Key, F) ->
-    case ets:lookup(webrtc_transports, {Pc, Key}) of
-        [{_, T}] -> run_transport(Pc, T, F);
-        [] -> transport(Pc, F)
+    case webrtc_registry:lookup({Pc, Key}) of
+        {ok, T} -> run_transport(Pc, T, F);
+        error -> transport(Pc, F)
     end.
 
 transport(Pc, F) ->
-    case ets:lookup(webrtc_transports, Pc) of
-        [{_, T}] ->
+    case webrtc_registry:lookup(Pc) of
+        {ok, T} ->
             run_transport(Pc, T, F);
-        [] ->
+        error ->
             %% No transport yet, or the peer connection is gone.
             try call(Pc, transport_pid) of
                 {ok, T} -> run_transport(Pc, T, F);

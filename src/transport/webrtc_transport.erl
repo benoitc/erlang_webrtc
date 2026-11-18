@@ -320,7 +320,7 @@ info_({delayed_send, Sock, Dest, Bin, Ecn}, St) ->
 info_({ice_tcp_accept, ListenRef, Sock}, St) ->
     {noreply, arm(webrtc_transport_net:tcp_accepted(ListenRef, Sock, St))};
 info_({turn_stream, Ref, Result}, St) ->
-    {noreply, arm(webrtc_transport_net:stream_opened(Ref, Result, St))};
+    {noreply, arm(webrtc_transport_net:stream_opened(Ref, Result, prune_workers(St)))};
 info_({Tag, Sock, Data}, St) when Tag =:= tcp; Tag =:= ssl ->
     {noreply, arm(webrtc_transport_net:stream_data(Sock, Data, St))};
 info_({Tag, Sock}, St) when Tag =:= tcp_closed; Tag =:= ssl_closed ->
@@ -369,6 +369,7 @@ terminate(_Reason, St0) ->
     _ = webrtc_transport_net:close_streams(St2),
     _ = [gen_tcp:close(L) || {_, L, _} <- St2#st.tcp_listeners],
     _ = [gen_udp:close(S) || {S, _} <- St1#st.sockets],
+    _ = webrtc_transport_net:kill_workers(St2),
     %% No queued message (credentials, datagrams) in a crash report.
     webrtc_redact:flush().
 
@@ -454,3 +455,7 @@ tmin(A, B) -> min(A, B).
 
 now_ms() ->
     erlang:monotonic_time(millisecond).
+
+%% Connect workers that have finished.
+prune_workers(St) ->
+    St#st{workers = [W || W <- St#st.workers, is_process_alive(W)]}.

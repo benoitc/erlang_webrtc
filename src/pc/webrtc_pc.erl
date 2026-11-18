@@ -54,6 +54,8 @@
 }).
 
 -define(MAX_EARLY_CANDIDATES, 64).
+%% Messages waiting for the signaling helper.
+-define(MAX_SIGNALER_QUEUE, 64).
 %% Restarts tried for one incident before ICE is reported failed.
 -define(MAX_AUTO_RESTARTS, 3).
 %% The ICE agent's limit (webrtc_ice_agent).
@@ -82,7 +84,7 @@ init(#{owner := App} = Opts0) ->
         max_message_size => maps:get(max_message_size, Opts, 262144)
     })),
     Signaler = case maps:get(signaling, Opts, undefined) of
-        F when is_function(F, 2) -> spawn_link(fun() -> signaler(F) end);
+        F when is_function(F, 2) -> Pc = self(), proc_lib:spawn_link(fun() -> signaler_init(F, Pc) end);
         _ -> undefined
     end,
     {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler}}.
@@ -217,7 +219,7 @@ info_({webrtc_transport, T, Event}, St) ->
 info_({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
     {stop, normal, close_now(St)};
 info_({'EXIT', T, Reason}, #st{transport = T} = St) ->
-    ets:delete(webrtc_transports, self()),
+    ok = webrtc_registry:delete(self()),
     notify({connection_state, failed}, St),
     {stop, {transport_exit, Reason}, St#st{transport = undefined}};
 info_({'EXIT', T, Reason}, St) ->
@@ -300,6 +302,7 @@ recovering(#st{opts = O, auto_restarts = N}) ->
 
 terminate(_Reason, St) ->
     _ = close_now(St),
+    _ = [exit(S, kill) || S <- [St#st.signaler], is_pid(S)],
     %% A crash report lists the messages still queued: calls carrying
     %% descriptions (ICE passwords) and candidates go first.
     webrtc_redact:flush().
@@ -405,17 +408,33 @@ signaling(#st{signaler = undefined}) -> false;
 signaling(_) -> true.
 
 signal(Type, Sdp, #st{signaler = S}) ->
-    S ! {description, Type, Sdp},
-    ok.
+    to_signaler(S, {description, Type, Sdp}).
 
-signaler(Fun) ->
+%% The helper runs the application's function, which may be slow: past
+%% ?MAX_SIGNALER_QUEUE waiting messages new ones are dropped rather
+%% than queued without bound.
+to_signaler(S, Msg) ->
+    case process_info(S, message_queue_len) of
+        {message_queue_len, N} when N >= ?MAX_SIGNALER_QUEUE -> ok;
+        _ -> S ! Msg, ok
+    end.
+
+%% It ends with its peer connection, which also kills it on terminate
+%% in case the function never returns.
+signaler_init(Fun, Pc) ->
+    Mon = monitor(process, Pc),
+    signaler(Fun, Pc, Mon).
+
+signaler(Fun, Pc, Mon) ->
     receive
         {description, Type, Sdp} ->
             try Fun(Type, Sdp) catch _:_ -> ok end,
-            signaler(Fun);
+            signaler(Fun, Pc, Mon);
         {notify, To, Msg} ->
             To ! Msg,
-            signaler(Fun)
+            signaler(Fun, Pc, Mon);
+        {'DOWN', Mon, process, Pc, _} ->
+            ok
     end.
 
 %% Our automatic restart: offer it ourselves when nothing else is
@@ -522,7 +541,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
         }
     ),
     {ok, T} = webrtc_transport:start_link(TOpts),
-    true = ets:insert(webrtc_transports, {self(), T}),
+    ok = webrtc_registry:insert(self(), [{self(), T}]),
     ok = webrtc_transport:gather(T),
     St1 = flush_candidates(push_remote_ice(St#st{transport = T, ice_role = Role, topts = maps:without([ufrag, pwd], TOpts)})),
     ensure_extra(St1);
@@ -783,8 +802,7 @@ bundle_tag(St) ->
 close_now(#st{transport = undefined} = St) ->
     St;
 close_now(#st{transport = T} = St) ->
-    ets:delete(webrtc_transports, self()),
-    ets:match_delete(webrtc_transports, {{self(), '_'}, '_'}),
+    ok = webrtc_registry:delete(self()),
     _ = [ok = stop_transport(P) || _ := #{pid := P} <- St#st.extra],
     ok = stop_transport(T),
     notify({connection_state, closed}, St),
@@ -831,7 +849,7 @@ ensure_extra(#st{topts = TOpts} = St) ->
                     Acc;
                 false ->
                     {ok, T} = webrtc_transport:start_link(TOpts#{ufrag => U, pwd => P}),
-                    true = ets:insert(webrtc_transports, [{{Pc, M}, T} || M <- Ms] ++ data_row(Pc, Ms, T, Acc)),
+                    ok = webrtc_registry:insert(Pc, [{{Pc, M}, T} || M <- Ms] ++ data_row(Pc, Ms, T, Acc)),
                     ok = webrtc_transport:gather(T),
                     X = #{pid => T, mids => Ms, remote => undefined, sent => 0, cands => [], ice => new, dtls => new,
                            local_restart => false},
@@ -986,8 +1004,7 @@ extra_event(K, Event, St) ->
 %% With `signaling', candidates go through the helper so the peer
 %% never gets one before the description it belongs to.
 notify({ice_candidate, _, _} = Event, #st{app = App, signaler = S}) when is_pid(S) ->
-    S ! {notify, App, {webrtc, self(), Event}},
-    ok;
+    to_signaler(S, {notify, App, {webrtc, self(), Event}});
 notify(Event, #st{app = App}) ->
     App ! {webrtc, self(), Event},
     ok.

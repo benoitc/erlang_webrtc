@@ -329,10 +329,20 @@ no_secrets_in_crash_logs(_Config) ->
         %% An unknown call: function_clause with the state as argument.
         Crash = fun(P, M) -> try gen_server:call(P, M) catch exit:_ -> ok end end,
         Crash(T1, {bogus, hd(Pwds1)}),
-        Crash(A2, {bogus, hd(Pwds2)}),
+        %% A call carrying a secret waits in the queue while the peer
+        %% connection crashes: no report lists the queue.
+        ok = sys:suspend(A2),
+        Self = self(),
+        spawn(fun() -> Crash(A2, {bogus, hd(Pwds2)}), Self ! crashed end),
+        spawn(fun() -> Crash(A2, {set_local_description, offer, <<"a=ice-pwd:", (lists:last(Pwds2))/binary>>}) end),
+        timer:sleep(100),
+        ok = sys:resume(A2),
+        receive crashed -> ok after 5000 -> ok end,
         Logs = collect_logs(<<>>, 3000),
         ct:log("~s", [Logs]),
-        ?assertNotEqual(<<>>, Logs),
+        %% Our redacted report of each crash, and no crash report of OTP.
+        ?assertMatch({_, _}, binary:match(Logs, <<"crashed">>)),
+        ?assertEqual(nomatch, binary:match(Logs, <<"crasher">>)),
         [?assertEqual(nomatch, binary:match(Logs, S), S) || S <- Secrets],
         [?assertEqual(nomatch, binary:match(Status, S), S) || S <- Secrets],
         _ = T2

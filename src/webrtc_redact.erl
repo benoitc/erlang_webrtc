@@ -8,14 +8,16 @@
 %% <li>`status/2' is the body of a `format_status/1' callback: the state
 %%     is replaced by a summary, messages keep their tag only, the
 %%     reason is redacted.</li>
-%% <li>`guard/2' runs a callback: an exception stops the process with a
-%%     redacted reason, so the crash report of `proc_lib' carries no
-%%     state either. A `throw' keeps its gen_server meaning (a
-%%     return value).</li>
+%% <li>`guard/3' runs a callback. An exception is logged here, redacted,
+%%     and stops the process with `{shutdown, {crashed, Class, Reason,
+%%     Stack}}': OTP writes no crash report for a shutdown, so none can
+%%     list a message that arrived after `terminate/2' emptied the
+%%     queue. A `throw' keeps its gen_server meaning (a return
+%%     value).</li>
 %% </ul>
 -module(webrtc_redact).
 
--export([guard/2, status/2, reason/1, stack/1, flush/0]).
+-export([guard/2, guard/3, status/2, reason/1, stack/1, flush/0]).
 
 %% @doc Drop every queued message, at the end of `terminate/2': the
 %% crash report of `proc_lib' lists the queue as it is then.
@@ -30,11 +32,22 @@ flush() ->
 %% and the module, function and arity of each frame.
 -spec guard(fun(() -> term()), term()) -> term().
 guard(Fun, St) ->
+    guard(Fun, St, fun(_) -> #{} end).
+
+%% @doc The same, logging the crash with `Summary(State)'.
+-spec guard(fun(() -> term()), term(), fun((term()) -> map())) -> term().
+guard(Fun, St, Summary) ->
     try
         Fun()
     catch
-        throw:Value -> Value;
-        Class:Reason:Stack -> {stop, {Class, reason(Reason), stack(Stack)}, St}
+        throw:Value ->
+            Value;
+        Class:Reason:Stack ->
+            Crash = {Class, reason(Reason), stack(Stack)},
+            logger:error(#{label => {webrtc, crashed}, process => self(), crash => Crash,
+                           state => try Summary(St) catch _:_ -> #{} end},
+                         #{domain => [webrtc]}),
+            {stop, {shutdown, {crashed, Crash}}, St}
     end.
 
 %% @doc A `format_status/1' result: `Summary' for the state.

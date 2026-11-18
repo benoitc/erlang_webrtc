@@ -22,6 +22,8 @@
     udp_send/4,
     send_out/2,
     send_out_ect/2,
+    send_out_tos/3,
+    set_stream_dscp/2,
     transmit/2,
     stream_opened/3,
     stream_data/3,
@@ -127,17 +129,23 @@ ice_action({send, Sock, {IP, Port}, Bin}, #st{filter = undefined} = St) ->
         ok -> St;
         {error, _} -> io(discarded, Bin, St)
     end;
-ice_action({send_ect, Sock, {IP, Port} = Dest, Bin}, #st{filter = undefined} = St) when is_port(Sock) ->
-    %% ECT(0) in the IP header (RFC 3168 §5).
-    Anc = case tuple_size(IP) of 4 -> [{tos, 2}]; 8 -> [{tclass, 2}] end,
-    _ = case gen_udp:send(Sock, Dest, Anc, Bin) of
-        ok -> ok;
-        {error, _} -> gen_udp:send(Sock, IP, Port, Bin)
-    end,
-    St;
-ice_action({send_ect, Sock, Dest, Bin}, #st{filter = {_, _}} = St) when is_port(Sock) ->
-    filtered(Sock, Dest, Bin, 2, St);
-ice_action({send_ect, Sock, Dest, Bin}, St) ->
+ice_action({send_tos, Sock, {IP, Port} = Dest, Tos, Bin}, #st{filter = undefined} = St) when is_port(Sock) ->
+    %% The DSCP (RFC 8837) and ECN (RFC 3168 §5) bits of the IP header.
+    Anc = case tuple_size(IP) of 4 -> [{tos, Tos}]; 8 -> [{tclass, Tos}] end,
+    case gen_udp:send(Sock, Dest, Anc, Bin) of
+        ok ->
+            St;
+        {error, _} ->
+            _ = gen_udp:send(Sock, IP, Port, Bin),
+            %% RFC 8835 §4.2: no marking where the platform has none.
+            case Tos bsr 2 of
+                0 -> St;
+                _ -> St#st{marking = false, io = (St#st.io)#{dscp_unsupported => true}}
+            end
+    end;
+ice_action({send_tos, Sock, Dest, Tos, Bin}, #st{filter = {_, _}} = St) when is_port(Sock) ->
+    filtered(Sock, Dest, Bin, Tos, St);
+ice_action({send_tos, Sock, Dest, _Tos, Bin}, St) ->
     ice_action({send, Sock, Dest, Bin}, St);
 ice_action({send, Sock, Dest, Bin}, #st{filter = {_, _}} = St) ->
     filtered(Sock, Dest, Bin, 0, St);
@@ -163,6 +171,8 @@ ice_action({event, {selected_pair, L, R}}, St) ->
     webrtc_transport_secure:start_dtls_if_ready(webrtc_transport_secure:flush_dtls(St1));
 ice_action({event, {local_candidate, C}}, St) ->
     local_candidate(C, St);
+ice_action({event, {dscp_blocked, Dscp}}, St) ->
+    webrtc_transport_secure:dscp_blocked(Dscp, St);
 ice_action({event, {consent_lost, _, _} = E}, St) ->
     webrtc_transport:to_pc(E, St),
     St;
@@ -193,12 +203,13 @@ udp_send(Sock, {IP, Port}, Bin) ->
     _ = gen_udp:send(Sock, IP, Port, Bin),
     ok.
 
-%% @doc The same with an ECN codepoint in the IP header (0: none).
--spec udp_send(term(), webrtc_ice_candidate:address(), binary(), 0..3) -> ok.
+%% @doc The same with a TOS byte, DSCP and ECN, in the IP header (0:
+%% none).
+-spec udp_send(term(), webrtc_ice_candidate:address(), binary(), 0..255) -> ok.
 udp_send(Sock, Dest, Bin, 0) ->
     udp_send(Sock, Dest, Bin);
-udp_send(Sock, {IP, Port} = Dest, Bin, Ecn) ->
-    Anc = case tuple_size(IP) of 4 -> [{tos, Ecn}]; 8 -> [{tclass, Ecn}] end,
+udp_send(Sock, {IP, Port} = Dest, Bin, Tos) ->
+    Anc = case tuple_size(IP) of 4 -> [{tos, Tos}]; 8 -> [{tclass, Tos}] end,
     _ = case gen_udp:send(Sock, Dest, Anc, Bin) of
         ok -> ok;
         {error, _} -> gen_udp:send(Sock, IP, Port, Bin)
@@ -206,23 +217,28 @@ udp_send(Sock, {IP, Port} = Dest, Bin, Ecn) ->
     ok.
 
 %% Test hook (impairment): the filter runs in this process and must not
-%% block; a crashing filter lets the datagram through. It returns
+%% block; a crashing filter lets the datagram through. It is called with
+%% the TOS byte too when it takes four arguments, and returns
 %% `{Delay, Bin}' or `{Delay, Bin, Ecn}': a router may mark an ECT
 %% datagram CE (RFC 3168), never a not-ECT one.
-filtered(Sock, Dest, Bin, Ecn, #st{filter = {F, FS}} = St) ->
+filtered(Sock, Dest, Bin, Tos, #st{filter = {F, FS}} = St) ->
     {Out, FS1} =
-        try F(Dest, Bin, FS) of
+        try case erlang:fun_info(F, arity) of
+                {arity, 4} -> F(Dest, Bin, Tos, FS);
+                _ -> F(Dest, Bin, FS)
+            end of
             {O, S1} when is_list(O) -> {O, S1}
         catch
             _:_ -> {[{0, Bin}], FS}
         end,
+    Ecn = Tos band 3,
     lists:foreach(
         fun(Item) ->
             {Delay, B, E} =
                 case Item of
-                    {D, B0} -> {D, B0, Ecn};
-                    {D, B0, Mark} when Ecn =/= 0 -> {D, B0, Mark};
-                    {D, B0, _} -> {D, B0, 0}
+                    {D, B0} -> {D, B0, Tos};
+                    {D, B0, Mark} when Ecn =/= 0 -> {D, B0, (Tos band 16#FC) bor Mark};
+                    {D, B0, _} -> {D, B0, Tos band 16#FC}
                 end,
             case Delay of
                 0 -> udp_send(Sock, Dest, B, E);
@@ -240,12 +256,23 @@ send_out(Bin, St) ->
         {error, _} -> St
     end.
 
-%% The same with ECT(0) on the datagram sent to the peer (relayed and
-%% stream sends go unmarked).
+%% The same with ECT(0) on the datagram sent to the peer.
 send_out_ect(Bin, St) ->
+    send_out_tos(Bin, 2, St).
+
+%% @doc The same with a TOS byte, DSCP and ECN, on the UDP datagram (a
+%% stream carries the DSCP of its connection, see set_stream_dscp/2).
+-spec send_out_tos(binary(), 0..255, #st{}) -> #st{}.
+send_out_tos(Bin, 0, St) ->
+    send_out(Bin, St);
+send_out_tos(Bin, Tos0, St) ->
+    Tos = case St#st.marking of
+              true -> Tos0;
+              false -> Tos0 band 3
+          end,
     case webrtc_ice_agent:send(Bin, webrtc_transport:now_ms(), St#st.ice) of
         {ok, I1, Acts} ->
-            ice_actions([case A of {send, Sock, Dest, B} when is_port(Sock) -> {send_ect, Sock, Dest, B}; _ -> A end
+            ice_actions([case A of {send, Sock, Dest, B} when is_port(Sock), Tos =/= 0 -> {send_tos, Sock, Dest, Tos, B}; _ -> A end
                          || A <- Acts], io(sent, Bin, St#st{ice = I1}));
         {error, _} ->
             St
@@ -253,9 +280,37 @@ send_out_ect(Bin, St) ->
 
 transmit(Acts, St) ->
     lists:foldl(fun({send, B}, S) -> send_out(B, S);
-                   ({send_ect, B}, S) -> send_out_ect(B, S);
+                   ({send_ect, B}, S) -> send_out_tos(B, 2, S);
+                   ({send_tos, T, B}, S) -> send_out_tos(B, T, S);
                    (_, S) -> S
                 end, St, Acts).
+
+%% @doc RFC 8837 §5: every packet of a TCP connection carries one DSCP,
+%% that of the highest priority flow it multiplexes.
+-spec set_stream_dscp(0..63, #st{}) -> #st{}.
+set_stream_dscp(Dscp, #st{stream_dscp = Dscp} = St) ->
+    St;
+set_stream_dscp(Dscp, #st{marking = true} = St) ->
+    maps:foreach(fun(_, #{kind := Kind, sock := S}) -> stream_tos(Kind, S, Dscp bsl 2); (_, _) -> ok end, St#st.streams),
+    St#st{stream_dscp = Dscp};
+set_stream_dscp(_Dscp, St) ->
+    St.
+
+%% A connection opened later carries the DSCP already in use.
+new_stream_tos(_Kind, _S, #st{stream_dscp = 0}) -> ok;
+new_stream_tos(_Kind, _S, #st{marking = false}) -> ok;
+new_stream_tos(Kind, S, #st{stream_dscp = D}) -> stream_tos(Kind, S, D bsl 2).
+
+stream_tos(Kind, S, Tos) ->
+    Opt = case inet_family(Kind, S) of inet6 -> tclass; _ -> tos end,
+    _ = case Kind of
+            tcp -> inet:setopts(S, [{Opt, Tos}]);
+            tls -> ssl:setopts(S, [{Opt, Tos}])
+        end,
+    ok.
+
+inet_family(tcp, S) -> case inet:sockname(S) of {ok, {IP, _}} when tuple_size(IP) =:= 8 -> inet6; _ -> inet end;
+inet_family(tls, S) -> case ssl:sockname(S) of {ok, {IP, _}} when tuple_size(IP) =:= 8 -> inet6; _ -> inet end.
 
 %%====================================================================
 %% Stream connections to TURN servers (RFC 8656 §3.1)
@@ -319,6 +374,7 @@ stream_opened(Ref, {ok, Kind, Sock}, St) ->
             St;
         false ->
             ok = setopts(Kind, Sock, [{active, ?ACTIVE_N}]),
+            new_stream_tos(Kind, Sock, St),
             St1 = St#st{streams = (St#st.streams)#{Ref => conn(Ref, Kind, Sock)}},
             ice(fun(Now, I) -> webrtc_ice_agent:stream_up(Ref, Now, I) end, St1)
     end;
@@ -478,6 +534,7 @@ tcp_accepted(ListenRef, Sock, St) ->
         {ok, Peer} ->
             Ref = {tcp, {in, St#st.next_accept}},
             ok = inet:setopts(Sock, [{active, ?ACTIVE_N}]),
+            new_stream_tos(tcp, Sock, St),
             St1 = St#st{
                 next_accept = St#st.next_accept + 1,
                 streams = (St#st.streams)#{Ref => #{sock => Sock, kind => tcp, buf => <<>>, peer => Peer}}

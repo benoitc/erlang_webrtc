@@ -1,4 +1,4 @@
-# Transport, multiplexing and cross-layer requirements (RFC 7983, RFC 9443, RFC 8835, RFC 8842, RFC 8261)
+# Transport, multiplexing and cross-layer requirements (RFC 7983, RFC 9443, RFC 8835, RFC 8837, RFC 8842, RFC 8261)
 
 | ID | Spec | Requirement | Module | Test | Status |
 |---|---|---|---|---|---|
@@ -21,3 +21,12 @@
 | TR-17 | | The API keeps no state in the calling process: transports are found in the `webrtc_transports` table owned by the application supervisor, rows removed when a transport stops; calls on a closed connection return `{error, closed}` | webrtc, webrtc_pc, webrtc_sup | webrtc_security_SUITE:no_state_in_caller | E2E tested |
 | TR-18 | 8445 §12.1 | DTLS starts on the first valid pair instead of waiting for nomination; the connection is up about one checklist interval sooner (direct) or one nomination timeout sooner (when higher priority pairs never answer) | webrtc_transport | webrtc_turn_interop_SUITE:one_side_relayed, webrtc_pc_SUITE | Interoperability tested |
 | TR-19 | 6347 §4.2.4, 9147 §5.8 | A DTLS datagram produced before ICE can send it (the peer's check validated the path for incoming data first) is kept, at most 16, and sent once a pair is valid: a server never retransmits on its own, so a dropped reply would wait for the client's next retransmission | webrtc_transport | webrtc_turn_interop_SUITE:one_side_relayed | Interoperability tested |
+| TR-20 | 8835 §4.2, 8837 §5 | Packets marked by flow type and application priority (Table 1): audio LE/DF/EF, interactive video LE/DF/AF42-43/AF41-42, data LE/DF/AF11/AF21; `priority` per transceiver and per simulcast encoding, DF at the default `low` | webrtc_dscp, webrtc_media_out | webrtc_dscp_tests:table_test_, webrtc_pc_SUITE:dscp_marking | E2E tested |
+| TR-21 | 8837 §5 | Within a cell, the lower drop precedence for the more important packets: those of a key frame; FEC, padding and the rest of the flow the higher | webrtc_media_out | webrtc_pc_SUITE:dscp_marking (AF41 on the key frame, AF42 after) | E2E tested |
+| TR-22 | 8837 §5 | AF3x only for video known not to be interactive (MAY for non-browsers; browsers MUST NOT) | webrtc_dscp, webrtc_jsep | table_test_ | Unit tested (`interactive => false` on the transceiver) |
+| TR-23 | 8835 §4.2, 8837 §5 | One DSCP for every packet of the SCTP association, that of its highest priority channel | webrtc_dcep, webrtc_transport_secure | webrtc_dcep_tests:priority_class_test, webrtc_pc_SUITE:dscp_marking | E2E tested (it only rises while channels are open) |
+| TR-24 | 8837 §5 | SCTP congestion control restarted when the association's DSCP changes | webrtc_sctp_assoc | webrtc_sctp_assoc_tests:reset_congestion_test | Unit tested (initial cwnd and ssthresh; RTT and MTU kept) |
+| TR-25 | 8837 §5 | One DSCP per TCP connection, the highest of the flows it carries | webrtc_transport_net | | Implemented (`tos`/`tclass` socket option on ICE-TCP and TURN TCP/TLS connections); not covered by a test |
+| TR-26 | 8835 §4.2 | Connectivity checks unmarked; once a pair is selected, each consent request also sent with each DSCP in use; a DSCP missed three times in a row while consent holds is dropped for its flows | webrtc_ice_marks, webrtc_transport_secure | webrtc_ice_net_tests:dscp_blocked_test, dscp_unmarked_test, webrtc_pc_SUITE:dscp_marking | Unit tested: the owner gets `{dscp_disabled, Dscp}`; other flows keep their marks |
+| TR-27 | 8835 §4.2 | No marking where the platform has none | webrtc_transport_net | webrtc_dscp_tests:wire_test_ | Unit tested on IPv4 and IPv6: the TOS byte reaches the receiver; a send refused with it turns marking off and goes unmarked |
+| TR-28 | 3168 §5 | ECN bits kept beside the DSCP | webrtc_dscp, webrtc_transport_net | wire_test_ (DSCP 34 with ECT(0)) | Unit tested |

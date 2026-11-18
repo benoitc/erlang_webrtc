@@ -1156,6 +1156,20 @@ path_changed_test() ->
     N3 = ?NET:run(60000, N2),
     ?assertMatch(#{pmtu := 1412}, info(a, N3)).
 
+%% RFC 8837 §5: a new DSCP restarts congestion control (initial cwnd),
+%% the path's RTO and MTU stay.
+reset_congestion_test() ->
+    N0 = ?NET:run(60000, established(pmtu_opts(), pmtu_opts(), #{mtu => infinity})),
+    N1 = wait_messages(b, 1, send(a, 0, payload(5, 200000), #{}, N0)),
+    #{cwnd := Grown, rto := Rto} = ?A:stats(?NET:engine(a, N1)),
+    Pmtu = maps:get(pmtu, info(a, N1)),
+    N2 = ?NET:call(a, fun(E, _Now) -> {?A:reset_congestion(E), []} end, N1),
+    #{cwnd := Cwnd, rto := Rto2} = ?A:stats(?NET:engine(a, N2)),
+    ?assert(Cwnd < Grown),
+    ?assertEqual(min(4 * Pmtu, max(2 * Pmtu, 4404)), Cwnd),
+    ?assertEqual(Rto, Rto2),
+    ?assertEqual(Pmtu, maps:get(pmtu, info(a, N2))).
+
 %% RFC 9260 §7.2.1: after idle RTOs the cwnd is halved per RTO, not
 %% below 4 MTUs.
 idle_cwnd_decay_test() ->

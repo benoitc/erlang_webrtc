@@ -90,6 +90,12 @@
     %% Per server address, the addresses of the same URI to try in turn
     %% when it does not answer (RFC 8489 §8.1, RFC 5928 §3).
     fallbacks = #{} :: #{{inet:ip_address(), inet:port_number()} => [{inet:ip_address(), inet:port_number()}]},
+    %% DSCP marks probed with the consent requests (webrtc_ice_marks):
+    %% the marks, the marked requests out {Dscp, SentAt}, the misses in
+    %% a row per mark.
+    marks = [] :: [1..63],
+    mark_tx = #{} :: #{binary() => {1..63, integer()}},
+    mark_miss = #{} :: #{1..63 => pos_integer()},
     %% Credentials.
     ufrag :: binary(),
     pwd :: binary(),

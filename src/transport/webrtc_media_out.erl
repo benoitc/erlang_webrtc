@@ -28,6 +28,7 @@
     retransmit/4,
     send_feedback/3,
     send_rtcp/2,
+    dscps/1,
     early_sr/3,
     senders/2,
     ssrc_collision/2,
@@ -38,7 +39,8 @@
 senders(#{mid := Mid, send_rids := [_ | _] = Layers} = Sec, Old) ->
     Exts = maps:get(send_extensions, Sec, #{}),
     [
-        {{Mid, Rid}, ext_form(Sec, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false)},
+        {{Mid, Rid}, ext_form(Sec, (sender(Sec#{ssrc := S, rtx_ssrc := X, paused => maps:get(paused, L, false),
+                                                priority => maps:get(priority, L, maps:get(priority, Sec, low))},
                                            maps:get({Mid, Rid}, Old, undefined)))#snd{
             rid = Rid,
             rid_ext = maps:get(?URI_RID, Exts, undefined),
@@ -102,7 +104,8 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     case Old of
         #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff,
                           audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc),
-                          tmmbr = Tmmbr, ntp_ext = NtpExt};
+                          tmmbr = Tmmbr, ntp_ext = NtpExt,
+                          priority = maps:get(priority, Sec, low), interactive = maps:get(interactive, Sec, true)};
         undefined ->
             #snd{
                 mid = Mid,
@@ -123,7 +126,9 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 fec_ssrc = maps:get(fec_ssrc, Sec, undefined),
                 fec_seq = rand16(),
                 tmmbr = Tmmbr,
-                ntp_ext = NtpExt
+                ntp_ext = NtpExt,
+                priority = maps:get(priority, Sec, low),
+                interactive = maps:get(interactive, Sec, true)
             }
     end.
 
@@ -316,7 +321,7 @@ egress(Items, Now, M0) ->
                     {raw, Srtp} = Pkt0,
                     <<_:16, RSeq:16, _:32, RSsrc:32, _/binary>> = Srtp,
                     Cc = webrtc_cc:sent_rtp(Mid, RSsrc, RSeq, byte_size(Srtp), Now, M1#media.cc),
-                    {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
+                    {[out(Srtp, dscp(Key, undefined, Rtx, M1), M1) | Acc], sent_stats(Key, Pkt0, Rtx, M1#media{cc = Cc})};
                 false ->
                     Pkt = add_twcc(Twcc, webrtc_cc:twcc_seq(M1#media.cc), Pkt0),
                     Plain = encode_rtp(Pkt, ext_form_of(Key, M1)),
@@ -340,7 +345,7 @@ egress(Items, Now, M0) ->
                                             _ ->
                                                 {[], M3}
                                         end,
-                            {lists:reverse(Fec, [out(Srtp, M1) | Acc]), sent_stats(Key, Pkt, Rtx, M4)};
+                            {lists:reverse(Fec, [out(Srtp, dscp(Key, Pkt#rtp.ts, Rtx, M1), M1) | Acc]), sent_stats(Key, Pkt, Rtx, M4)};
                         {error, _} ->
                             {Acc, count(srtp_failed, M1)}
                     end
@@ -386,11 +391,44 @@ frame_sent(Key, #rtp{ssrc = Ssrc, pt = Pt, payload = P, marker = Marker}, Now, M
     M#media{streams = (M#media.streams)#{{out, Ssrc} => S2}}.
 
 %% RTP goes out ECT(0) while ECN is in use (RFC 6679, RFC 8888 §6).
-out(Bin, #media{cc = Cc}) ->
-    case webrtc_cc:ecn_mark(Cc) of
-        true -> {send_ect, Bin};
-        false -> {send, Bin}
+%% The datagram with its marks: DSCP (RFC 8837) and ECT(0) once ECN is
+%% validated (RFC 6679).
+out(Bin, Dscp, #media{cc = Cc}) ->
+    case {Dscp, webrtc_cc:ecn_mark(Cc)} of
+        {0, true} -> {send_ect, Bin};
+        {0, false} -> {send, Bin};
+        {_, true} -> {send_tos, webrtc_dscp:tos(Dscp, 2), Bin};
+        {_, false} -> {send_tos, webrtc_dscp:tos(Dscp, 0), Bin}
     end.
+
+%% The DSCP of a packet of `Key' with RTP timestamp `Ts': the key frame's
+%% packets get the lower drop precedence, FEC and padding the higher.
+dscp(Key, Ts, Rtx, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, #snd{kind = Kind, priority = P, interactive = I, key_ts = K}} ->
+            Important = Ts =/= undefined andalso Ts =:= K andalso Rtx =/= fec andalso Rtx =/= flexfec,
+            unblocked(webrtc_dscp:dscp(Kind, P, I, Important), M);
+        error ->
+            0
+    end.
+
+unblocked(D, #media{dscp_off = Off}) ->
+    case lists:member(D, Off) of
+        true -> 0;
+        false -> D
+    end.
+
+%% @doc The DSCPs the media flows may use: the ICE agent probes them on
+%% the selected pair (RFC 8835 §4.2), and RTCP takes the highest.
+-spec dscps(#media{}) -> [1..63].
+dscps(M) ->
+    lists:usort([D || #snd{kind = K, priority = P, interactive = I} <- maps:values(M#media.senders),
+                      Imp <- [true, false], D <- [unblocked(webrtc_dscp:dscp(K, P, I, Imp), M)], D =/= 0]).
+
+%% RTCP of the session goes with its most important media.
+rtcp_dscp(M) ->
+    lists:max([0 | [unblocked(webrtc_dscp:dscp(K, P, I, true), M)
+                    || #snd{kind = K, priority = P, interactive = I} <- maps:values(M#media.senders)]]).
 
 add_twcc(undefined, _Seq, Pkt) ->
     Pkt;
@@ -574,7 +612,7 @@ probe({probe, Cluster, Size}, Mid, Key, Now, M) ->
     case webrtc_srtp:protect_rtp(encode_rtp(Wire, S#snd.ext_form), M1#media.out) of
         {ok, Srtp, Out} ->
             Cc = webrtc_cc:sent_probe_rtp(Mid, Wire#rtp.ssrc, Wire#rtp.seq, byte_size(Srtp), Now, Cluster, M1#media.cc),
-            {[out(Srtp, M1)], count(probe_sent, M1#media{out = Out, cc = Cc})};
+            {[out(Srtp, dscp(Key, undefined, probe, M1), M1)], count(probe_sent, M1#media{out = Out, cc = Cc})};
         {error, _} ->
             {[], count(srtp_failed, M1)}
     end.
@@ -676,10 +714,10 @@ xr(Reporter, Ntp, #media{receivers = Rs, xr_rrtr = Got} = M) ->
 %% A regular compound: it resets the report timer.
 send_regular(Pkts, Now, M) ->
     case send_rtcp(Pkts, M) of
-        {[{send, B}], M1} ->
+        {[Send], M1} ->
             Mark = maps:get(rtp_sent, M1#media.counters, 0),
-            R = webrtc_rtcp_sched:regular_sent(Now, byte_size(B), M1#media.rtcp),
-            {[{send, B}], M1#media{rtcp = R, rtp_sent_mark = Mark}};
+            R = webrtc_rtcp_sched:regular_sent(Now, byte_size(element(tuple_size(Send), Send)), M1#media.rtcp),
+            {[Send], M1#media{rtcp = R, rtp_sent_mark = Mark}};
         Other ->
             Other
     end.
@@ -772,7 +810,12 @@ send_rtcp(_Pkts, #media{out = undefined} = M) ->
     {[], M};
 send_rtcp(Pkts, M) ->
     case webrtc_srtp:protect_rtcp(webrtc_rtcp:encode(Pkts), M#media.out) of
-        {ok, B, Out} -> {[{send, B}], count(rtcp_sent, M#media{out = Out})};
+        {ok, B, Out} ->
+            Send = case rtcp_dscp(M) of
+                       0 -> {send, B};
+                       D -> {send_tos, webrtc_dscp:tos(D, 0), B}
+                   end,
+            {[Send], count(rtcp_sent, M#media{out = Out})};
         {error, _} -> {[], M}
     end.
 

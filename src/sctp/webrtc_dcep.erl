@@ -44,6 +44,8 @@
     handle_timeout/2,
     next_timeout/1,
     path_changed/2,
+    priority_class/1,
+    reset_congestion/1,
     buffered_amount/2,
     set_buffered_amount_low_threshold/3,
     channels/1,
@@ -470,6 +472,21 @@ handle_packet(Bin, Now, #dc{sctp = S} = D) ->
 handle_timeout(Now, #dc{sctp = S} = D) ->
     {S1, Acts} = webrtc_sctp_assoc:handle_timeout(Now, S),
     finish(Now, assoc_actions(Acts, Now, D#dc{sctp = S1})).
+
+%% @doc The class of the highest priority among the channels not being
+%% closed (RFC 8831 §6.4): the association's DSCP (RFC 8837 §5).
+-spec priority_class(dcep()) -> webrtc_dscp:priority().
+priority_class(#dc{channels = Chs}) ->
+    case [P || _ := #ch{priority = P, state = St} <- Chs, St =/= closing] of
+        [] -> low;
+        Ps -> webrtc_dscp:class(lists:max(Ps))
+    end.
+
+%% @doc Restart the association's congestion control: its DSCP changed
+%% (RFC 8837 §5).
+-spec reset_congestion(dcep()) -> dcep().
+reset_congestion(#dc{sctp = S} = D) ->
+    D#dc{sctp = webrtc_sctp_assoc:reset_congestion(S)}.
 
 %% @doc The lower layer moved to another path (see
 %% `webrtc_sctp_assoc:path_changed/2').

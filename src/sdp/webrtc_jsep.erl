@@ -127,6 +127,11 @@ new(#{ice_ufrag := U, ice_pwd := P, fingerprints := FPs} = Opts) ->
 %%
 %% `frames': `true', or `#{min_delay => Ms, max_delay => Ms}', delivers
 %% assembled frames instead of packets (see `webrtc_frame_buffer').
+%%
+%% `priority' (`very_low', `low' (default), `medium', `high'), also per
+%% encoding in `send_encodings', and `interactive' (default `true'; set
+%% `false' for video nobody answers live) pick the DSCP the packets are
+%% marked with (RFC 8837).
 -spec add_transceiver(audio | video, map(), state()) -> {ok, pos_integer(), state()} | {error, term()}.
 add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
     T = new_tr(Kind, maps:get(direction, Opts, sendrecv), J),
@@ -135,7 +140,17 @@ add_transceiver(Kind, Opts, J) when Kind =:= audio; Kind =:= video ->
         {ok, Recv} ?= webrtc_jsep_simulcast:recv_rids(maps:get(recv_rids, Opts, [])),
         {ok, Frames} ?= frames_opts(maps:get(frames, Opts, T#tr.frames)),
         {ok, Plugin} ?= plugin_opts(maps:get(codec_plugin, Opts, T#tr.codec_plugin), Frames),
+        {ok, Prio} ?= case webrtc_dscp:priority(maps:get(priority, Opts, low)) of
+                          {ok, P} -> {ok, P};
+                          error -> {error, {badarg, {priority, maps:get(priority, Opts)}}}
+                      end,
+        {ok, Interactive} ?= case maps:get(interactive, Opts, true) of
+                                 B when is_boolean(B) -> {ok, B};
+                                 Other -> {error, {badarg, {interactive, Other}}}
+                             end,
         T1 = T#tr{
+            priority = Prio,
+            interactive = Interactive,
             codec_plugin = Plugin,
             stream_id = maps:get(stream_id, Opts, T#tr.stream_id),
             track_id = maps:get(track_id, Opts, T#tr.track_id),

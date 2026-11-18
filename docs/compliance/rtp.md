@@ -126,6 +126,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | RTX-4 | 4 | Packets without an OSN (padding only) are not retransmissions | webrtc_rtx | rtx_padding_only_test | Unit tested |
 | RTX-5 | 5.3 | Receiver associates the RTX SSRC with the original stream (apt, rid / repaired-rid) | webrtc_media, webrtc_media_rid | webrtc_media_tests:nack_rtx_test, webrtc_media_simulcast_tests:layer_nack_rtx_test | Unit tested: `ssrc-group:FID` when announced, repaired-rid otherwise |
 | RTX-6 | 6 | Sender keeps sent packets and avoids resending within one RTT | webrtc_nack_buffer | buffer_test, buffer_max_age_test | Unit tested |
+| RTX-7 | RFC 4585 §6.2.1, RFC 3711 §3.3 | NACK answered without RTX: the exact SRTP bytes of the first transmission are resent (no second protection of the same index) | webrtc_media_out | webrtc_media_tests:nack_without_rtx_test | Unit tested |
 
 ## RFC 2198 and RFC 8854: redundant audio and FEC
 
@@ -367,9 +368,5 @@ With `frames` on a transceiver, `webrtc_frame_buffer` turns the packets of each 
 ## Known limitations
 
 - Congestion control clocks are integer milliseconds: arrival times in transport-wide feedback are multiples of 1 ms although the format carries 250 us.
-- Probing happens at the start only: no periodic probing in application limited periods (libwebrtc's ALR probing) and no probing after a capacity drop recovers.
-
-- `webrtc_rtp:encode/1` does not check that the payload type avoids 64..95 (MUX-2); the SDP layer must enforce it.
-- The RTCP and AVPF scheduling state machines (RTCP-20, AVPF-13, RSIZE-3) are not implemented; `webrtc_rtcp_interval` provides the pure computations they need.
+- `webrtc_rtp:encode/1` does not check that the payload type avoids 64..95: the peer connection refuses such codecs (MUX-2), so only a caller encoding packets itself can produce one.
 - `webrtc_nack` (receiver NACK generation) follows RFC 4585 §6.2.1 for the message and libwebrtc for the retry policy (retry every max(RTT, min interval), give up after `max_retries` or `max_age`, request a key frame when more than `max_missing` packets are missing); RFC 4585 does not specify this policy.
-| NACK-10 | RFC 4585 §6.2.1, RFC 3711 §3.3 | NACK answered without RTX: the exact SRTP bytes of the first transmission are resent (no second protection of the same index) | webrtc_media_out | webrtc_media_tests:nack_without_rtx_test | Unit tested |

@@ -464,37 +464,45 @@ sps_size(<<_:3, 7:5, Rbsp0/binary>>) ->
 sps_size(_) ->
     error.
 
+%% Every field is checked against its range (§7.4.2.1.1) as it is read,
+%% so nothing larger than the syntax allows is ever counted or used.
 sps(<<Profile, _Constraints, _Level, B0/bits>>) ->
-    {_Id, B1} = ue(B0),
+    {_Id, B1} = ue(B0, 31),
     {Chroma, Separate, B2} =
         case lists:member(Profile, [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134, 135]) of
             true ->
-                {C, Bc} = ue(B1),
+                {C, Bc} = ue(B1, 3),
                 {Sep, Bs} = case C of 3 -> <<S:1, R/bits>> = Bc, {S, R}; _ -> {0, Bc} end,
-                {_, Bd} = ue(Bs),
-                {_, Be} = ue(Bd),
+                %% bit_depth_luma_minus8, bit_depth_chroma_minus8.
+                {_, Bd} = ue(Bs, 6),
+                {_, Be} = ue(Bd, 6),
                 <<_Qp:1, Scaling:1, Bf/bits>> = Be,
                 {C, Sep, scaling(Scaling, case C of 3 -> 12; _ -> 8 end, Bf)};
             false ->
                 {1, 0, B1}
         end,
-    {_, B3} = ue(B2),
-    {PocType, B4} = ue(B3),
+    %% log2_max_frame_num_minus4.
+    {_, B3} = ue(B2, 12),
+    {PocType, B4} = ue(B3, 2),
     B5 = poc(PocType, B4),
-    {_, B6} = ue(B5),
+    %% max_num_ref_frames: at most MaxDpbFrames, 16.
+    {_, B6} = ue(B5, 16),
     <<_Gaps:1, B7/bits>> = B6,
-    {WMbs, B8} = ue(B7),
-    {HMaps, B9} = ue(B8),
+    %% Picture size in macroblocks: at the largest level (6.2) a side
+    %% is at most sqrt(8 x 139264), 1055 (Annex A.3.1); 2048 is beyond
+    %% any conforming stream.
+    {WMbs, B8} = ue(B7, 2047),
+    {HMaps, B9} = ue(B8, 2047),
     <<FrameMbsOnly:1, B10/bits>> = B9,
     B11 = case FrameMbsOnly of 0 -> <<_:1, R1/bits>> = B10, R1; 1 -> B10 end,
     <<_Direct8x8:1, Crop:1, B12/bits>> = B11,
     {L, Rt, T, Bt} =
         case Crop of
             1 ->
-                {Cl, C1} = ue(B12),
-                {Cr, C2} = ue(C1),
-                {Ct, C3} = ue(C2),
-                {Cb, _} = ue(C3),
+                {Cl, C1} = ue(B12, 32767),
+                {Cr, C2} = ue(C1, 32767),
+                {Ct, C3} = ue(C2, 32767),
+                {Cb, _} = ue(C3, 32767),
                 {Cl, Cr, Ct, Cb};
             0 ->
                 {0, 0, 0, 0}
@@ -538,25 +546,36 @@ scaling_list(N, Last, _Next, B) ->
     scaling_list(N - 1, case Next of 0 -> Last; _ -> Next end, Next, B1).
 
 poc(0, B) ->
-    {_, B1} = ue(B),
+    %% log2_max_pic_order_cnt_lsb_minus4.
+    {_, B1} = ue(B, 12),
     B1;
 poc(1, B) ->
     <<_:1, B1/bits>> = B,
     {_, B2} = se(B1),
     {_, B3} = se(B2),
-    {N, B4} = ue(B3),
-    lists:foldl(fun(_, Acc) -> element(2, se(Acc)) end, B4, lists:seq(1, N));
+    %% num_ref_frames_in_pic_order_cnt_cycle: 0 to 255.
+    {N, B4} = ue(B3, 255),
+    skip_se(N, B4);
 poc(_, B) ->
     B.
 
-%% Exp-Golomb codes (§9.1).
-ue(B) -> ue(B, 0).
+skip_se(0, B) -> B;
+skip_se(N, B) -> skip_se(N - 1, element(2, se(B))).
 
-ue(<<0:1, R/bits>>, N) when N < 32 -> ue(R, N + 1);
-ue(<<1:1, R/bits>>, N) ->
+%% Exp-Golomb codes (§9.1), and one within the range of its field.
+ue(B) -> ue_(B, 0).
+
+ue(B, Max) ->
+    case ue(B) of
+        {V, _} = R when V =< Max -> R;
+        _ -> throw(bad_sps)
+    end.
+
+ue_(<<0:1, R/bits>>, N) when N < 32 -> ue_(R, N + 1);
+ue_(<<1:1, R/bits>>, N) ->
     <<V:N, R1/bits>> = R,
     {(1 bsl N) - 1 + V, R1};
-ue(_, _) ->
+ue_(_, _) ->
     throw(bad_exp_golomb).
 
 se(B) ->

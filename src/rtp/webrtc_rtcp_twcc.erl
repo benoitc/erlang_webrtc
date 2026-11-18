@@ -67,6 +67,7 @@ chunks(0, Rest, Acc) ->
         false -> {ok, Symbols, Rest}
     end;
 chunks(Count, <<0:1, S:2, Run:13, Rest/binary>>, Acc) ->
+    %% Count is the 16-bit packet status count: at most 65535 symbols.
     N = min(Run, Count),
     chunks(Count - N, Rest, [lists:duplicate(N, S) | Acc]);
 chunks(Count, <<1:1, 0:1, Bits:14/bitstring, Rest/binary>>, Acc) ->

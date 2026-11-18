@@ -289,6 +289,7 @@ operating_points(<<Timing:1, R0/bits>>) ->
             0 ->
                 {0, 0, R0}
         end,
+    %% operating_points_cnt_minus_1: 5 bits, at most 32 points.
     <<Initial:1, Count:5, R2/bits>> = R1,
     lists:foldl(fun(_, Acc) -> operating_point(Model, BufLen, Initial, Acc) end, R2, lists:seq(0, Count)).
 

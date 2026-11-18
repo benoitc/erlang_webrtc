@@ -46,6 +46,15 @@ ice_options_and_pacing_test() ->
     ?assertEqual(error, ?M:attr(ice_pacing, Answer)),
     ?assertEqual(50, ?M:ice_pacing(Answer)).
 
+%% RFC 5888 §4: a mid is unique within a description.
+duplicate_mid_test() ->
+    {ok, O, _} = webrtc_jsep:create_offer(#{}, av_data(new())),
+    [M0, M1 | Rest] = O#sdp.media,
+    Mid0 = ?M:mid(M0),
+    Dup = M1#sdp_media{attributes = [case A of {mid, _} -> {mid, Mid0}; _ -> A end || A <- M1#sdp_media.attributes]},
+    ?assertEqual({error, duplicate_mid},
+                 webrtc_jsep:set_remote_description(offer, wire(O#sdp{media = [M0, Dup | Rest]}), new())).
+
 basic_test() ->
     {ok, _, B0} = webrtc_jsep:add_transceiver(audio, #{}, new()),
     {ok, _, B1} = webrtc_jsep:add_transceiver(video, #{}, B0),

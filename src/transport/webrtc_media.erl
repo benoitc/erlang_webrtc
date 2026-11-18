@@ -58,6 +58,7 @@
     send_packet/4,
     resume/3,
     request_keyframe/3,
+    send_loss_indication/4,
     request_max_bitrate/4,
     request_pause/4,
     set_congestion_control/3,
@@ -332,6 +333,7 @@ plugin_call(F) ->
     try F() of
         {ok, _} = R -> R;
         {ok, _, _, _} = R -> R;
+        {ok, _, _, _, _} = R -> R;
         {error, _} = E -> E;
         Other -> {error, {bad_return, Other}}
     catch
@@ -478,6 +480,14 @@ keyframe_requests(Ssrcs, Now, M0) ->
     {ok, [{send, binary()}], state()} | {error, not_negotiated}.
 request_max_bitrate(Mid, Bps, Now, M) ->
     webrtc_media_limit:request(Mid, Bps, Now, M).
+
+%% @doc Send a slice loss or reference picture selection indication to
+%% the senders of a transceiver, or of one simulcast layer with
+%% `{Mid, Rid}' (RFC 4585 §6.3.2, §6.3.3), when it was negotiated.
+-spec send_loss_indication(sender_key(), webrtc_media_fb:indication(), integer(), state()) ->
+    {ok, [{send, binary()}], state()} | {error, not_negotiated}.
+send_loss_indication(Key, Fb, Now, M) ->
+    webrtc_media_fb:send(Key, Fb, Now, M).
 
 %% @doc Ask the remote sender of a transceiver, or of one simulcast
 %% layer with `{Mid, Rid}', to pause or resume its stream (RFC 7728).

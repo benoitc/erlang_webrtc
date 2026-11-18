@@ -37,6 +37,11 @@
 %%     `{pause_refused, Mid}': answers to `request_pause/2,3' and
 %%     `request_resume/2,3', with a rid for one simulcast layer.</li>
 %% <li>`{rtcp, Mid, Packet}': congestion feedback (REMB, TWCC).</li>
+%% <li>`{slice_loss, Mid, Entries}', `{reference_picture, Mid, Pt, Bits}'
+%%     (with the rid after `Mid' for a simulcast layer): the remote
+%%     decoder lost slices (SLI) or asks for a reference picture (RPSI),
+%%     RFC 8834 §5.1.3, §5.1.4. Repair or change the reference in your
+%%     encoder; a codec plugin gets them in `feedback/2'.</li>
 %% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
 %%     the target bitrate for all media sent on the connection; adapt
 %%     the encoders to it.</li>
@@ -103,6 +108,10 @@
     send_rtp_packet/4,
     request_keyframe/2,
     request_keyframe/3,
+    send_slice_loss/3,
+    send_slice_loss/4,
+    send_reference_picture/4,
+    send_reference_picture/5,
     request_max_bitrate/3,
     request_pause/2,
     request_pause/3,
@@ -468,6 +477,47 @@ request_keyframe(Pc, Mid, Opts) ->
 -spec request_max_bitrate(pc(), binary(), pos_integer() | infinity) -> ok | {error, term()}.
 request_max_bitrate(Pc, Mid, Bps) when is_integer(Bps), Bps > 0; Bps =:= infinity ->
     transport(Pc, Mid, fun(T) -> webrtc_transport:request_max_bitrate(T, Mid, Bps) end).
+
+%% @doc Tell the remote encoder of a transceiver that slices were lost
+%% (SLI, RFC 4585 §6.3.2, RFC 8834 §5.1.3): `Entries' are
+%% `{First, Number, PictureId}' (13, 13 and 6 bits). Needs `nack sli'
+%% negotiated, `{error, not_negotiated}' otherwise.
+-spec send_slice_loss(pc(), binary(), [{0..8191, 0..8191, 0..63}, ...]) -> ok | {error, term()}.
+send_slice_loss(Pc, Mid, Entries) ->
+    send_slice_loss(Pc, Mid, Entries, #{}).
+
+%% @doc `Opts': `rid' for one simulcast layer.
+-spec send_slice_loss(pc(), binary(), [{0..8191, 0..8191, 0..63}, ...], map()) -> ok | {error, term()}.
+send_slice_loss(Pc, Mid, [_ | _] = Entries, Opts) ->
+    Valid = lists:all(fun({F, N, P}) -> is_integer(F) andalso F >= 0 andalso F < 8192 andalso
+                                           is_integer(N) andalso N >= 0 andalso N < 8192 andalso
+                                           is_integer(P) andalso P >= 0 andalso P < 64;
+                         (_) -> false
+                      end, Entries),
+    case Valid of
+        true -> loss_indication(Pc, Mid, Opts, {slice_loss, Entries});
+        false -> {error, badarg}
+    end.
+
+%% @doc Ask the remote encoder of a transceiver to use a reference
+%% picture the decoder has (RPSI, RFC 4585 §6.3.3, RFC 8834 §5.1.4).
+%% `Bits' is the codec's native RPSI bit string for payload type `Pt'.
+%% Needs `nack rpsi' negotiated.
+-spec send_reference_picture(pc(), binary(), 0..127, bitstring()) -> ok | {error, term()}.
+send_reference_picture(Pc, Mid, Pt, Bits) ->
+    send_reference_picture(Pc, Mid, Pt, Bits, #{}).
+
+%% @doc `Opts': `rid' for one simulcast layer.
+-spec send_reference_picture(pc(), binary(), 0..127, bitstring(), map()) -> ok | {error, term()}.
+send_reference_picture(Pc, Mid, Pt, Bits, Opts)
+  when is_integer(Pt), Pt >= 0, Pt =< 127, is_bitstring(Bits), bit_size(Bits) > 0 ->
+    loss_indication(Pc, Mid, Opts, {reference_picture, Pt, Bits});
+send_reference_picture(_Pc, _Mid, _Pt, _Bits, _Opts) ->
+    {error, badarg}.
+
+loss_indication(Pc, Mid, Opts, Fb) ->
+    Key = layer(Mid, Opts),
+    transport(Pc, Mid, fun(T) -> webrtc_transport:send_loss_indication(T, Key, Fb) end).
 
 %% @doc Ask the remote sender of a transceiver to pause its stream
 %% (RFC 7728 PAUSE), when both sides negotiated `ccm pause'. The answer

@@ -85,6 +85,8 @@
     %% Key frame requests the stream accepts (RFC 4585 PLI, RFC 5104
     %% FIR) and the sequence number of our next FIR (§4.3.1.2).
     keyframe = [] :: [pli | fir],
+    %% Loss indications the stream negotiated (RFC 4585 §6.3.2, §6.3.3).
+    loss_fb = [] :: [sli | rpsi],
     fir_seq = 0 :: 0..255,
     %% The codec plugin decoding the frames, with the codec it was
     %% started for.

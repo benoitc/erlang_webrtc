@@ -30,6 +30,7 @@
     candidates_before_local_description/1,
     fingerprint_change_refused/1,
     max_message_size_wired/1,
+    loss_indications/1,
     ice_pacing_negotiated/1,
     tmmbr_limits_sender/1,
     fingerprint_change_ends_association/1,
@@ -73,6 +74,7 @@ all() ->
         candidates_before_local_description,
         fingerprint_change_refused,
         max_message_size_wired,
+        loss_indications,
         ice_pacing_negotiated,
         tmmbr_limits_sender,
         fingerprint_change_ends_association,
@@ -1160,6 +1162,30 @@ count_rtp(Pc, Mid, Size, N) ->
     after 0 ->
         N
     end.
+
+%% RFC 8834 §5.1.3, §5.1.4: B's decoder reports slice loss, which
+%% reaches A's owner and A's encoder plugin; B's application asks for a
+%% reference picture.
+loss_indications(_Config) ->
+    Me = self(),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true,
+                                           codec_plugins => #{video => {webrtc_test_codec, #{loss => [{slice_loss, [{0, 10, 1}]}]}}}}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{codec_plugin => {webrtc_test_codec, #{notify => Me}}, frames => true}),
+    ?S:connect(A, B),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    ok = webrtc:send_media(A, <<"1">>, {frame, D, true, 3000}),
+    {ok, _} = ?S:wait(A, fun({slice_loss, <<"1">>, [{0, 10, 1}]}) -> true; (_) -> false end, 5000),
+    receive {codec_feedback, {slice_loss, [{0, 10, 1}]}} -> ok after 5000 -> ct:fail(no_plugin_feedback) end,
+    ok = webrtc:send_reference_picture(B, <<"1">>, 96, <<16#c1, 16#c2, 16#43>>),
+    {ok, _} = ?S:wait(A, fun({reference_picture, <<"1">>, 96, <<16#c1, 16#c2, 16#43>>}) -> true; (_) -> false end, 5000),
+    receive {codec_feedback, {reference_picture, 96, _}} -> ok after 5000 -> ct:fail(no_plugin_feedback) end,
+    {error, badarg} = webrtc:send_slice_loss(B, <<"1">>, [{8192, 0, 0}]),
+    %% Audio negotiated neither.
+    {error, not_negotiated} = webrtc:send_slice_loss(B, <<"0">>, [{0, 1, 0}]),
+    webrtc:close(A),
+    webrtc:close(B).
 
 %% RFC 8841 §6: the max-message-size we announce is what SCTP accepts;
 %% the peer honours the one it was given.

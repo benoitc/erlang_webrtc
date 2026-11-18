@@ -22,6 +22,19 @@
 %% `webrtc:report_media_stats/4'. `info/1' gives
 %% `decoderImplementation' or `encoderImplementation'.
 %%
+%% Loss indications (RFC 8834 §5.1.3, §5.1.4), when the transceiver
+%% negotiated `nack sli' or `nack rpsi':
+%% <ul>
+%% <li>`decode/2' may return `{ok, Outs, Stats, State, Feedback}', with
+%%     `{slice_loss, [{First, Number, PictureId}]}',
+%%     `{reference_picture, Pt, Bits}' or `keyframe_request' in
+%%     `Feedback', for the library to send to the remote encoder.</li>
+%% <li>The optional `feedback/2' gets what the remote decoder reports
+%%     about the stream it encodes, `{slice_loss, Entries}' or
+%%     `{reference_picture, Pt, Bits}', to repair the slices or change
+%%     its reference picture.</li>
+%% </ul>
+%%
 %% A plugin that raises or returns an error is turned off for that
 %% transceiver and the owner gets `{codec_plugin_error, Mid, Reason}';
 %% frames keep coming.
@@ -39,9 +52,15 @@
 -callback init(audio | video, codec(), Opts :: term()) -> {ok, State :: term()} | {error, term()}.
 
 -callback decode(frame(), State :: term()) ->
-    {ok, [Out :: term()], Stats :: map(), State :: term()} | {error, term()}.
+    {ok, [Out :: term()], Stats :: map(), State :: term()}
+    | {ok, [Out :: term()], Stats :: map(), State :: term(), [webrtc_media_fb:indication() | keyframe_request]}
+    | {error, term()}.
 
 -callback encode(Raw :: term(), State :: term()) ->
     {ok, [frame()], Stats :: map(), State :: term()} | {error, term()}.
 
 -callback info(State :: term()) -> #{implementation => binary(), power_efficient => boolean()}.
+
+-callback feedback(webrtc_media_fb:indication(), State :: term()) -> {ok, State :: term()} | {error, term()}.
+
+-optional_callbacks([feedback/2]).

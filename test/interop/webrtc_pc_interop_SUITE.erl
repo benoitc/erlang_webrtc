@@ -38,7 +38,8 @@
     peer_sends_audio_level/1,
     peer_sends_frames/1,
     video_stats_agree/1,
-    erlang_sends_video_fec/1
+    erlang_sends_video_fec/1,
+    slice_loss_indications/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -68,7 +69,8 @@ cases() ->
         peer_sends_audio_level,
         peer_sends_frames,
         video_stats_agree,
-        erlang_sends_video_fec
+        erlang_sends_video_fec,
+        slice_loss_indications
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -342,6 +344,30 @@ erlang_sends_media(Config) ->
             ok
     end,
     put(peer, P2).
+
+%% RFC 8834 §5.1.3: SLI both ways with pion/rtcp's implementation of
+%% RFC 4585 §6.3.2. Browsers and aiortc do not implement SLI.
+slice_loss_indications(Config) ->
+    case ?config(peer, Config) of
+        pion -> slice_loss_indications1(Config);
+        _ -> {skip, "the peer does not implement SLI"}
+    end.
+
+slice_loss_indications1(Config) ->
+    {Pc, P0} = start(Config),
+    {ok, _} = webrtc:add_transceiver(Pc, video, #{}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"video">>]}),
+    ?assertNotEqual(nomatch, binary:match(webrtc:remote_description(Pc), <<"nack sli">>)),
+    [ok = webrtc:send_rtp(Pc, <<"0">>, <<N, 0, 0>>, #{timestamp => N * 3000, marker => true}) || N <- lists:seq(1, 20)],
+    {ok, P2, _} = ?P:wait_event(P1, <<"rtp">>, #{<<"kind">> => <<"video">>}),
+    %% Pion to us: it names the stream we send.
+    P3 = ?P:cmd(P2, #{cmd => send_rtcp, kind => sli}),
+    {slice_loss, <<"0">>, [{1, 2, 3}]} = wait_erlang(Pc, fun({slice_loss, <<"0">>, _}) -> true; (_) -> false end),
+    %% Us to Pion, on the stream it echoes back.
+    _ = wait_erlang(Pc, fun({rtp, <<"0">>, #rtp{}}) -> true; (_) -> false end),
+    ok = webrtc:send_slice_loss(Pc, <<"0">>, [{100, 7, 42}]),
+    {ok, P4, _} = ?P:wait_event(P3, <<"rtcp">>, #{<<"type">> => <<"sli">>, <<"entries">> => [[100, 7, 42]]}),
+    put(peer, P4).
 
 %% The W3C statistics of both sides agree on the streams between them:
 %% what one side sent, the other received (loopback, no loss), counted

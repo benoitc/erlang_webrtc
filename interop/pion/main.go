@@ -42,6 +42,7 @@ type command struct {
 	Binary     bool          `json:"binary"`
 	AllIfaces  bool          `json:"all_interfaces"`
 	Simulcast  bool          `json:"simulcast"`
+	Kind       string        `json:"kind"`
 	channelSpec
 }
 
@@ -53,6 +54,10 @@ var (
 	channels = map[string]*webrtc.DataChannel{}
 	tracks   = map[string]*webrtc.TrackLocalStaticRTP{}
 	media    []string
+	// SSRC of the video stream the Erlang side sends, for the RTCP the
+	// send_rtcp command addresses to it.
+	remoteMu    sync.Mutex
+	remoteVideo uint32
 )
 
 // addTracks attaches local tracks once the role is known: before the
@@ -76,12 +81,48 @@ func addTracks() error {
 		if err != nil {
 			return err
 		}
-		if _, err := pc.AddTrack(t); err != nil {
+		s, err := pc.AddTrack(t)
+		if err != nil {
 			return err
 		}
 		tracks[kind] = t
+		go readSenderRTCP(kind, s)
 	}
 	return nil
+}
+
+// readSenderRTCP reports the feedback the Erlang side sends about our
+// track (the interceptors need it read in any case).
+func readSenderRTCP(kind string, s *webrtc.RTPSender) {
+	for {
+		pkts, _, err := s.ReadRTCP()
+		if err != nil {
+			return
+		}
+		for _, p := range pkts {
+			if sli, ok := p.(*rtcp.SliceLossIndication); ok {
+				entries := [][]int{}
+				for _, e := range sli.SLI {
+					entries = append(entries, []int{int(e.First), int(e.Number), int(e.Picture)})
+				}
+				emit(map[string]any{"event": "rtcp", "kind": kind, "type": "sli", "ssrc": sli.MediaSSRC, "entries": entries})
+			}
+		}
+	}
+}
+
+// sendRTCP sends feedback about the video stream the Erlang side sends.
+func sendRTCP(kind string) error {
+	remoteMu.Lock()
+	ssrc := remoteVideo
+	remoteMu.Unlock()
+	switch kind {
+	case "sli":
+		return pc.WriteRTCP([]rtcp.Packet{&rtcp.SliceLossIndication{MediaSSRC: ssrc,
+			SLI: []rtcp.SLIEntry{{First: 1, Number: 2, Picture: 3}}}})
+	default:
+		return fmt.Errorf("unknown rtcp kind %q", kind)
+	}
 }
 
 func emit(ev map[string]any) {
@@ -180,6 +221,10 @@ func handle(c command) error {
 		if dc != nil {
 			return dc.Close()
 		}
+	case "send_rtcp":
+		if err := sendRTCP(c.Kind); err != nil {
+			fail(err)
+		}
 	case "stats":
 		emit(map[string]any{"event": "stats", "stats": pc.GetStats()})
 	case "close":
@@ -203,6 +248,9 @@ func initPC(c command) error {
 	if err := m.RegisterDefaultCodecs(); err != nil {
 		return err
 	}
+	// Slice loss indications (RFC 4585 §6.3.2), for the interop of
+	// RFC 8834 §5.1.3.
+	m.RegisterFeedback(webrtc.RTCPFeedback{Type: "nack", Parameter: "sli"}, webrtc.RTPCodecTypeVideo)
 	if c.Simulcast {
 		// Simulcast receive: layers are identified by MID and rid
 		// header extensions (RFC 8852), RTX streams by repaired-rid.
@@ -313,6 +361,9 @@ func onTrack(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 		"codec": remote.Codec().MimeType, "rid": rid})
 	local := tracks[kind]
 	if remote.Kind() == webrtc.RTPCodecTypeVideo {
+		remoteMu.Lock()
+		remoteVideo = uint32(remote.SSRC())
+		remoteMu.Unlock()
 		// The echo goes to a receiver whose keyframe requests are not
 		// forwarded to the sender, so ask for keyframes regularly.
 		go func() {

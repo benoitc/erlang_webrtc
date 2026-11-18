@@ -124,7 +124,7 @@ xr_block() ->
     ]).
 
 rtpfb_raw_fmt() -> oneof([0, 2, 5, 6, 7, 8, 10, 12, 13, 14, 16, 31]).
-psfb_raw_fmt() -> oneof([0, 3, 5, 6, 7, 8, 14, 16, 31]).
+psfb_raw_fmt() -> oneof([0, 5, 6, 7, 8, 14, 16, 31]).
 
 rtcp_packet() ->
     oneof([
@@ -179,6 +179,11 @@ rtcp_packet() ->
             {S, M, E},
             {u(32), u(32), non_empty(list({u(13), u(13), u(6)}))},
             #rtcp_sli{sender_ssrc = S, media_ssrc = M, entries = E}
+        ),
+        ?LET(
+            {S, M, Pt, N},
+            {u(32), u(32), u(7), integer(1, 200)},
+            ?LET(Bits, bitstring(N), #rtcp_rpsi{sender_ssrc = S, media_ssrc = M, pt = Pt, bits = Bits})
         ),
         ?LET(
             {S, M, E},

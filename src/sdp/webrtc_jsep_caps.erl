@@ -83,6 +83,10 @@ default_codecs(video) ->
         ?FB(<<"ccm">>, <<"tmmbr">>),
         ?FB(<<"nack">>),
         ?FB(<<"nack">>, <<"pli">>),
+        %% RFC 8834 §5.1.3, §5.1.4: handed to the application or the
+        %% codec plugin (webrtc_media_fb).
+        ?FB(<<"nack">>, <<"sli">>),
+        ?FB(<<"nack">>, <<"rpsi">>),
         %% RFC 7728 pause and resume; point to point, so no hold-off.
         ?FB(<<"ccm">>, <<"pause nowait">>)
     ],

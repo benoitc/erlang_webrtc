@@ -511,13 +511,20 @@ frames(Mid, Ssrc, Fun, Now, M) ->
                                      end},
                         {Decoded, MB} = decode(Mid, Ssrc, F, MA),
                         {Acc ++ [Ev | Decoded], MB};
+                   ({plugin_feedback, _} = Pf, {Acc, MA}) ->
+                        {Acc ++ [Pf], MA};
                    (_, Acc) ->
                         Acc
                 end,
                 {[], M1},
                 Actions
             ),
-            frames_feedback(Actions, Ssrc, Events, Now, M1a);
+            {PluginFb, Events1} = lists:partition(fun(E) -> element(1, E) =:= plugin_feedback end, Events),
+            Fbs = lists:append([F || {plugin_feedback, F} <- PluginFb]),
+            Keyframe = [request_keyframe || lists:member(keyframe_request, Fbs)],
+            Loss = webrtc_media_fb:packets(Ssrc, [F || F <- Fbs, F =/= keyframe_request], M1a),
+            {Sent, M1b} = webrtc_media_out:send_feedback(Loss, Now, M1a),
+            frames_feedback(Actions ++ Keyframe, Ssrc, Events1 ++ Sent, Now, M1b);
         _ ->
             {[], M}
     end.
@@ -555,10 +562,10 @@ decode(Mid, Ssrc, #{codec := Name} = F, M) ->
                 {ok, St0} ->
                     case webrtc_media:plugin_call(fun() -> Mod:decode(F, St0) end) of
                         {ok, Outs, Stats, St1} ->
-                            M1 = set_plugin(Ssrc, {Mod, St1, Name}, M),
-                            Info = webrtc_media:plugin_info(decoder, Mod, St1),
-                            {[{event, {decoded, Mid, Out}} || Out <- Outs],
-                             webrtc_media:report_stream(in, Ssrc, inbound, maps:merge(Stats, Info), M1)};
+                            decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St1, [], M);
+                        {ok, Outs, Stats, St1, Feedback} when is_list(Feedback) ->
+                            %% Loss the decoder found, to send (RFC 8834 §5.1.3, §5.1.4).
+                            decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St1, Feedback, M);
                         {error, Reason} ->
                             {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
                     end;
@@ -566,6 +573,12 @@ decode(Mid, Ssrc, #{codec := Name} = F, M) ->
                     {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
             end
     end.
+
+decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St1, Feedback, M) ->
+    M1 = set_plugin(Ssrc, {Mod, St1, Name}, M),
+    Info = webrtc_media:plugin_info(decoder, Mod, St1),
+    {[{event, {decoded, Mid, Out}} || Out <- Outs] ++ [{plugin_feedback, Feedback} || Feedback =/= []],
+     webrtc_media:report_stream(in, Ssrc, inbound, maps:merge(Stats, Info), M1)}.
 
 set_plugin(Ssrc, P, M) ->
     R = maps:get(Ssrc, M#media.receivers),
@@ -625,6 +638,7 @@ new_receiver(Mid, Ssrc, Pt, M) ->
                 false -> undefined
             end,
         keyframe = [pli || Has(<<"nack">>, <<"pli">>)] ++ [fir || Has(<<"ccm">>, <<"fir">>)],
+        loss_fb = webrtc_media_fb:receiver_kinds(Codecs),
         frames =
             case maps:get(frames, Sec, false) of
                 false ->
@@ -741,6 +755,8 @@ rtcp_packet2(#rtcp_bye{ssrcs = Ssrcs}, Now, M) ->
     {lists:foldl(fun forget/2, M1, Ssrcs), Events ++ Acts};
 rtcp_packet2(#rtcp_tmmbr{sender_ssrc = From, entries = Entries}, Now, M) ->
     webrtc_media_limit:tmmbr(From, Entries, Now, webrtc_media_limit:touch(From, Now, M));
+rtcp_packet2(P, _Now, M) when is_record(P, rtcp_sli); is_record(P, rtcp_rpsi) ->
+    webrtc_media_fb:received(P, M);
 rtcp_packet2(#rtcp_tmmbn{} = N, _Now, M) ->
     {webrtc_media_limit:tmmbn(N, M), []};
 rtcp_packet2(#rtcp_xr{ssrc = From, blocks = Blocks}, _Now, M) ->

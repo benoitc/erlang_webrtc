@@ -14,3 +14,4 @@
 | SEC-10 | | Floods of invalid STUN or random datagrams do not grow state or break the session | webrtc_transport, webrtc_ice_agent | webrtc_security_SUITE | E2E tested |
 | SEC-11 | 8827 §5 | Identity assertions (IdP) | | | Not implemented (browser identity provider API, out of scope for a library peer) |
 | SEC-12 | 8827 §6.5 | SRTP MKI not used | webrtc_srtp | srtp.md | Unit tested |
+| SEC-13 | 8827 §4 | Keys and credentials stay out of logs: crash reports and `sys:get_status/1` of the peer connection and transport show a summary, the last message's tag, a reason without values and a stack trace without arguments, and no queued message | webrtc_redact, webrtc_pc, webrtc_transport | webrtc_security_SUITE:no_secrets_in_crash_logs | E2E tested (DTLS private key, local and remote ICE passwords, TURN credential) |

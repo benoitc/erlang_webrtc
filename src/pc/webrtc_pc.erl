@@ -8,7 +8,7 @@
 -include("webrtc_ice.hrl").
 
 -export([start_link/1]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, format_status/1]).
 
 -record(st, {
     app :: pid(),
@@ -87,7 +87,24 @@ init(#{owner := App} = Opts0) ->
     end,
     {ok, #st{app = App, app_mon = monitor(process, App), opts = Opts, cert = Cert, jsep = Jsep, signaler = Signaler}}.
 
-handle_call({add_transceiver, Kind, TOpts}, _From, St) ->
+
+%% Callbacks run through webrtc_redact:guard/2: a crash stops the
+%% process with a reason that carries no state (keys, credentials).
+handle_call(Msg, From, St) -> webrtc_redact:guard(fun() -> call_(Msg, From, St) end, St).
+handle_cast(Msg, St) -> webrtc_redact:guard(fun() -> cast_(Msg, St) end, St).
+handle_info(Msg, St) -> webrtc_redact:guard(fun() -> info_(Msg, St) end, St).
+
+%% Crash reports and sys:get_status/1 show a summary, never the state.
+format_status(Status) ->
+    webrtc_redact:status(case Status of #{state := #st{} = St} -> summary(St); _ -> #{} end, Status).
+
+summary(St) ->
+    #{owner => St#st.app, transport => St#st.transport, extra_transports => maps:keys(St#st.extra),
+      signaling => try webrtc_jsep:signaling_state(St#st.jsep) catch _:_ -> unknown end, ice => St#st.ice_state,
+      gathering => St#st.gathering, dtls => St#st.dtls_state, connection => St#st.connection,
+      auto_restarts => St#st.auto_restarts}.
+
+call_({add_transceiver, Kind, TOpts}, _From, St) ->
     case webrtc_jsep:add_transceiver(Kind, TOpts, St#st.jsep) of
         {ok, Id, J} ->
             notify(negotiation_needed, St),
@@ -95,13 +112,13 @@ handle_call({add_transceiver, Kind, TOpts}, _From, St) ->
         {error, _} = E ->
             {reply, E, St}
     end;
-handle_call({set_direction, Id, Dir}, _From, St) ->
+call_({set_direction, Id, Dir}, _From, St) ->
     reply_jsep(webrtc_jsep:set_direction(Id, Dir, St#st.jsep), St);
-handle_call({stop_transceiver, Id}, _From, St) ->
+call_({stop_transceiver, Id}, _From, St) ->
     reply_jsep(webrtc_jsep:stop_transceiver(Id, St#st.jsep), St);
-handle_call(transceivers, _From, St) ->
+call_(transceivers, _From, St) ->
     {reply, webrtc_jsep:transceivers(St#st.jsep), St};
-handle_call({create_data_channel, Label, COpts}, _From, St) ->
+call_({create_data_channel, Label, COpts}, _From, St) ->
     J = webrtc_jsep:add_data_channel(St#st.jsep),
     St1 = St#st{jsep = J},
     case St1#st.sctp_up of
@@ -119,41 +136,41 @@ handle_call({create_data_channel, Label, COpts}, _From, St) ->
             end,
             {reply, Reply, St1#st{pending_channels = St1#st.pending_channels ++ [{Label, COpts}]}}
     end;
-handle_call({create_offer, Opts}, _From, St) ->
+call_({create_offer, Opts}, _From, St) ->
     reply_sdp(create(offer, Opts, St), St);
-handle_call({create_answer, Opts}, _From, St) ->
+call_({create_answer, Opts}, _From, St) ->
     reply_sdp(create(answer, Opts, St), St);
-handle_call({set_local_description, Type, Sdp}, _From, St) ->
+call_({set_local_description, Type, Sdp}, _From, St) ->
     reply_set(set_local(Type, Sdp, St), St);
-handle_call({set_remote_description, Type, Sdp}, _From, St) ->
+call_({set_remote_description, Type, Sdp}, _From, St) ->
     reply_set(set_remote(Type, Sdp, St), St);
-handle_call({add_ice_candidate, Cand, Mid}, From, St) ->
+call_({add_ice_candidate, Cand, Mid}, From, St) ->
     case extra_of_mid(Mid, St) of
         {ok, #{pid := T}} when Cand =:= end_of_candidates -> {reply, webrtc_transport:end_of_candidates(T), St};
         {ok, #{pid := T}} -> {reply, webrtc_transport:add_remote_candidate(T, Cand), St};
-        error -> handle_call({add_ice_candidate, Cand}, From, St)
+        error -> call_({add_ice_candidate, Cand}, From, St)
     end;
-handle_call({add_ice_candidate, Cand}, _From, St) ->
+call_({add_ice_candidate, Cand}, _From, St) ->
     case webrtc_jsep:remote_view(St#st.jsep) of
         %% RFC 9429 §4.1.17: candidates need a remote description.
         undefined -> {reply, {error, no_remote_description}, St};
         _ -> add_candidate(Cand, St)
     end;
-handle_call(restart_ice, _From, St) ->
+call_(restart_ice, _From, St) ->
     {reply, ok, restart_now(St)};
-handle_call(transport_pid, _From, #st{transport = T} = St) when is_pid(T) ->
+call_(transport_pid, _From, #st{transport = T} = St) when is_pid(T) ->
     {reply, {ok, T}, St};
-handle_call(transport_pid, _From, St) ->
+call_(transport_pid, _From, St) ->
     {reply, {error, not_connected}, St};
-handle_call(local_description, _From, St) ->
+call_(local_description, _From, St) ->
     {reply, encode_opt(webrtc_jsep:local_description(St#st.jsep)), St};
-handle_call(remote_description, _From, St) ->
+call_(remote_description, _From, St) ->
     {reply, encode_opt(webrtc_jsep:remote_description(St#st.jsep)), St};
-handle_call(signaling_state, _From, St) ->
+call_(signaling_state, _From, St) ->
     {reply, webrtc_jsep:signaling_state(St#st.jsep), St};
-handle_call(connection_state, _From, St) ->
+call_(connection_state, _From, St) ->
     {reply, St#st.connection, St};
-handle_call({get_stats, w3c}, _From, St) ->
+call_({get_stats, w3c}, _From, St) ->
     Transports =
         [{K, webrtc_transport:stats(T)} || {K, T} <- [{0, St#st.transport} || is_pid(St#st.transport)]] ++
             [{K, webrtc_transport:stats(P)} || K := #{pid := P} <- St#st.extra],
@@ -167,7 +184,7 @@ handle_call({get_stats, w3c}, _From, St) ->
         transports => Transports,
         servers => stats_servers(St#st.opts)
     }), St};
-handle_call(get_stats, _From, St) ->
+call_(get_stats, _From, St) ->
     Transport =
         case St#st.transport of
             undefined -> undefined;
@@ -176,7 +193,7 @@ handle_call(get_stats, _From, St) ->
     Extra = #{K => webrtc_transport:stats(P) || K := #{pid := P} <- St#st.extra},
     {reply, #{connection_state => St#st.connection, ice_state => St#st.ice_state, transport => Transport,
               transports => Extra}, St};
-handle_call({controlling_process, Pid}, _From, St) ->
+call_({controlling_process, Pid}, _From, St) ->
     demonitor(St#st.app_mon, [flush]),
     case St#st.transport of
         undefined -> ok;
@@ -184,26 +201,26 @@ handle_call({controlling_process, Pid}, _From, St) ->
     end,
     _ = [ok = webrtc_transport:set_app(X, Pid) || _ := #{pid := X} <- St#st.extra],
     {reply, ok, St#st{app = Pid, app_mon = monitor(process, Pid)}};
-handle_call(close, _From, St) ->
+call_(close, _From, St) ->
     {stop, normal, ok, close_now(St)}.
 
-handle_cast(_Msg, St) ->
+cast_(_Msg, St) ->
     {noreply, St}.
 
-handle_info({webrtc_transport, T, Event}, #st{transport = T} = St) ->
+info_({webrtc_transport, T, Event}, #st{transport = T} = St) ->
     {noreply, transport_event(Event, St)};
-handle_info({webrtc_transport, T, Event}, St) ->
+info_({webrtc_transport, T, Event}, St) ->
     case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
         [K] -> {noreply, extra_event(K, Event, St)};
         [] -> {noreply, St}
     end;
-handle_info({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
+info_({'DOWN', Ref, process, _, _}, #st{app_mon = Ref} = St) ->
     {stop, normal, close_now(St)};
-handle_info({'EXIT', T, Reason}, #st{transport = T} = St) ->
+info_({'EXIT', T, Reason}, #st{transport = T} = St) ->
     ets:delete(webrtc_transports, self()),
     notify({connection_state, failed}, St),
     {stop, {transport_exit, Reason}, St#st{transport = undefined}};
-handle_info({'EXIT', T, Reason}, St) ->
+info_({'EXIT', T, Reason}, St) ->
     case [K || K := #{pid := P} <- St#st.extra, P =:= T] of
         [_] ->
             notify({connection_state, failed}, St),
@@ -211,7 +228,7 @@ handle_info({'EXIT', T, Reason}, St) ->
         [] ->
             {noreply, St}
     end;
-handle_info({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
+info_({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
     St = St0#st{restart_timer = undefined},
     Busy = St#st.local_restart orelse St#st.ice_pending =/= undefined,
     case troubled(St) of
@@ -223,7 +240,7 @@ handle_info({auto_restart, Ref}, #st{restart_timer = Ref} = St0) ->
         _ ->
             {noreply, update_connection(St)}
     end;
-handle_info(_Other, St) ->
+info_(_Other, St) ->
     {noreply, St}.
 
 %% New ICE credentials for every transport; the application sends the
@@ -283,7 +300,9 @@ recovering(#st{opts = O, auto_restarts = N}) ->
 
 terminate(_Reason, St) ->
     _ = close_now(St),
-    ok.
+    %% A crash report lists the messages still queued: calls carrying
+    %% descriptions (ICE passwords) and candidates go first.
+    webrtc_redact:flush().
 
 %% The transport starts with our local description; until then trickled
 %% candidates are kept (bounded).

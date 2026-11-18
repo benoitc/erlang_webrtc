@@ -8,6 +8,7 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([
+    no_secrets_in_crash_logs/1,
     spoofed_traffic_dropped/1,
     unauthenticated_stun_flood/1,
     garbage_flood/1,
@@ -35,7 +36,8 @@ all() ->
         stuck_transport_killed_on_close,
         turn_allocation_deleted_on_close,
         nothing_sent_after_peer_close,
-        no_state_in_caller
+        no_state_in_caller,
+        no_secrets_in_crash_logs
     ].
 
 init_per_suite(Config) ->
@@ -306,3 +308,46 @@ no_state_in_caller(_Config) ->
     ],
     ?assertEqual(Dict0, get()),
     ?assertEqual([], [P || P <- Pcs, ets:lookup(webrtc_transports, P) =/= []]).
+
+%% A crashing peer connection or transport, and sys:get_status/1, show
+%% neither the DTLS private key nor the ICE and TURN credentials.
+no_secrets_in_crash_logs(_Config) ->
+    Turn = <<"turn-credential-0d9c2e">>,
+    Cert = webrtc_dtls_cert:generate(),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, certificate => Cert,
+                                           ice_servers => [#{urls => [<<"turn:127.0.0.1:9?transport=udp">>],
+                                                             username => <<"u">>, credential => Turn}]}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true}),
+    ok = webrtc:create_data_channel(A, <<"x">>, #{}),
+    ?S:connect(A, B),
+    {match, [LocalPwd]} = re:run(webrtc:local_description(A), <<"a=ice-pwd:(\\S+)">>, [{capture, all_but_first, binary}]),
+    {match, [RemotePwd]} = re:run(webrtc:remote_description(A), <<"a=ice-pwd:(\\S+)">>, [{capture, all_but_first, binary}]),
+    #{key := Key} = Cert,
+    KeyDer = public_key:der_encode('ECPrivateKey', Key),
+    Secrets = [LocalPwd, RemotePwd, Turn, <<"ECPrivateKey">>, base64:encode(KeyDer),
+               iolist_to_binary(io_lib:format("~w", [binary:part(KeyDer, 7, 16)]))],
+    [{A, T}] = ets:lookup(webrtc_transports, A),
+    Status = iolist_to_binary(io_lib:format("~p~n~p", [sys:get_status(A), sys:get_status(T)])),
+    ok = webrtc_test_log:capture(secrets),
+    try
+        process_flag(trap_exit, true),
+        %% An unknown call: function_clause with the state as argument.
+        Crash = fun(P, M) -> try gen_server:call(P, M) catch exit:_ -> ok end end,
+        Crash(T, {bogus, LocalPwd}),
+        Crash(A, {bogus, RemotePwd}),
+        Logs = collect_logs(<<>>, 3000),
+        ct:log("~s", [Logs]),
+        ?assertNotEqual(<<>>, Logs),
+        [?assertEqual(nomatch, binary:match(Logs, S), S) || S <- Secrets],
+        [?assertEqual(nomatch, binary:match(Status, S), S) || S <- Secrets]
+    after
+        webrtc_test_log:release(secrets),
+        webrtc:close(B)
+    end.
+
+collect_logs(Acc, Wait) ->
+    receive
+        {log, L} -> collect_logs(<<Acc/binary, L/binary>>, 500)
+    after Wait ->
+        Acc
+    end.

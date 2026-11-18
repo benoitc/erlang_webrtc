@@ -151,9 +151,9 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
 
 %% Callbacks run through webrtc_redact:guard/2: a crash stops the
 %% process with a reason that carries no state (keys, credentials).
-handle_call(Msg, From, St) -> webrtc_redact:guard(fun() -> call_(Msg, From, St) end, St).
-handle_cast(Msg, St) -> webrtc_redact:guard(fun() -> cast_(Msg, St) end, St).
-handle_info(Msg, St) -> webrtc_redact:guard(fun() -> info_(Msg, St) end, St).
+handle_call(Msg, From, St) -> webrtc_redact:guard(fun() -> call_(Msg, From, St) end, St, fun summary/1).
+handle_cast(Msg, St) -> webrtc_redact:guard(fun() -> cast_(Msg, St) end, St, fun summary/1).
+handle_info(Msg, St) -> webrtc_redact:guard(fun() -> info_(Msg, St) end, St, fun summary/1).
 
 %% Crash reports and sys:get_status/1 show a summary, never the state.
 format_status(Status) ->

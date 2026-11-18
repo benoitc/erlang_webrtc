@@ -609,7 +609,9 @@ close(Pc) ->
         call(Pc, close)
     catch
         exit:{noproc, _} -> ok;
-        exit:{normal, _} -> ok
+        exit:{normal, _} -> ok;
+        exit:{shutdown, _} -> ok;
+        exit:{{shutdown, _}, _} -> ok
     end.
 
 call(Pc, Msg) ->
@@ -635,7 +637,8 @@ transport(Pc, F) ->
                 {ok, T} -> run_transport(Pc, T, F);
                 {error, _} = E -> E
             catch
-                exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown ->
+                exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown;
+                                tuple_size(Reason) =:= 2, element(1, Reason) =:= shutdown ->
                     {error, closed}
             end
     end.
@@ -644,7 +647,8 @@ run_transport(Pc, T, F) ->
     try
         F(T)
     catch
-        exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown ->
+        exit:{Reason, _} when Reason =:= noproc; Reason =:= normal; Reason =:= shutdown;
+                                tuple_size(Reason) =:= 2, element(1, Reason) =:= shutdown ->
             ets:delete_object(webrtc_transports, {Pc, T}),
             {error, closed}
     end.

@@ -15,6 +15,8 @@
 -define(RECV_IDLE, 60000).
 -define(MAX_MID_STREAMS, 16).
 -define(MAX_STREAMS, 256).
+%% Ended receive streams whose statistics are still reported.
+-define(MAX_ENDED, 16).
 %% Size limit of an RTCP compound before SRTCP (tag and index), so the
 %% protected packet stays within a 1200 byte path MTU.
 -define(RTCP_BUDGET, 1150).
@@ -149,6 +151,11 @@
     %% DSCPs found blocked on the path (RFC 8835 §4.2): their flows go
     %% unmarked.
     dscp_off = [] :: [0..63],
+    %% Receive streams that ended (BYE, idle), newest first: their last
+    %% statistics, still reported until W3C deletes them (another SSRC
+    %% on the same mid and rid, the transceiver stopped), at most
+    %% ?MAX_ENDED: {Ssrc, ReceiverInfo, StreamEntry}.
+    ended = [] :: [{non_neg_integer(), map(), map()}],
     %% Our TMMBR requests per mid: the bit rate and the senders whose
     %% TMMBN answered them (webrtc_media_limit).
     limit_req = #{} :: #{binary() => {pos_integer() | infinity, [non_neg_integer()]}},

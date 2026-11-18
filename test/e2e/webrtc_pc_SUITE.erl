@@ -2,6 +2,7 @@
 %% ICE, DTLS, SRTP, RTP/RTCP, SCTP and data channels end to end.
 -module(webrtc_pc_SUITE).
 -include_lib("common_test/include/ct.hrl").
+-include_lib("webrtc/src/transport/webrtc_transport.hrl").
 -include_lib("stdlib/include/assert.hrl").
 -include("webrtc_rtp.hrl").
 -include("webrtc_ice.hrl").
@@ -32,6 +33,7 @@
     max_message_size_wired/1,
     loss_indications/1,
     dscp_marking/1,
+    dscp_tcp_connection/1,
     ice_pacing_negotiated/1,
     tmmbr_limits_sender/1,
     fingerprint_change_ends_association/1,
@@ -77,6 +79,7 @@ all() ->
         max_message_size_wired,
         loss_indications,
         dscp_marking,
+        dscp_tcp_connection,
         ice_pacing_negotiated,
         tmmbr_limits_sender,
         fingerprint_change_ends_association,
@@ -1094,6 +1097,36 @@ ice_tcp_only(_Config) ->
     ?assertEqual({tcp, tcp}, {element(4, L), element(4, R)}),
     webrtc:close(A),
     webrtc:close(B).
+
+%% RFC 8837 §5: every packet of a TCP connection carries one DSCP, the
+%% highest of the flows it carries (EF for high priority audio over the
+%% AF21 data channel). Read back from the operating system.
+dscp_tcp_connection(_Config) ->
+    NoUdp = fun() -> webrtc_impair:filter(#{only_to => []}) end,
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, ice_tcp => true, outbound_filter => NoUdp()}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, ice_tcp => true, outbound_filter => NoUdp()}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{priority => high}),
+    {ok, _} = webrtc:add_transceiver(B, audio, #{}),
+    ok = webrtc:create_data_channel(A, <<"tcp">>, #{priority => high}),
+    ?S:connect(A, B, 20000),
+    _ = channel_id(A, <<"tcp">>),
+    ok = webrtc:send_rtp(A, <<"0">>, <<"marked">>, #{timestamp => 1}),
+    _ = rtp(B, <<"0">>, <<"marked">>),
+    [{_, T}] = ets:lookup(webrtc_transports, A),
+    %% The transport's TCP connections.
+    Socks = [{K, S} || #{kind := K, sock := S} <- maps:values(stream_map(T))],
+    ct:log("A's connections: ~p", [Socks]),
+    ?assertMatch([_ | _], Socks),
+    [?assertEqual({ok, [{tos, 184}]}, getopt(K, S)) || {K, S} <- Socks],
+    webrtc:close(A),
+    webrtc:close(B).
+
+stream_map(T) ->
+    St = sys:get_state(T),
+    St#st.streams.
+
+getopt(tcp, S) -> inet:getopts(S, [tos]);
+getopt(tls, S) -> ssl:getopts(S, [tos]).
 
 selected_pair(Pc) ->
     #{transport := #{ice := #{pairs := Pairs}}} = webrtc:get_stats(Pc),

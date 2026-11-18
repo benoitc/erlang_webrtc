@@ -212,7 +212,8 @@ from(Ssrc, Seq, {Tx, MidId, Pt}) ->
     {ok, Bin, Tx1} = webrtc_srtp:protect_rtp(webrtc_rtp:encode(Pkt), Tx),
     {Bin, setelement(1, {Tx, MidId, Pt}, Tx1)}.
 
-receivers(S) -> maps:size(maps:get(receivers, webrtc_media:stats(S))).
+%% Live receive streams (ended ones are still reported, marked).
+receivers(S) -> length([x || _ := R <- maps:get(receivers, webrtc_media:stats(S)), not maps:get(ended, R, false)]).
 
 counter(K, S) -> maps:get(K, maps:get(counters, webrtc_media:stats(S)), 0).
 

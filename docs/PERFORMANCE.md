@@ -95,4 +95,6 @@ Scheduler utilization under many concurrent media streams, recovery time after l
 
 The lifecycle suite (`webrtc_lifecycle_SUITE`) checks the same return to the baseline in CI. It covers close, owner exit, kill of a peer connection or a transport, an application restart, a stuck codec plugin, and 200 abandoned and 200 short-lived connections.
 
-Not covered: multi-day runs, scheduler stress, forced VM resource exhaustion and distributed nodes.
+The lifecycle suite also connects 40 pairs at once on a single scheduler and then on all of them, and drives a peer connection from another node: data and statistics from a node that does not run the application, and an owner there whose node goes away.
+
+Not covered: multi-day runs (`make soak DURATION=...` runs as long as asked) and forced VM resource exhaustion.

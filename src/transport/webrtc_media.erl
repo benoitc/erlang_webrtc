@@ -68,7 +68,8 @@
     handle_packet/4,
     handle_timeout/2,
     next_timeout/1,
-    stats/1
+    stats/1,
+    receiver_info/3
 ]).
 
 -export_type([state/0, sender_key/0]).
@@ -161,6 +162,8 @@ configure(Sections, #media{} = M) ->
         twcc_ids = TwccIds,
         cc = Cc,
         recv = Recv,
+        %% W3C: a stopped transceiver's streams are deleted.
+        ended = [E || {_, #{mid := Mi}, _} = E <- M#media.ended, is_map_key(Mi, Recv)],
         %% Learned SSRCs are kept while their stream is live.
         ssrc_mid = maps:merge(maps:with(maps:keys(M#media.last_seen), M#media.ssrc_mid), SsrcMid),
         signaled = SsrcMid,
@@ -641,22 +644,24 @@ stats(#media{} = M) ->
         ),
         sources => M#media.sources,
         playouts => M#media.playouts,
-        receivers => maps:map(
-            fun(Ssrc, R) ->
-                Info = (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)},
-                Info1 = case R#rcv.fec of
-                            undefined -> Info;
-                            F -> Info#{fec => webrtc_ulpfec:stats(F)}
-                        end,
-                case R#rcv.frames of
-                    undefined -> Info1;
-                    Fb -> Info1#{frames => webrtc_frame_buffer:stats(Fb)}
-                end
-            end,
-            M#media.receivers
-        ),
-        streams => M#media.streams
+        %% Ended streams too, until W3C deletes them.
+        receivers => maps:merge(maps:from_list([{S, I} || {S, I, _} <- M#media.ended]),
+                                maps:map(fun(Ssrc, R) -> receiver_info(Ssrc, R, M) end, M#media.receivers)),
+        streams => maps:merge(maps:from_list([{{in, S}, E} || {S, _, E} <- M#media.ended]), M#media.streams)
     }.
+
+%% @doc What the statistics show of a receive stream.
+-spec receiver_info(non_neg_integer(), #rcv{}, #media{}) -> map().
+receiver_info(Ssrc, R, M) ->
+    Info = (webrtc_rtp_stats:rx_info(R#rcv.rx))#{mid => R#rcv.mid, rid => webrtc_media_rid:rid(Ssrc, M#media.rids)},
+    Info1 = case R#rcv.fec of
+                undefined -> Info;
+                F -> Info#{fec => webrtc_ulpfec:stats(F)}
+            end,
+    case R#rcv.frames of
+        undefined -> Info1;
+        Fb -> Info1#{frames => webrtc_frame_buffer:stats(Fb)}
+    end.
 
 %% The place of a simulcast layer in the section's send encodings
 %% (W3C encodingIndex), 0 for a single stream.

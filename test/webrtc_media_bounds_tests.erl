@@ -130,3 +130,30 @@ random_packet() ->
         8 -> #rtcp_tmmbr{sender_ssrc = S, media_ssrc = 0, entries = [{rand:uniform(16#FFFFFFFF), 100000 + S rem 1000, 40}]};
         9 -> #rtcp_xr{ssrc = S, blocks = [{rrtr, 1 bsl 40}]}
     end.
+
+%% W3C: an ended stream is still reported until the receiver drops it:
+%% another SSRC on the same mid, or the transceiver stopped. At most 16.
+ended_stream_stats_test() ->
+    {A, B} = pair(),
+    [Ssrc] = [S || S := #rcv{mid = <<"0">>} <- B#media.receivers],
+    {Bye, A1} = webrtc_media_out:send_rtcp([#rtcp_rr{ssrc = Ssrc}, #rtcp_bye{ssrcs = [Ssrc]}], A),
+    {B1, _} = deliver(Bye, B),
+    #{receivers := R1, streams := S1} = webrtc_media:stats(B1),
+    ?assert(is_map_key(Ssrc, R1)),
+    ?assertMatch(#{packets_received := 1}, maps:get({in, Ssrc}, S1)),
+    %% A new SSRC on mid 0 replaces it.
+    New = Ssrc bxor 1,
+    {ok, Out, _} = webrtc_media:send(<<"0">>, <<"b">>, #{timestamp => 2}, 0, A1#media{senders = maps:map(fun(<<"0">>, S) -> S#snd{ssrc = New}; (_, S) -> S end, A1#media.senders)}),
+    {B2, _} = deliver(Out, B1),
+    #{receivers := R2} = webrtc_media:stats(B2),
+    ?assertNot(is_map_key(Ssrc, R2)),
+    ?assert(is_map_key(New, R2)).
+
+ended_cap_test() ->
+    {_A, B} = pair(),
+    Ended = [{S, #{mid => <<"9">>}, #{}} || S <- lists:seq(1, 40)],
+    B1 = lists:foldl(fun(E, Acc) -> Acc#media{ended = lists:sublist([E | Acc#media.ended], 16)} end, B, Ended),
+    ?assertEqual(16, length(B1#media.ended)),
+    %% A stopped transceiver's ended streams go on configure.
+    B2 = webrtc_media:configure([], B1),
+    ?assertEqual([], B2#media.ended).

@@ -7,6 +7,8 @@ The member list below is the WebIDL of the specification (checked on 2026-11-17)
 Status: **Reported** or **Not reported**, with the reason.
 
 
+
+Lifetime (W3C §4.3, §8.1): an inbound-rtp stream that ends (BYE, or 60 s without packets) is still reported with its last values. It is deleted when its SSRC is replaced on the same mid and rid, when an SSRC is recycled, or when its transceiver stops, as W3C asks. The library keeps at most 16 ended streams per transport, so a peer cannot grow this list.
 ## RTCStats
 
 | Member | Required | Status |

@@ -1104,6 +1104,31 @@ early_data_test() ->
     ?assertNotEqual(accepted, maps:get(early_data, info(Ss3), undefined)),
     ?assertNot(lists:member({event, {data, <<"early hello">>}}, Out)).
 
+%% RFC 8446 §8: the anti-replay set and the ticket key share one
+%% lifetime. After the application restarts (a new table) the first
+%% flight of an accepted 0-RTT connection is replayed: the ticket no
+%% longer opens, the early data is refused.
+early_data_replay_after_restart_test() ->
+    ok = webrtc_dtls_tickets:ensure(),
+    C = webrtc_dtls_cert:generate(),
+    S = webrtc_dtls_cert:generate(),
+    {C1, S1} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    _ = run(C1, S1),
+    {C2, S2} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    {Cl1, A1} = webrtc_dtls:start(0, C2),
+    {ok, Cl2, A2} = webrtc_dtls:send(<<"early hello">>, Cl1),
+    W0 = webrtc_dtls_sim:run(Cl2, S2, fun webrtc_dtls_sim:pass/3, #{start => false}),
+    #{s := Ss, ev := #{s := SE}} = webrtc_dtls_sim:deliver(W0, c, A1 ++ A2),
+    ?assert(lists:member({data, <<"early hello">>}, SE)),
+    ?assertMatch(#{early_data := accepted}, info(Ss)),
+    true = ets:delete(webrtc_dtls_tickets),
+    ok = webrtc_dtls_tickets:ensure(),
+    {_, S3} = pair(C, S, zero_rtt_opts(), zero_rtt_opts()),
+    {Ss3, Out} = lists:foldl(fun({send, D}, {Sv, Acc}) -> {Sv1, A} = webrtc_dtls:handle_packet(D, 0, Sv), {Sv1, Acc ++ A} end,
+                             {S3, []}, A1 ++ A2),
+    ?assertNotEqual(accepted, maps:get(early_data, info(Ss3), undefined)),
+    ?assertNot(lists:member({event, {data, <<"early hello">>}}, Out)).
+
 %% Without a ticket nothing can be sent before the handshake.
 no_ticket_no_early_data_test() ->
     {C1, _} = pair(zero_rtt_opts(), zero_rtt_opts()),

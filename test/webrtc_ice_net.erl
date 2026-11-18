@@ -134,12 +134,14 @@ send_data(Net, Name, Data) ->
 actions(Name, Acts, Net) ->
     lists:foldl(fun(A, N) -> action(Name, A, N) end, Net, Acts).
 
-action(Name, {send, Sock, To, Bin}, Net = #{agents := As}) ->
+action(Name, {send, Sock, To, Bin}, Net) ->
+    action(Name, {send_tos, Sock, To, 0, Bin}, Net);
+action(Name, {send_tos, Sock, To, Tos, Bin}, Net = #{agents := As}) ->
     #{socks := Socks, nat := Nat} = maps:get(Name, As),
     case maps:find(Sock, Socks) of
         {ok, Local} ->
             {Src, Net1} = outbound(Nat, Local, To, Net),
-            transmit(Src, To, Bin, Net1);
+            transmit(Src, To, Bin, Tos, Net1);
         error ->
             Net
     end;
@@ -162,10 +164,18 @@ auto_signal(Name, _E, {data, Via, Peer, Data}, Net = #{agents := As}) ->
 auto_signal(_, _, _, Net) ->
     Net.
 
-transmit(Src, Dst, Bin, Net = #{filter := F, loss := Loss, rand := R0, sent := Sent, lost := Lost}) ->
+transmit(Src, Dst, Bin, Net) ->
+    transmit(Src, Dst, Bin, 0, Net).
+
+%% A filter of five arguments also gets the TOS byte (DSCP and ECN).
+transmit(Src, Dst, Bin, Tos, Net = #{filter := F, loss := Loss, rand := R0, sent := Sent, lost := Lost}) ->
     {X, R1} = rand:uniform_s(R0),
     Net1 = Net#{rand => R1, sent => Sent + 1},
-    case F(Net1, Src, Dst, Bin) of
+    Verdict = case erlang:fun_info(F, arity) of
+                  {arity, 5} -> F(Net1, Src, Dst, Bin, Tos);
+                  _ -> F(Net1, Src, Dst, Bin)
+              end,
+    case Verdict of
         drop ->
             Net1#{lost => Lost + 1};
         pass when X < Loss ->

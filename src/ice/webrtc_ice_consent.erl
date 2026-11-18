@@ -118,7 +118,16 @@ request(W, C, P, RC, {LU, RU, RP}, Now, S) ->
     },
     S1 = put(W, C, P1, S#ice{rand = R}),
     Via = webrtc_ice_tcp:pair_via(P1, RC, S1),
-    webrtc_ice_gather:route(Via, webrtc_ice_candidate:transport_address(RC), Bin, Now, ?INC(consent_sent, S1)).
+    To = webrtc_ice_candidate:transport_address(RC),
+    {S2, Acts} = webrtc_ice_gather:route(Via, To, Bin, Now, ?INC(consent_sent, S1)),
+    %% RFC 8835 §4.2: the same with each DSCP in use, on the current pair.
+    case W of
+        current ->
+            {S3, Marked} = webrtc_ice_marks:requests(Via, To, {LU, RU}, {RP, Prio}, Now, S2),
+            {S3, Acts ++ Marked};
+        prev ->
+            {S2, Acts}
+    end.
 
 keepalive_due(#pair{last_sent = undefined}, _Now, _S) -> true;
 keepalive_due(#pair{last_sent = L}, Now, #ice{keepalive_interval = Tr}) -> Now - L >= Tr.

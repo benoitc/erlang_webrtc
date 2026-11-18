@@ -24,6 +24,7 @@
 -include("webrtc_sctp_assoc.hrl").
 
 -export([
+    reset_congestion/1,
     reset_path/2,
     new/1,
     start/2,
@@ -274,6 +275,13 @@ idle_decay(Now, #snd{flight = 0, buffered = B, last_data_sent = Last, rto = Rto,
     S#snd{cwnd = max(Floor, min(Cwnd, Cwnd bsr Periods)), last_data_sent = Now};
 idle_decay(_Now, S) ->
     S.
+
+%% @doc Congestion control from scratch (RFC 9260 §7.2.1 initial cwnd
+%% and ssthresh), as RFC 8837 §5 asks when the DSCP changes; the RTT
+%% estimate stays.
+-spec reset_congestion(#snd{}) -> #snd{}.
+reset_congestion(#snd{mtu = Mtu, rwnd = Rwnd} = S) ->
+    S#snd{cwnd = min(4 * Mtu, max(2 * Mtu, ?INIT_CWND_BYTES)), ssthresh = max(Rwnd, 4 * Mtu), pba = 0, fr_exit = undefined}.
 
 %% @doc A new path (RFC 9260 §7.2.1, §6.3): initial cwnd and ssthresh,
 %% RTO back to its initial value and a fresh RTT estimate.

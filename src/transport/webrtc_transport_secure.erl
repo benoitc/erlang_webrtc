@@ -9,6 +9,8 @@
 -include("webrtc_transport.hrl").
 
 -export([
+    update_marks/1,
+    dscp_blocked/2,
     configure_engines/2,
     start_dtls_if_ready/1,
     flush_dtls/1,
@@ -240,6 +242,7 @@ media_actions(Acts, St) ->
             %% The peer connection keeps the new SSRC for later offers.
             ({event, {ssrc_changed, _, _, _} = E}, S) -> webrtc_transport:to_pc(E, S), webrtc_transport:to_app(E, S), S;
             ({send_ect, B}, S) -> webrtc_transport_net:send_out_ect(B, S);
+            ({send_tos, T, B}, S) -> webrtc_transport_net:send_out_tos(B, T, S);
             ({event, E}, S) -> webrtc_transport:to_app(E, S), S
         end,
         St,
@@ -290,11 +293,11 @@ do_open_channel(Label, Opts, #st{dcep = D} = St) ->
     end.
 
 dcep_actions(Acts, St) ->
-    lists:foldl(fun dcep_action/2, St, Acts).
+    lists:foldl(fun dcep_action/2, data_dscp(St), Acts).
 
 dcep_action({send, Bin}, #st{dtls = D} = St) ->
     case webrtc_dtls:send(Bin, D) of
-        {ok, D1, Out} -> webrtc_transport_net:transmit(Out, St#st{dtls = D1});
+        {ok, D1, Out} -> webrtc_transport_net:transmit(marked(Out, data_mark(St)), St#st{dtls = D1});
         {error, _} -> St
     end;
 dcep_action({event, {channel_message, _, _, _} = E}, St) ->
@@ -303,3 +306,42 @@ dcep_action({event, {channel_message, _, _, _} = E}, St) ->
 dcep_action({event, E}, St) ->
     webrtc_transport:to_pc({datachannel, E}, St),
     St.
+
+%%====================================================================
+%% DSCP (RFC 8835 §4.2, RFC 8837)
+%%====================================================================
+
+%% The association's DSCP: that of its highest priority channel. It only
+%% rises while channels are open, and each change restarts SCTP
+%% congestion control (RFC 8837 §5).
+data_dscp(#st{dcep = undefined} = St) ->
+    St;
+data_dscp(#st{dcep = D, data_dscp = Old} = St) ->
+    case webrtc_dscp:dscp(data, webrtc_dcep:priority_class(D), true, true) of
+        New when New > Old -> update_marks(St#st{dcep = webrtc_dcep:reset_congestion(D), data_dscp = New});
+        _ -> St
+    end.
+
+data_mark(#st{data_dscp = D, dscp_off = Off}) ->
+    case lists:member(D, Off) of
+        true -> 0;
+        false -> D
+    end.
+
+marked(Out, 0) -> Out;
+marked(Out, D) -> [case A of {send, B} -> {send_tos, webrtc_dscp:tos(D, 0), B}; _ -> A end || A <- Out].
+
+%% @doc Give the ICE agent the DSCPs in use, to probe on the selected
+%% pair, and the TCP connections the highest one.
+-spec update_marks(#st{}) -> #st{}.
+update_marks(#st{media = M} = St) ->
+    Marks = lists:usort([D || D <- webrtc_media:dscps(M) ++ [data_mark(St)], D > 0]),
+    St1 = St#st{ice = webrtc_ice_agent:set_marks(Marks, St#st.ice)},
+    webrtc_transport_net:set_stream_dscp(lists:max([0 | Marks]), St1).
+
+%% @doc The path drops `Dscp': the flows using it go unmarked and the
+%% owner is told.
+-spec dscp_blocked(1..63, #st{}) -> #st{}.
+dscp_blocked(Dscp, #st{media = M} = St) ->
+    webrtc_transport:to_app({dscp_disabled, Dscp}, St),
+    update_marks(St#st{media = webrtc_media:dscp_blocked(Dscp, M), dscp_off = lists:usort([Dscp | St#st.dscp_off])}).

@@ -30,7 +30,11 @@
     %% false, or the buffer options.
     frames = false :: false | map(),
     %% A codec plugin (webrtc_media_codec) for the frames: {Module, Opts}.
-    codec_plugin :: undefined | {module(), term()}
+    codec_plugin :: undefined | {module(), term()},
+    %% Application priority (W3C RTCPriorityType) and whether the video
+    %% is interactive: they pick the DSCP (RFC 8837).
+    priority = low :: webrtc_dscp:priority(),
+    interactive = true :: boolean()
 }).
 
 -record(jsep, {

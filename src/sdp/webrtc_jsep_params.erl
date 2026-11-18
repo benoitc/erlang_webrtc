@@ -159,6 +159,8 @@ media_params(T, L, R, {Local, Remote, J}) ->
         fec_ssrc => T#tr.fec_ssrc,
         frames => T#tr.frames,
         codec_plugin => T#tr.codec_plugin,
+        priority => T#tr.priority,
+        interactive => T#tr.interactive,
         cname => undefined,
         remote_ssrcs => remote_ssrcs(R),
         rtcp_rsize => webrtc_sdp_media:attr(rtcp_rsize, R) =:= {ok, true},

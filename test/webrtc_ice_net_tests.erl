@@ -443,6 +443,27 @@ consent_loss_test() ->
     {_, N4} = ?NET:run(N3, ?NET:now(N3) + 20000),
     ?assertMatch(#{counters := #{consent_sent := S1}}, ?AG:stats(?NET:agent(N4, a))).
 
+%% RFC 8835 §4.2: the consent requests go once more per DSCP in use; a
+%% mark the path drops is reported after three misses while the
+%% unmarked requests still get answers, and probing it stops.
+dscp_blocked_test() ->
+    N0 = run_ok(host_pair(#{}, #{}), fun completed/1, 10000),
+    N1 = ?NET:call(N0, a, fun(A) -> {?AG:set_marks([46, 34], A), []} end),
+    N2 = ?NET:set_filter(N1, fun(_, _, _, _, Tos) when Tos bsr 2 =:= 46 -> drop; (_, _, _, _, _) -> pass end),
+    {_, N3} = ?NET:run(N2, ?NET:now(N2) + 30000),
+    ?assertEqual([{dscp_blocked, 46}], events(N3, a, dscp_blocked)),
+    ?assertEqual(completed, state(N3, a)),
+    %% 34 gets through and is still probed; 46 no longer.
+    {_, N4} = ?NET:run(N3, ?NET:now(N3) + 30000),
+    ?assertEqual([{dscp_blocked, 46}], events(N4, a, dscp_blocked)).
+
+%% No marks, no extra requests.
+dscp_unmarked_test() ->
+    N0 = run_ok(host_pair(#{}, #{}), fun completed/1, 10000),
+    N1 = ?NET:set_filter(N0, fun(_, _, _, _, Tos) when Tos =/= 0 -> error(marked); (_, _, _, _, _) -> pass end),
+    {_, N2} = ?NET:run(N1, ?NET:now(N1) + 20000),
+    ?assertEqual([], events(N2, a, dscp_blocked)).
+
 consent_disabled_keepalive_test() ->
     N0 = run_ok(host_pair(#{consent => false}, #{consent => false}), fun completed/1, 10000),
     {_, N1} = ?NET:run(N0, ?NET:now(N0) + 61000),

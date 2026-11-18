@@ -40,6 +40,14 @@
     %% Optional outbound filter used by impairment tests:
     %% fun((Dest, Bin, FState) -> {[{DelayMs, Bin}], FState}).
     filter :: undefined | {fun(), term()},
+    %% DSCP marking (RFC 8835 §4.2): off once the platform refuses the
+    %% TOS on a send; the DSCP the TCP connections carry.
+    marking = true :: boolean(),
+    stream_dscp = 0 :: 0..63,
+    %% The SCTP association's DSCP (one for all its packets, RFC 8837
+    %% §5) and the DSCPs found blocked on the path.
+    data_dscp = 0 :: 0..63,
+    dscp_off = [] :: [1..63],
     %% Stream connections to TURN servers (TCP, TLS):
     %% {stream, N} => #{sock, kind, server, buf}.
     streams = #{} :: #{{stream | tcp, term()} => map()},

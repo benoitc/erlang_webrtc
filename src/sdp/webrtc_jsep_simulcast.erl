@@ -36,7 +36,8 @@
     rid := binary(),
     ssrc := 0..16#FFFFFFFF,
     rtx_ssrc := 0..16#FFFFFFFF,
-    restrictions := [{binary(), binary() | undefined}]
+    restrictions := [{binary(), binary() | undefined}],
+    priority => webrtc_dscp:priority()
 }.
 
 %%====================================================================
@@ -60,7 +61,7 @@ encodings(Specs, {Ssrc, Rtx}) when is_list(Specs) ->
             Given = [R || #{rid := R} <- Specs],
             Rids = fill_rids(Specs, Given, 0),
             Encs = [
-                #{
+                (maps:with([priority], Spec))#{
                     rid => Rid,
                     ssrc => S,
                     rtx_ssrc => X,
@@ -88,7 +89,8 @@ fresh(N) -> [{ssrc(), ssrc()} || _ <- lists:seq(1, N)].
 
 check_encodings(Encs) ->
     Rids = [R || #{rid := R} <- Encs],
-    Valid = lists:all(fun valid_encoding/1, Encs),
+    Valid = lists:all(fun valid_encoding/1, Encs) andalso
+        lists:all(fun(E) -> webrtc_dscp:priority(maps:get(priority, E, low)) =/= error end, Encs),
     Unique = length(lists:usort(Rids)) =:= length(Rids),
     case Valid andalso Unique of
         true -> {ok, Encs};
@@ -275,8 +277,8 @@ send_rids([First | _] = Encs, L, R, Answerer) ->
             end
     end.
 
-layer(#{rid := Rid, ssrc := S, rtx_ssrc := X}, Paused) ->
-    #{rid => Rid, ssrc => S, rtx_ssrc => X, paused => Paused}.
+layer(#{rid := Rid, ssrc := S, rtx_ssrc := X} = E, Paused) ->
+    (maps:with([priority], E))#{rid => Rid, ssrc => S, rtx_ssrc => X, paused => Paused}.
 
 %% RFC 8851 §6.4 steps 2 to 5.
 answer_acceptable(#{pts := APts, params := AParams}, #{pts := OPts, params := OParams}, R, L) ->

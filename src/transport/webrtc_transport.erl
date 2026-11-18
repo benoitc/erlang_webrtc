@@ -182,7 +182,7 @@ handle_call({restart_ice, U, P}, _From, St) ->
     to_pc({gathering_state, complete}, St1),
     {reply, ok, arm(St1)};
 handle_call({configure, Neg}, _From, St) ->
-    St1 = webrtc_transport_secure:configure_engines(Neg, St),
+    St1 = webrtc_transport_secure:update_marks(webrtc_transport_secure:configure_engines(Neg, St)),
     {reply, ok, arm(St1)};
 handle_call(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= send_rtp;

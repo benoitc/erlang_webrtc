@@ -98,6 +98,7 @@
     remove_host/3,
     set_remote_credentials/4,
     set_remote_pacing/2,
+    set_marks/2,
     add_remote_candidate/3,
     end_of_candidates/2,
     handle_packet/5,
@@ -265,6 +266,13 @@ set_remote_credentials(U, P, Now, #ice{remote_ufrag = U, remote_pwd = P} = S) ->
 set_remote_credentials(_U, _P, _Now, _S) ->
     error(restart_required).
 
+%% @doc The DSCPs the flows on the selected pair use: each consent
+%% request is also sent with each of them, and a mark the path drops is
+%% reported as `{dscp_blocked, Dscp}' (RFC 8835 §4.2).
+-spec set_marks([1..63], agent()) -> agent().
+set_marks(Marks, S) ->
+    webrtc_ice_marks:set(Marks, S).
+
 %% @doc The peer's Ta (`a=ice-pacing', RFC 8839 §5.5; 50 ms when it
 %% sent none). Both agents use the higher of the two values (RFC 8445
 %% §14.2).
@@ -391,7 +399,13 @@ stun_in(Via, From, Bin, Now, S) ->
 relayed({relay, _, _}) -> true;
 relayed(_) -> false.
 
-response_in(TxId, Via, From, M, Bin, Now, S) ->
+response_in(TxId, Via, From, M, Bin, Now, S0) ->
+    case webrtc_ice_marks:response(TxId, M, Bin, S0) of
+        {ok, S1} -> {S1, []};
+        none -> response_in1(TxId, Via, From, M, Bin, Now, S0)
+    end.
+
+response_in1(TxId, Via, From, M, Bin, Now, S) ->
     case webrtc_ice_consent:match(TxId, S) of
         none ->
             case webrtc_stun_tx:lookup(TxId, S#ice.tx) of
@@ -422,7 +436,8 @@ handle_timeout(Now, S) ->
     {S4, A4} = pace(Now, S3),
     {S5, A5} = webrtc_ice_consent:tick(Now, S4),
     {S6, A6} = webrtc_ice_gather:stun_refresh(Now, S5),
-    finish(Now, S6, A1 ++ A2 ++ A3 ++ A4 ++ A5 ++ A6).
+    {S7, A7} = webrtc_ice_marks:tick(Now, S6),
+    finish(Now, S7, A1 ++ A2 ++ A3 ++ A4 ++ A5 ++ A6 ++ A7).
 
 tx_action({send, {Via, To}, Bin}, Now, {S, Acts}) ->
     {S1, A} = webrtc_ice_gather:route(Via, To, Bin, Now, S),
@@ -460,6 +475,7 @@ next_timeout(S) ->
         webrtc_stun_tx:next_timeout(S#ice.tx),
         webrtc_ice_gather:next_timeout(S),
         webrtc_ice_consent:next_timeout(S),
+        webrtc_ice_marks:next_timeout(S),
         S#ice.ta_at,
         S#ice.recheck_at
     ]).

@@ -31,6 +31,7 @@
     fingerprint_change_refused/1,
     max_message_size_wired/1,
     loss_indications/1,
+    dscp_marking/1,
     ice_pacing_negotiated/1,
     tmmbr_limits_sender/1,
     fingerprint_change_ends_association/1,
@@ -75,6 +76,7 @@ all() ->
         fingerprint_change_refused,
         max_message_size_wired,
         loss_indications,
+        dscp_marking,
         ice_pacing_negotiated,
         tmmbr_limits_sender,
         fingerprint_change_ends_association,
@@ -1162,6 +1164,51 @@ count_rtp(Pc, Mid, Size, N) ->
     after 0 ->
         N
     end.
+
+%% RFC 8837 §5, RFC 8835 §4.2: A sends audio, video and data at high
+%% priority. Its outbound filter sees the TOS byte of every datagram
+%% (what udp_send/4 then puts in the IP header, webrtc_dscp_tests):
+%% EF for audio, AF41 for the key frame and AF42 for the frame after,
+%% AF21 for the SCTP association, nothing on STUN and the DTLS
+%% handshake, and the consent requests also go marked.
+dscp_marking(_Config) ->
+    Seen = ets:new(seen, [bag, public]),
+    Rec = fun(_Dest, Bin, Tos, S) -> ets:insert(Seen, {class(Bin), Tos bsr 2}), {[{0, Bin}], S} end,
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => {Rec, undefined}}),
+    B = pc(),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{priority => high}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{priority => high}),
+    {error, {badarg, {priority, urgent}}} = webrtc:add_transceiver(A, video, #{priority => urgent}),
+    av(B),
+    ok = webrtc:create_data_channel(A, <<"d">>, #{priority => high}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"d">>),
+    ok = webrtc:send_rtp(A, <<"0">>, <<16#F8, 16#FF, 16#FE>>, #{timestamp => 960}),
+    ok = webrtc:send_frame(A, <<"1">>, binary:copy(<<1>>, 3000), #{timestamp => 3000, keyframe => true}),
+    ok = webrtc:send_frame(A, <<"1">>, binary:copy(<<2>>, 300), #{timestamp => 6000}),
+    ok = webrtc:send_data(A, Id, text, <<"marked">>),
+    {ok, _} = ?S:wait(B, fun({channel_message, _, text, <<"marked">>}) -> true; (_) -> false end, 5000),
+    timer:sleep(200),
+    Marks = fun(C) -> lists:usort([D || {_, D} <- ets:lookup(Seen, C)]) end,
+    ct:log("marks: ~p", [[{C, Marks(C)} || C <- lists:usort([K || {K, _} <- ets:tab2list(Seen)])]]),
+    ?assertEqual([46], Marks({rtp, 111})),
+    ?assertEqual([34, 36], Marks({rtp, 96})),
+    %% DTLS 1.3 records under the unified header (RFC 9147 §4) carry
+    %% SCTP marked, the plaintext handshake goes unmarked.
+    ?assert(lists:member(18, Marks(dtls_record))),
+    ?assertEqual([0], Marks(dtls_handshake)),
+    %% Unmarked checks, and consent requests marked with each DSCP used.
+    ?assert(lists:member(0, Marks(stun))),
+    webrtc:close(A),
+    webrtc:close(B).
+
+class(<<B, _/binary>>) when B < 4 -> stun;
+class(<<22, _/binary>>) -> dtls_handshake;
+class(<<B, _/binary>>) when B >= 32, B =< 63 -> dtls_record;
+class(<<B, _/binary>>) when B >= 20, B =< 31 -> dtls_other;
+class(<<2:2, _:6, _:1, Pt:7, _/binary>>) when Pt < 64; Pt > 95 -> {rtp, Pt};
+class(<<2:2, _:6, Pt, _/binary>>) -> {rtcp, Pt};
+class(_) -> other.
 
 %% RFC 8834 §5.1.3, §5.1.4: B's decoder reports slice loss, which
 %% reaches A's owner and A's encoder plugin; B's application asks for a

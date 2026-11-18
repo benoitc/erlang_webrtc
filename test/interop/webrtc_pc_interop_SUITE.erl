@@ -40,7 +40,8 @@
     video_stats_agree/1,
     erlang_sends_video_fec/1,
     slice_loss_indications/1,
-    sr_on_request/1
+    sr_on_request/1,
+    marked_media_and_data/1
 ]).
 
 -define(P, webrtc_interop_peer).
@@ -72,7 +73,8 @@ cases() ->
         video_stats_agree,
         erlang_sends_video_fec,
         slice_loss_indications,
-        sr_on_request
+        sr_on_request,
+        marked_media_and_data
     ].
 
 all() -> [{group, pion}, {group, aiortc}, {group, chromium}, {group, firefox}, {group, chromium_mdns},
@@ -271,6 +273,23 @@ erlang_message(Pc, Data) ->
 %%--------------------------------------------------------------------
 %% Cases
 %%--------------------------------------------------------------------
+
+%% RFC 8837: audio (EF) and the data channel (AF21) sent at high
+%% priority still reach the peer, and its echo comes back.
+marked_media_and_data(Config) ->
+    {Pc, P0} = start(Config),
+    {ok, _} = webrtc:add_transceiver(Pc, audio, #{priority => high}),
+    ok = webrtc:create_data_channel(Pc, <<"urgent">>, #{priority => high}),
+    P1 = erlang_offer(Pc, P0, #{media => [<<"audio">>]}),
+    {Id, _} = channel_open(Pc, <<"urgent">>),
+    {ok, P2, _} = ?P:wait_event(P1, <<"channel_open">>, #{<<"label">> => <<"urgent">>}),
+    [ok = webrtc:send_rtp(Pc, <<"0">>, <<16#F8, 16#FF, 16#FE>>, #{timestamp => N * 960}) || N <- lists:seq(1, 50)],
+    {ok, P3, _} = ?P:wait_event(P2, <<"rtp">>, #{<<"kind">> => <<"audio">>}),
+    timer:sleep(200),
+    ok = webrtc:send_data(Pc, Id, text, <<"marked">>),
+    {ok, P4, _} = ?P:wait_event(P3, <<"message">>, #{<<"data">> => <<"marked">>}),
+    _ = erlang_message(Pc, <<"echo:marked">>),
+    put(peer, P4).
 
 erlang_offers_datachannel(Config) ->
     {Pc, P0} = start(Config),

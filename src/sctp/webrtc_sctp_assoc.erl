@@ -74,7 +74,8 @@
     stats/1,
     state/1,
     info/1,
-    path_changed/2
+    path_changed/2,
+    reset_congestion/1
 ]).
 
 -export_type([assoc/0, action/0, event/0, send_opts/0]).
@@ -657,6 +658,12 @@ path_changed(Now, #assoc{state = established} = A0) ->
     done(Now, A#assoc{snd = webrtc_sctp_send:reset_path(A#assoc.cfg, A#assoc.snd)});
 path_changed(Now, A) ->
     done(Now, A).
+
+%% @doc Restart congestion control, keeping the path's RTT and MTU: the
+%% DSCP of the association changed (RFC 8837 §5).
+-spec reset_congestion(assoc()) -> assoc().
+reset_congestion(#assoc{snd = Snd} = A) ->
+    A#assoc{snd = webrtc_sctp_send:reset_congestion(Snd)}.
 
 %% Move a pending shutdown forward once all data is acknowledged.
 progress(Now, #assoc{state = shutdown_pending, snd = Snd} = A) ->

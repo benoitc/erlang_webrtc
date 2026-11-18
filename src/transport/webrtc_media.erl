@@ -60,6 +60,8 @@
     request_keyframe/3,
     send_loss_indication/4,
     request_max_bitrate/4,
+    dscps/1,
+    dscp_blocked/2,
     request_pause/4,
     set_congestion_control/3,
     handle_packet/3,
@@ -456,6 +458,10 @@ send_packet(Mid, Pkt00, Hints, Now, M0) ->
         cycles = S#snd.cycles + case Next of 0 -> 1; _ -> 0 end,
         last_ts = Pkt#rtp.ts,
         last_ts_at = Now,
+        key_ts = case maps:get(keyframe, Hints, false) of
+                     true -> Pkt#rtp.ts;
+                     false -> S#snd.key_ts
+                 end,
         buffer = webrtc_nack_buffer:store(Pkt#rtp.seq, Pkt, Now, S#snd.buffer)
     },
     M1 = M#media{senders = (M#media.senders)#{Mid := S1}},
@@ -495,6 +501,18 @@ keyframe_requests(Ssrcs, Now, M0) ->
     {ok, [{send, binary()}], state()} | {error, not_negotiated}.
 request_max_bitrate(Mid, Bps, Now, M) ->
     webrtc_media_limit:request(Mid, Bps, Now, M).
+
+%% @doc The DSCPs the media flows use (RFC 8837), none at the default
+%% priority.
+-spec dscps(state()) -> [1..63].
+dscps(M) ->
+    webrtc_media_out:dscps(M).
+
+%% @doc `Dscp' does not get through (RFC 8835 §4.2): the flows using it
+%% go unmarked.
+-spec dscp_blocked(1..63, state()) -> state().
+dscp_blocked(Dscp, M) ->
+    M#media{dscp_off = lists:usort([Dscp | M#media.dscp_off])}.
 
 %% @doc Send a slice loss or reference picture selection indication to
 %% the senders of a transceiver, or of one simulcast layer with

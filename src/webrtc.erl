@@ -42,6 +42,8 @@
 %%     decoder lost slices (SLI) or asks for a reference picture (RPSI),
 %%     RFC 8834 §5.1.3, §5.1.4. Repair or change the reference in your
 %%     encoder; a codec plugin gets them in `feedback/2'.</li>
+%% <li>`{dscp_disabled, Dscp}': the path drops packets marked `Dscp'
+%%     (RFC 8835 §4.2): the flows that used it now go unmarked.</li>
 %% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
 %%     the target bitrate for all media sent on the connection; adapt
 %%     the encoders to it.</li>
@@ -329,6 +331,14 @@ new_pc(Opts) ->
 %% `#{timestamp, keyframe, data, codec}', with `width' and `height' for
 %% video. `data' is the encoded frame: VP8 and VP9 frames, H.264 in
 %% Annex B, AV1 temporal units in the low overhead bitstream format.
+%% With RFC 6051 negotiated, `ntp_time' is the capture time on the
+%% sender's clock (microseconds since the Unix epoch).
+%%
+%% `priority' (`very_low', `low' (default), `medium', `high'), also per
+%% encoding in `send_encodings', marks the packets with the DSCP of
+%% RFC 8837 (EF for audio, AF4x for video, LE at `very_low', none at
+%% `low'); `interactive => false' uses AF3x for video nobody answers
+%% live. The packets of a key frame get the lower drop precedence.
 -spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).

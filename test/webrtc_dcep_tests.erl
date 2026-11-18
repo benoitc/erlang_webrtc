@@ -80,6 +80,18 @@ opts(Role, Seed, Extra) ->
         #{role => Role, sctp => #{random_seed => Seed, heartbeat_interval => infinity}}, Extra
     ).
 
+%% RFC 8837 §5: the association's DSCP follows its highest priority
+%% channel, on both sides.
+priority_class_test() ->
+    N0 = pair(),
+    ?assertEqual(low, ?D:priority_class(?NET:engine(a, N0))),
+    Open = fun(L, P) -> fun(E, Now) -> {ok, _, E1, Acts} = ?D:open_channel(L, #{priority => P}, Now, E), {E1, Acts} end end,
+    N1 = ?NET:call(a, Open(<<"bulk">>, very_low), N0),
+    N2 = ?NET:call(a, Open(<<"urgent">>, high), N1),
+    N3 = ?NET:run(1000, N2),
+    ?assertEqual(high, ?D:priority_class(?NET:engine(a, N3))),
+    ?assertEqual(high, ?D:priority_class(?NET:engine(b, N3))).
+
 pair() -> pair(#{}, #{}, #{}).
 
 pair(ExtraA, ExtraB, NetOpts) ->

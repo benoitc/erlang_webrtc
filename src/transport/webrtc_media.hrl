@@ -77,7 +77,13 @@
     sync_acked = false :: boolean(),
     sync_key_ts :: undefined | non_neg_integer(),
     sync_next = false :: boolean(),
-    sync_req = false :: boolean()
+    sync_req = false :: boolean(),
+    %% RFC 8837: the application priority, whether the video is
+    %% interactive, and the timestamp of the key frame being sent (its
+    %% packets get the lower drop precedence).
+    priority = low :: webrtc_dscp:priority(),
+    interactive = true :: boolean(),
+    key_ts :: undefined | non_neg_integer()
 }).
 
 -record(rcv, {
@@ -140,6 +146,9 @@
     rtcp_opts = #{} :: map(),
     %% Feedback waiting for the RTCP bandwidth, oldest first.
     pending_fb = [] :: list(),
+    %% DSCPs found blocked on the path (RFC 8835 §4.2): their flows go
+    %% unmarked.
+    dscp_off = [] :: [0..63],
     %% Our TMMBR requests per mid: the bit rate and the senders whose
     %% TMMBN answered them (webrtc_media_limit).
     limit_req = #{} :: #{binary() => {pos_integer() | infinity, [non_neg_integer()]}},

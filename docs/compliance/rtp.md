@@ -271,7 +271,7 @@ The estimator is Google Congestion Control on the sender side, fed by transport-
 | R8836-6 | RFC 8836 §2 (5) | Stable when streams pause or are rate limited | webrtc_gcc_aimd | aimd_increase_test | Unit tested: the estimate does not grow beyond 1.5 R_hat + 10 kbps |
 | R8836-7 | RFC 8836 §2 (6) | One estimate for all streams of the transport | webrtc_cc | webrtc_media_cc_tests:transport_wide_sequence_test | Implemented: one estimate per BUNDLE transport; the split between streams is left to the application |
 | R8836-8 | RFC 8836 §2 (8) | Feedback over RTCP with AVPF | webrtc_media | webrtc_media_cc_tests:feedback_round_trip_test | Unit tested |
-| R8836-9 | RFC 8836 §2 (9) | Use DSCP markings | | | Not implemented |
+| R8836-9 | RFC 8836 §2 (9) | Use DSCP markings | webrtc_dscp, webrtc_media_out | see TR-20 to TR-28 of transport.md | Implemented: media is marked by priority (RFC 8837); the estimator treats every mark alike |
 | R8836-10 | RFC 8836 §2 (10) | React to a lack of feedback | webrtc_gcc | feedback_timeout_test | Unit tested: 20% cut per `feedback_timeout` (1.5 s) while sending without feedback |
 | R8836-11 | RFC 8836 §2 (11) | Stable with AQM | webrtc_gcc | webrtc_rmcat_tests (RMCAT-10) | Simulated with CoDel marking (RFC 8289, 5 ms target): one flow follows the capacity at 0.95 of its share, three flows share the link with a Jain index of 0.99, queue p95 under 50 ms. Dropping AQMs are not simulated |
 | NADA-1 | RFC 8698 | NADA congestion control | | | Not implemented |

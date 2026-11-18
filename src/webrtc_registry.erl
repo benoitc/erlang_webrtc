@@ -32,7 +32,16 @@ delete(Pc) ->
 %% alive; a row naming a dead transport is removed.
 -spec lookup(term()) -> {ok, pid()} | error.
 lookup(Key) ->
-    case ets:lookup(?TAB, Key) of
+    %% No table on a node where the application does not run: the
+    %% caller then asks the peer connection.
+    try ets:lookup(?TAB, Key) of
+        Rows -> found(Key, Rows)
+    catch
+        error:badarg -> error
+    end.
+
+found(Key, Rows) ->
+    case Rows of
         [{_, T}] ->
             case node(T) =/= node() orelse is_process_alive(T) of
                 true -> {ok, T};

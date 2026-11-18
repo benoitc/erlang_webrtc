@@ -16,7 +16,9 @@
     application_restart/1,
     stuck_codec_plugin/1,
     abandoned_connections/1,
-    short_lived_pairs/1
+    short_lived_pairs/1,
+    scheduler_stress/1,
+    other_node/1
 ]).
 
 -export([init/3, decode/2, encode/2, info/1]).
@@ -26,7 +28,7 @@
 all() ->
     [close_ends_helpers, killed_peer_rows_removed, slow_signaling_bounded, connect_workers_end,
      owner_death, killed_transport, application_restart, stuck_codec_plugin, abandoned_connections,
-     short_lived_pairs].
+     short_lived_pairs, scheduler_stress, other_node].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -275,3 +277,68 @@ short_lived_pairs(_Config) ->
     Grown = erlang:memory(total) - maps:get(memory, Base),
     ct:log("~b pairs, memory ~+b bytes", [N, Grown]),
     ?assert(Grown < 20 * 1024 * 1024).
+
+%% 40 processes connecting pairs at once, first on a single scheduler,
+%% then on all of them: every pair connects and closes, nothing waits on
+%% anything else, the node comes back to its baseline.
+scheduler_stress(_Config) ->
+    Base = baseline(),
+    Online = erlang:system_info(schedulers_online),
+    try
+        lists:foreach(
+            fun(Schedulers) ->
+                _ = erlang:system_flag(schedulers_online, Schedulers),
+                Self = self(),
+                Workers = [spawn_link(fun() ->
+                                          [begin {A, B} = pair(), webrtc:close(A), webrtc:close(B) end || _ <- lists:seq(1, 3)],
+                                          ?S:flush(),
+                                          Self ! {done, self()}
+                                      end) || _ <- lists:seq(1, 40)],
+                [receive {done, W} -> ok after 120000 -> ct:fail({stuck, W, Schedulers}) end || W <- Workers]
+            end,
+            [1, Online]
+        )
+    after
+        erlang:system_flag(schedulers_online, Online)
+    end,
+    ?assertEqual(ok, back_to(Base, 15000)).
+
+%% The API from another node: data, statistics, and an owner there whose
+%% node goes away closes the peer connection.
+other_node(_Config) ->
+    %% Long names on the loopback address: a short host name may not
+    %% resolve on the test host.
+    Started = node() =:= nonode@nohost,
+    case not Started orelse net_kernel:start('lifecycle_main@127.0.0.1', #{name_domain => longnames}) of
+        {error, R} ->
+            {skip, {no_distribution, R}};
+        _ when Started ->
+            try other_node1() after net_kernel:stop() end;
+        _ ->
+            other_node1()
+    end.
+
+other_node1() ->
+    begin
+            Paths = lists:append([["-pa", P] || P <- code:get_path()]),
+            {ok, Peer, Node} = peer:start_link(#{name => peer:random_name(), host => "127.0.0.1", longnames => true,
+                                                 args => Paths, wait_boot => 30000}),
+            try
+                {A, B} = pair(),
+                {ok, {datachannel_open, Id, _, _, _}} =
+                    ?S:wait(A, fun({datachannel_open, _, _, _, _}) -> true; (_) -> false end, 5000),
+                ok = erpc:call(Node, webrtc, send_data, [A, Id, text, <<"from another node">>]),
+                {ok, _} = ?S:wait(B, fun({channel_message, _, text, <<"from another node">>}) -> true; (_) -> false end, 5000),
+                #{} = erpc:call(Node, webrtc, get_stats, [A]),
+                Owner = erpc:call(Node, erlang, spawn, [timer, sleep, [infinity]]),
+                ok = webrtc:controlling_process(A, Owner),
+                Owned = owned(A),
+                peer:stop(Peer),
+                ?assertEqual(ok, wait_dead([A | Owned], 6000)),
+                webrtc:close(B)
+            catch
+                C:E:St ->
+                    try peer:stop(Peer) catch _:_ -> ok end,
+                    erlang:raise(C, E, St)
+            end
+    end.

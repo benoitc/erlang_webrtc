@@ -61,8 +61,9 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | WRTP-9 | 4.6 | Receive and send non-compound RTCP (RFC 5506) | webrtc_rtcp | compound_validation_test_ | Unit tested |
 | WRTP-10 | 5.1.1 | Understand FIR | webrtc_rtcp_fb | webrtc_rtcp_fb_tests:fir_test | Unit tested |
 | WRTP-11 | 5.1.2 | Understand PLI | webrtc_rtcp_fb | pli_test | Unit tested |
-| WRTP-12 | 5.1.3 | SLI | webrtc_rtcp_fb | sli_test | Unit tested |
-| WRTP-13 | 5.1.4 | RPSI | webrtc_rtcp_fb | afb_other_raw_test (kept raw) | Not implemented: decoded as `#rtcp_raw{}` |
+| WRTP-12 | 5.1.3 | SLI: a sender acts on it, a receiver generates it when its codec has slices | webrtc_rtcp_fb, webrtc_media_fb | sli_test, webrtc_media_loss_tests, webrtc_pc_SUITE:loss_indications, webrtc_pc_interop_SUITE:slice_loss_indications | Interoperability tested with Pion both ways. The library has no codec: the owner gets `{slice_loss, ...}` and the encoding plugin `feedback/2`; the application (`send_slice_loss/3,4`) or the decoding plugin generates it |
+| WRTP-13 | 5.1.4 | RPSI: a sender acts on it, a receiver generates it on lost decoder synchronisation | webrtc_rtcp_fb, webrtc_media_fb | rpsi_libwebrtc_test, rpsi_padding_test, rpsi_errors_test_, prop_rtcp_roundtrip, webrtc_pc_SUITE:loss_indications | Unit and e2e tested, the codec against libwebrtc's former RPSI test packet. Events, plugin and API as for SLI (`send_reference_picture/4,5`). No interop peer implements RPSI |
+| WRTP-24 | 5.1 | SLI and RPSI used only when `nack sli` / `nack rpsi` is negotiated; we offer both on video | webrtc_jsep_caps, webrtc_media_fb | ignored_test, not_negotiated_test | Unit tested |
 | WRTP-14 | 5.1.6 | Understand TMMBR, answer with TMMBN, and follow the limit as media sender | webrtc_rtcp_fb, webrtc_tmmbr, webrtc_media_limit | webrtc_media_tmmbr_tests, webrtc_pc_SUITE:tmmbr_limits_sender | Unit and e2e tested (Erlang to Erlang: browsers do not negotiate `ccm tmmbr`) |
 | WRTP-15 | 5.2 | Header extensions follow RFC 8285 | webrtc_rtp_ext | webrtc_rtp_ext_tests | Unit tested |
 | WRTP-16 | 5.2.1 | Rapid synchronisation (RFC 6051) | | | Not implemented |

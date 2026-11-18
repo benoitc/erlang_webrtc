@@ -120,6 +120,9 @@ func sendRTCP(kind string) error {
 	case "sli":
 		return pc.WriteRTCP([]rtcp.Packet{&rtcp.SliceLossIndication{MediaSSRC: ssrc,
 			SLI: []rtcp.SLIEntry{{First: 1, Number: 2, Picture: 3}}}})
+	case "rrr":
+		// RTCP-SR-REQ (RFC 6051 §3.2).
+		return pc.WriteRTCP([]rtcp.Packet{&rtcp.RapidResynchronizationRequest{MediaSSRC: ssrc}})
 	default:
 		return fmt.Errorf("unknown rtcp kind %q", kind)
 	}
@@ -377,6 +380,21 @@ func onTrack(remote *webrtc.TrackRemote, recv *webrtc.RTPReceiver) {
 			}
 		}()
 	}
+	go func() {
+		// Sender reports about the stream we receive.
+		for {
+			pkts, _, err := recv.ReadRTCP()
+			if err != nil {
+				return
+			}
+			for _, p := range pkts {
+				if sr, ok := p.(*rtcp.SenderReport); ok {
+					emit(map[string]any{"event": "rtcp", "kind": kind, "type": "sr", "ssrc": sr.SSRC,
+						"t": time.Now().UnixMilli()})
+				}
+			}
+		}
+	}()
 	count, bytes := 0, 0
 	for {
 		pkt, _, err := remote.ReadRTP()

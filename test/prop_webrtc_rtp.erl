@@ -123,7 +123,7 @@ xr_block() ->
         {oneof([1, 2, 3, 6, 7, integer(8, 255)]), u(8), words(4)}
     ]).
 
-rtpfb_raw_fmt() -> oneof([0, 2, 5, 6, 7, 8, 10, 12, 13, 14, 16, 31]).
+rtpfb_raw_fmt() -> oneof([0, 2, 6, 7, 8, 10, 12, 13, 14, 16, 31]).
 psfb_raw_fmt() -> oneof([0, 5, 6, 7, 8, 14, 16, 31]).
 
 rtcp_packet() ->
@@ -175,6 +175,7 @@ rtcp_packet() ->
             #rtcp_ccfb{sender_ssrc = S, reports = Reports, timestamp = Ts}
         ),
         ?LET({S, M}, {u(32), u(32)}, #rtcp_pli{sender_ssrc = S, media_ssrc = M}),
+        ?LET({S, M}, {u(32), u(32)}, #rtcp_srreq{sender_ssrc = S, media_ssrc = M}),
         ?LET(
             {S, M, E},
             {u(32), u(32), non_empty(list({u(13), u(13), u(6)}))},

@@ -107,8 +107,18 @@ expire_idle(Now, #media{last_seen = Seen} = M) ->
     Idle = [S || S := T <- Seen, Now - T >= ?RECV_IDLE],
     lists:foldl(fun forget/2, M, Idle).
 
-%% Drop all state of a receive stream and of its RTX stream.
-forget(Ssrc, #media{rtx_ssrc = Rtx} = M) ->
+%% Drop all state of a receive stream and of its RTX stream. Its last
+%% statistics stay among the ended streams (W3C deletes them only when
+%% the receiver drops the stream), at most ?MAX_ENDED.
+forget(Ssrc, #media{rtx_ssrc = Rtx} = M0) ->
+    M = case maps:find(Ssrc, M0#media.receivers) of
+            {ok, R} ->
+                Info = (webrtc_media:receiver_info(Ssrc, R, M0))#{ended => true},
+                Ended = {Ssrc, Info, maps:get({in, Ssrc}, M0#media.streams, #{})},
+                M0#media{ended = lists:sublist([Ended | lists:keydelete(Ssrc, 1, M0#media.ended)], ?MAX_ENDED)};
+            error ->
+                M0
+        end,
     Repair = [X || X := P <- Rtx, P =:= Ssrc],
     lists:foldl(
         fun(S, Acc) ->
@@ -387,11 +397,11 @@ deliver1(Mid, Pkt, Now, M) ->
 %% A packet recovered by FEC is not one received: it stays out of the
 %% reception statistics and the loss the receiver reports (as in
 %% libwebrtc), so the sender keeps protecting the stream.
-deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, M, How) ->
-    R0 =
-        case maps:find(Ssrc, M#media.receivers) of
-            {ok, R} -> R;
-            error -> new_receiver(Mid, Ssrc, Pkt#rtp.pt, M)
+deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, Mx, How) ->
+    {R0, M} =
+        case maps:find(Ssrc, Mx#media.receivers) of
+            {ok, R} -> {R, Mx};
+            error -> {new_receiver(Mid, Ssrc, Pkt#rtp.pt, Mx), replaced(Mid, Ssrc, Mx)}
         end,
     Rx = case How of
              received -> element(2, webrtc_rtp_stats:rx_packet(Seq, Ts, Now, R0#rcv.rx));
@@ -628,6 +638,13 @@ keyframe_feedback(Ssrc, M) ->
         error ->
             {[#rtcp_pli{sender_ssrc = M#media.rtcp_ssrc, media_ssrc = Ssrc}], M}
     end.
+
+%% W3C: a new SSRC on the mid (and rid) of an ended stream replaces it,
+%% and a recycled SSRC is a new stream: the ended statistics go.
+replaced(Mid, Ssrc, M) ->
+    Rid = webrtc_media_rid:rid(Ssrc, M#media.rids),
+    M#media{ended = [E || {S, I, _} = E <- M#media.ended, S =/= Ssrc,
+                          maps:get(mid, I) =/= Mid orelse maps:get(rid, I, undefined) =/= Rid]}.
 
 new_receiver(Mid, Ssrc, Pt, M) ->
     Sec = maps:get(Mid, M#media.recv, #{}),

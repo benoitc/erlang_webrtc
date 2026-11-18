@@ -63,6 +63,11 @@ fci(?RTCP_RTPFB, Fmt, S, M, Fci) when Fmt =:= ?RTPFB_TMMBR; Fmt =:= ?RTPFB_TMMBN
         Err ->
             Err
     end;
+%% RFC 6051 §3.2: the FCI MUST be empty, the length 2.
+fci(?RTCP_RTPFB, ?RTPFB_SRREQ, S, M, <<>>) ->
+    {ok, #rtcp_srreq{sender_ssrc = S, media_ssrc = M}};
+fci(?RTCP_RTPFB, ?RTPFB_SRREQ, _, _, _) ->
+    {error, bad_srreq};
 fci(?RTCP_RTPFB, ?RTPFB_PAUSE, S, _M, Fci) ->
     case pause_entries(Fci, []) of
         {ok, []} -> {error, empty_pause};
@@ -184,6 +189,8 @@ encode(#rtcp_tmmbr{sender_ssrc = S, media_ssrc = M, entries = E}) ->
     {?RTPFB_TMMBR, ?RTCP_RTPFB, [hdr(S, M), [tmmb_entry(X) || X <- E]]};
 encode(#rtcp_tmmbn{sender_ssrc = S, media_ssrc = M, entries = E}) ->
     {?RTPFB_TMMBN, ?RTCP_RTPFB, [hdr(S, M), [tmmb_entry(X) || X <- E]]};
+encode(#rtcp_srreq{sender_ssrc = S, media_ssrc = M}) ->
+    {?RTPFB_SRREQ, ?RTCP_RTPFB, hdr(S, M)};
 encode(#rtcp_pause{sender_ssrc = S, entries = [_ | _] = E}) ->
     {?RTPFB_PAUSE, ?RTCP_RTPFB, [hdr(S, 0), [pause_entry(X) || X <- E]]};
 encode(#rtcp_ccfb{} = C) ->

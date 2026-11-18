@@ -332,6 +332,7 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
         retransmittedPacketsReceived => maps:get(retransmitted_packets_received, S, 0),
         retransmittedBytesReceived => maps:get(retransmitted_bytes_received, S, 0),
         headerBytesReceived => maps:get(header_bytes_received, S, 0),
+        estimatedPlayoutTimestamp => playout(S),
         fecSsrc => maps:get(fec_ssrc, S, undefined),
         rtxSsrc => maps:get(rtx_ssrc, S, undefined),
         remoteId => case Remote of [#{id := Rid}] -> Rid; [] -> undefined end,
@@ -346,6 +347,11 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
     [maps:merge(maps:merge(maps:merge(Base, Fec), compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined))))),
                 maps:get(reported, S, #{}))
      | Remote].
+
+%% The sender's NTP time of the last frame released (RFC 6051 or SR
+%% mapping), moved on by the time since, in ms since the Unix epoch.
+playout(#{playout_ntp := {NtpUs, At}}) -> (NtpUs + erlang:system_time(microsecond) - At) / 1000;
+playout(_) -> undefined.
 
 %% From the RFC 6464 level of each packet, when negotiated.
 audio_members(audio, #{audio_level := L} = S) ->

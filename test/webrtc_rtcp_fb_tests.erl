@@ -107,6 +107,11 @@ rpsi_errors_test_() ->
               %% no FCI
               "83 ce 00 02 00 00 00 01 00 00 00 02"]].
 
+%% RFC 6051 §3.2, Figure 4: RTPFB FMT 5, no FCI, length 2.
+srreq_test() ->
+    roundtrip(b("85 cd 00 02 00 00 00 01 2a 3b 4c 5d"), #rtcp_srreq{sender_ssrc = 1, media_ssrc = 16#2a3b4c5d}),
+    ?assertMatch({error, _}, webrtc_rtcp:decode(b("85 cd 00 03 00 00 00 01 2a 3b 4c 5d 00 00 00 00"))).
+
 %% RFC 5104 §4.3.1: media SSRC 0, FCI SSRC + seq nr + 24 reserved bits.
 fir_test() ->
     roundtrip(

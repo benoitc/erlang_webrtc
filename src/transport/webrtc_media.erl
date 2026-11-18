@@ -193,7 +193,9 @@ ready(#media{out = O}) -> O =/= undefined.
 
 %% @doc Send a payload on a transceiver. `Opts': `timestamp' (RTP
 %% clock), `marker', `pt' or `codec' (name), defaulting to the first
-%% negotiated codec, and `rid' to send on one simulcast layer.
+%% negotiated codec, `rid' to send on one simulcast layer, and
+%% `keyframe' when the payload belongs to one (it then carries the
+%% RFC 6051 NTP time when negotiated).
 -spec send(binary(), binary(), map(), integer(), state()) ->
     {ok, [{send, binary()}], state()} | {error, term()}.
 send(Mid0, Payload, Opts, Now, M) ->
@@ -217,7 +219,7 @@ send(Mid0, Payload, Opts, Now, M) ->
                         payload = Body,
                         ext = webrtc_media_out:audio_level(Opts, S1)
                     },
-                    send_packet(Mid, Pkt, Now, M#media{senders = (M#media.senders)#{Mid := S1}});
+                    send_hinted(Mid, Pkt, maps:with([keyframe], Opts), Now, M#media{senders = (M#media.senders)#{Mid := S1}});
                 error ->
                     {error, unknown_codec}
             end
@@ -245,7 +247,7 @@ send_frame(Mid0, Frame, Opts, Now, M) when is_binary(Frame), byte_size(Frame) > 
                     Payloads = payloads(webrtc_frame_codec:codec(Kind, Name), Frame, Key0, Pic),
                     M1 = M#media{senders = (M#media.senders)#{Key := S#snd{picture_id = (Pic + 1) band 16#7FFF}}},
                     N = length(Payloads),
-                    Base = maps:with([timestamp, rid, audio_level], Opts),
+                    Base = maps:with([timestamp, rid, audio_level, keyframe], Opts),
                     lists:foldl(
                         fun({I, P}, {ok, Acc, MA}) ->
                                 case send(Mid0, P, Base#{marker => I =:= N, codec => Name}, Now, MA) of
@@ -419,6 +421,12 @@ redundancy(_, Pt, _Ts, Payload, S) ->
 send_packet(_Mid, _Pkt, _Now, #media{out = undefined}) ->
     {error, not_ready};
 send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
+    send_hinted(Mid, Pkt0, #{}, Now, M).
+
+%% `Hints': `keyframe', when the packet belongs to one.
+send_hinted(_Mid, _Pkt, _Hints, _Now, #media{out = undefined}) ->
+    {error, not_ready};
+send_hinted(Mid, #rtp{} = Pkt0, Hints, Now, M) ->
     case maps:find(Mid, M#media.senders) of
         error ->
             {error, not_sending};
@@ -426,15 +434,22 @@ send_packet(Mid, #rtp{} = Pkt0, Now, M) ->
             case {webrtc_cc:halted(TMid, M#media.cc), webrtc_media_pause:is_paused(S)} of
                 {{true, Reason}, _} -> {error, {circuit_breaker, Reason}};
                 {false, true} -> {error, paused};
-                {false, false} -> send_packet(Mid, S, Pkt0, Now, M)
+                {false, false} -> send_packet(Mid, Pkt0, Hints, Now, M)
             end
     end.
 
-send_packet(Mid, S, Pkt00, Now, M) ->
+send_packet(Mid, Pkt00, Hints, Now, M0) ->
+    %% RFC 6051: the NTP time of the packet when it is due.
+    {Sync, M} = webrtc_media_sync:sender_ext(Mid, Hints#{ts => Pkt00#rtp.ts}, M0),
+    S = maps:get(Mid, M#media.senders),
     %% With ULPFEC negotiated, video goes in RED (RFC 8854 §5.2).
     Pkt0 = webrtc_media_out:fec_wrap(S, Pkt00),
-    Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs,
-                   ext = webrtc_media_out:header_ext(S, Pkt0#rtp.ext)},
+    Ext = case {webrtc_media_out:header_ext(S, Pkt0#rtp.ext), Sync} of
+              {E, []} -> E;
+              {undefined, _} -> Sync;
+              {E, _} -> E ++ Sync
+          end,
+    Pkt = Pkt0#rtp{ssrc = S#snd.ssrc, seq = S#snd.seq, csrcs = Pkt0#rtp.csrcs, ext = Ext},
     Next = (S#snd.seq + 1) band 16#FFFF,
     S1 = S#snd{
         seq = Next,
@@ -567,7 +582,8 @@ handle_timeout(Now, M0) ->
             %% the PAUSED repeats (RFC 7728 §6.2).
             M4 = webrtc_media_in:expire_idle(Now, M3#media{rtcp = R, pending_fb = []}),
             {Repeats, M4a} = webrtc_media_pause:report(M4),
-            {A2, M5} = webrtc_media_out:reports(Now, Pending ++ Repeats ++ webrtc_media_limit:repeats(M4a), M4a),
+            Fb2 = webrtc_media_limit:repeats(M4a) ++ webrtc_media_sync:requests(Now, M4a),
+            {A2, M5} = webrtc_media_out:reports(Now, Pending ++ Repeats ++ Fb2, M4a),
             {M5, A0 ++ A1 ++ PauseEvents ++ A2};
         {wait, R} ->
             {A2, M4} = webrtc_media_out:send_feedback(Pending, Now, M3#media{rtcp = R, pending_fb = []}),

@@ -64,6 +64,9 @@ files() ->
     {rtcp, "32.rtcp"} => {bad_packet, 203, truncated},
     %% RFC 4585 §6.3.2: an SLI carries one or more entries.
     {rtcp, "39.rtcp"} => {bad_packet, 206, empty_sli},
+    %% RFC 6051 §3.2: an RTCP-SR-REQ has no FCI and a length of 2
+    %% (libwebrtc's RapidResyncRequest parser refuses it too).
+    {rtcp, "6.rtcp"} => {bad_packet, 205, bad_srreq},
     %% RFC 4585 §6.3.3: an RPSI without FCI, and one whose PB leaves no
     %% native bit string (libwebrtc's former parser refused both).
     {rtcp, "3.rtcp"} => {bad_packet, 206, bad_rpsi},

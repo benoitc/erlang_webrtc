@@ -28,6 +28,7 @@
     retransmit/4,
     send_feedback/3,
     send_rtcp/2,
+    early_sr/3,
     senders/2,
     ssrc_collision/2,
     tmin/2
@@ -91,6 +92,7 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     MidExt = maps:get(?URI_MID, SendExt, undefined),
     AudioLevel = maps:get(?URI_AUDIO_LEVEL, SendExt, undefined),
     TwccExt = maps:get(?URI_TWCC, SendExt, undefined),
+    NtpExt = maps:get(<<"urn:ietf:params:rtp-hdrext:ntp-64">>, SendExt, undefined),
     {Pause, HoldOff} = pause(Sec, Old),
     Tmmbr = case webrtc_media_limit:negotiated(Cs) of
                 false -> undefined;
@@ -100,7 +102,7 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     case Old of
         #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff,
                           audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc),
-                          tmmbr = Tmmbr};
+                          tmmbr = Tmmbr, ntp_ext = NtpExt};
         undefined ->
             #snd{
                 mid = Mid,
@@ -120,7 +122,8 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 audio_level_ext = AudioLevel,
                 fec_ssrc = maps:get(fec_ssrc, Sec, undefined),
                 fec_seq = rand16(),
-                tmmbr = Tmmbr
+                tmmbr = Tmmbr,
+                ntp_ext = NtpExt
             }
     end.
 
@@ -637,7 +640,28 @@ reports(Now, Feedback, M) ->
     Reports =
         [with_blocks(Head, InHead) | Others] ++
             [#rtcp_rr{ssrc = Reporter, reports = Bs} || Bs <- chunks(Extra, 31)],
-    send_regular(Reports ++ [Sdes | Xr ++ Feedback], Now, M2).
+    M3 = lists:foldl(fun(#snd{ssrc = Ssrc}, Acc) -> webrtc_media_sync:sr_sent(Ssrc, Acc) end, M2, Senders),
+    send_regular(Reports ++ [Sdes | Xr ++ Feedback], Now, M3).
+
+%% @doc An SR for one stream now, within the early feedback rules (RFC
+%% 6051 §3.2 answering an SR-REQ); otherwise the next regular report
+%% carries it.
+-spec early_sr(non_neg_integer(), integer(), #media{}) -> {[{send, binary()}], #media{}}.
+early_sr(Ssrc, Now, #media{out = Out} = M) when Out =/= undefined ->
+    case [S || #snd{ssrc = X} = S <- maps:values(M#media.senders), X =:= Ssrc] of
+        [S] ->
+            Ntp = webrtc_rtp_stats:ntp_from_us(erlang:system_time(microsecond)),
+            Sr = webrtc_rtp_stats:sender_report(Ssrc, Ntp, rtp_ts_now(S, Now), S#snd.tx, []),
+            Pkts = [Sr, #rtcp_sdes{chunks = [{Ssrc, [{cname, M#media.cname} | layer_sdes(S)]}]}],
+            case webrtc_rtcp_sched:feedback(Now, byte_size(webrtc_rtcp:encode(Pkts)) + 14, M#media.rtcp) of
+                {now, R1} -> send_rtcp(Pkts, webrtc_media_sync:sr_sent(Ssrc, M#media{rtcp = R1}));
+                {later, R1} -> {[], M#media{rtcp = R1}}
+            end;
+        _ ->
+            {[], M}
+    end;
+early_sr(_Ssrc, _Now, M) ->
+    {[], M}.
 
 %% RFC 3611: a Receiver Reference Time block while we receive streams
 %% (their senders answer with DLRR, which gives the round trip time of

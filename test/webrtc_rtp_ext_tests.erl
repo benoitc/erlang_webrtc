@@ -13,6 +13,17 @@ one_byte_figure_test() ->
         webrtc_rtp_ext:decode(16#BEDE, Data)
     ).
 
+%% RFC 6051 §3.3 Figure 5: ID-A with L=7, the 64-bit NTP timestamp,
+%% three padding bytes; length 3 words.
+ntp64_figure_test() ->
+    Ntp = 16#0123456789abcdef,
+    ?assertEqual({16#BEDE, b("67 01 23 45 67 89 ab cd ef 00 00 00")}, webrtc_rtp_ext:encode([{6, webrtc_rtp_ext:ntp64(Ntp)}])).
+
+%% Figure 6: ID-B with L=6, seconds bits 8-31 and the fraction; 2 words.
+ntp56_figure_test() ->
+    Ntp = 16#0123456789abcdef,
+    ?assertEqual({16#BEDE, b("76 23 45 67 89 ab cd ef")}, webrtc_rtp_ext:encode([{7, webrtc_rtp_ext:ntp56(Ntp)}])).
+
 %% RFC 8285 §4.3 figure: L=0 (no data), L=1, one padding byte, L=4.
 two_byte_figure_test() ->
     Data = b("01 00 02 01 aa 00 03 04 01 02 03 04"),

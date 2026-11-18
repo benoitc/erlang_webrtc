@@ -139,7 +139,7 @@ net_rate(Set, PacketRate) ->
 -spec request(non_neg_integer(), non_neg_integer(), 0..511, integer(), non_neg_integer(), state()) -> state().
 request(Owner, Bitrate, Overhead, Now, HoldOff, #tmmbr{set = Set} = S) ->
     Candidates = [T || {O, _, _} = T <- Set, O =/= Owner] ++ [{Owner, Bitrate, Overhead}],
-    change(bounding_set(Candidates), Now, HoldOff, touch(Owner, Now, S)).
+    change(bounding_set(Candidates), Now, HoldOff, S#tmmbr{seen = (S#tmmbr.seen)#{Owner => Now}}).
 
 %% @doc The owner left (RTCP BYE). `{true, S}' when it owned a tuple of
 %% the set: send a TMMBN with what remains.
@@ -151,10 +151,13 @@ leave(Owner, Now, HoldOff, #tmmbr{set = Set} = S) ->
         false -> {false, S1}
     end.
 
-%% @doc A packet from `Ssrc' was received.
+%% @doc A packet from `Ssrc' was received: an owner is still there.
+%% Other SSRCs are not recorded.
 -spec touch(non_neg_integer(), integer(), state()) -> state().
-touch(Ssrc, Now, #tmmbr{seen = Seen} = S) ->
-    S#tmmbr{seen = Seen#{Ssrc => Now}}.
+touch(Ssrc, Now, #tmmbr{seen = Seen} = S) when is_map_key(Ssrc, Seen) ->
+    S#tmmbr{seen = Seen#{Ssrc := Now}};
+touch(_Ssrc, _Now, S) ->
+    S.
 
 %% @doc Remove the owners not heard from for `Timeout' ms. Returns the
 %% owners removed from the set.
@@ -171,11 +174,13 @@ expire(Now, Timeout, HoldOff, #tmmbr{set = Set, seen = Seen} = S) ->
     ).
 
 change(Set, _Now, _HoldOff, #tmmbr{set = Set} = S) ->
-    S;
+    S#tmmbr{seen = maps:with([O || {O, _, _} <- Set], S#tmmbr.seen)};
 change(Set, Now, HoldOff, S) ->
     %% Whatever is enforced now stays enforced during the hold-off, so a
-    %% relaxed limit waits and a stricter one applies at once.
-    S#tmmbr{set = Set, hold = enforced(Now, S), hold_until = Now + HoldOff}.
+    %% relaxed limit waits and a stricter one applies at once. Only the
+    %% owners of the set are followed.
+    S#tmmbr{set = Set, hold = enforced(Now, S), hold_until = Now + HoldOff,
+            seen = maps:with([O || {O, _, _} <- Set], S#tmmbr.seen)}.
 
 %% @doc The bounding set reported in TMMBN.
 -spec set(state()) -> [tuple_()].

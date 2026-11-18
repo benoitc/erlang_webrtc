@@ -115,6 +115,8 @@ forget(Ssrc, #media{rtx_ssrc = Rtx} = M) ->
             Acc#media{
                 receivers = maps:remove(S, Acc#media.receivers),
                 last_seen = maps:remove(S, Acc#media.last_seen),
+                %% Its statistics go too: an ended stream is not reported.
+                streams = maps:remove({in, S}, Acc#media.streams),
                 ssrc_mid =
                     case maps:find(S, Acc#media.signaled) of
                         {ok, Mid} -> (Acc#media.ssrc_mid)#{S => Mid};
@@ -709,18 +711,20 @@ rtcp_in(Bin, Now, M) ->
             {webrtc_media_out:count(srtp_rejected, M), []}
     end.
 
-rtcp_packet(#rtcp_nack{media_ssrc = Ssrc, items = Items}, Now, M0) ->
-    M = webrtc_media_out:scount(out, Ssrc, nack_count, 1, M0),
+%% Feedback is counted on our stream it names; feedback about another
+%% SSRC only in one counter, so a peer cannot grow our state.
+rtcp_packet(#rtcp_nack{media_ssrc = Ssrc, items = Items}, Now, M) ->
     case sender_by_ssrc(Ssrc, M) of
-        {ok, S} -> webrtc_media_out:retransmit(S, webrtc_rtcp_fb:nack_seqs(Items), Now, M);
-        error -> {M, []}
+        {ok, S} -> webrtc_media_out:retransmit(S, webrtc_rtcp_fb:nack_seqs(Items), Now,
+                                               webrtc_media_out:scount(out, Ssrc, nack_count, 1, M));
+        error -> {webrtc_media_out:count(feedback_unknown_ssrc, M), []}
     end;
 rtcp_packet(#rtcp_pli{media_ssrc = Ssrc}, _Now, M) ->
-    keyframe(Ssrc, webrtc_media_out:scount(out, Ssrc, pli_count, 1, M));
+    keyframe(Ssrc, pli_count, M);
 rtcp_packet(#rtcp_fir{entries = Entries}, _Now, M) ->
     lists:foldl(
         fun({Ssrc, _}, {Acc, Act}) ->
-            {Acc1, A} = keyframe(Ssrc, webrtc_media_out:scount(out, Ssrc, fir_count, 1, Acc)),
+            {Acc1, A} = keyframe(Ssrc, fir_count, Acc),
             {Acc1, Act ++ A}
         end,
         {M, []},
@@ -740,18 +744,19 @@ rtcp_packet(Other, Now, M) ->
     rtcp_packet2(Other, Now, M).
 
 sender_report(#rtcp_sr{ssrc = Ssrc, reports = Rbs} = SR, Now, M0) ->
-    %% The remote outbound stream (W3C RTCRemoteOutboundRtpStreamStats).
-    M = webrtc_media_out:scount(in, Ssrc, reports_received, 1, webrtc_media_out:sset(in, Ssrc, #{
-        remote_packets_sent => SR#rtcp_sr.packets,
-        remote_bytes_sent => SR#rtcp_sr.octets,
-        remote_timestamp => webrtc_rtp_stats:ntp_to_us(SR#rtcp_sr.ntp) div 1000
-    }, M0)),
-    case maps:find(Ssrc, M#media.receivers) of
+    case maps:find(Ssrc, M0#media.receivers) of
         {ok, R} ->
+            %% The remote outbound stream (W3C RTCRemoteOutboundRtpStreamStats),
+            %% for a stream we receive only.
+            M = webrtc_media_out:scount(in, Ssrc, reports_received, 1, webrtc_media_out:sset(in, Ssrc, #{
+                remote_packets_sent => SR#rtcp_sr.packets,
+                remote_bytes_sent => SR#rtcp_sr.octets,
+                remote_timestamp => webrtc_rtp_stats:ntp_to_us(SR#rtcp_sr.ntp) div 1000
+            }, M0)),
             Rx = webrtc_rtp_stats:rx_sender_report(SR, Now, R#rcv.rx),
             report_blocks(Rbs, Now, webrtc_media_sync:sr_in(SR, M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{rx = Rx}}}));
         error ->
-            report_blocks(Rbs, Now, M)
+            report_blocks(Rbs, Now, webrtc_media_out:count(sr_unknown_ssrc, M0))
     end.
 
 %% RFC 3550 §6.6: the source left; its state goes with it.
@@ -865,11 +870,16 @@ path_rtt(Rtt, M) ->
     Ss = maps:map(fun(_, S) -> S#snd{buffer = webrtc_nack_buffer:set_rtt(Rtt, S#snd.buffer)} end, M#media.senders),
     M#media{receivers = Rs, senders = Ss}.
 
-keyframe(Ssrc, M) ->
-    case sender_by_ssrc(Ssrc, M) of
-        {ok, #snd{mid = Mid, rid = undefined}} -> {M, [{event, {keyframe_request, Mid}}]};
-        {ok, #snd{mid = Mid, rid = Rid}} -> {M, [{event, {keyframe_request, Mid, Rid}}]};
-        error -> {M, []}
+keyframe(Ssrc, Counter, M0) ->
+    case sender_by_ssrc(Ssrc, M0) of
+        {ok, #snd{mid = Mid, rid = Rid}} ->
+            M = webrtc_media_out:scount(out, Ssrc, Counter, 1, M0),
+            case Rid of
+                undefined -> {M, [{event, {keyframe_request, Mid}}]};
+                _ -> {M, [{event, {keyframe_request, Mid, Rid}}]}
+            end;
+        error ->
+            {webrtc_media_out:count(feedback_unknown_ssrc, M0), []}
     end.
 
 sender_by_ssrc(Ssrc, M) ->

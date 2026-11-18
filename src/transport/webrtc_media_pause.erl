@@ -93,10 +93,11 @@ entry_in({Target, Type, Id, Seq}, Now, #media{pause_req = Reqs} = M) when is_map
     {R, Ev} = ?P:requester_in(Msg, Now, maps:get(Target, Reqs)),
     M1 = M#media{pause_req = Reqs#{Target := R}},
     {M1, [], events(remote, Ev, Target, M1)};
-entry_in({Target, paused, _Id, _Seq} = E, Now, M) ->
+entry_in({Target, paused, _Id, _Seq} = E, Now, #media{pause_req = Reqs} = M) when map_size(Reqs) < ?MAX_STREAMS ->
     %% The sender paused a stream we never asked about (a paused layer
-    %% of the answer, or a local pause): track it.
-    entry_in(E, Now, M#media{pause_req = (M#media.pause_req)#{Target => ?P:requester()}});
+    %% of the answer, or a local pause): track it, as many as streams
+    %% we may receive.
+    entry_in(E, Now, M#media{pause_req = Reqs#{Target => ?P:requester()}});
 entry_in(_, _Now, M) ->
     {M, [], []}.
 

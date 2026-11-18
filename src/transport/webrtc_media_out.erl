@@ -64,7 +64,7 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
     {Pause, HoldOff} = pause(Sec, Old),
     case Old of
         #snd{} -> Old#snd{codecs = Cs, rtx = Rtx, mid_ext = MidExt, twcc_ext = TwccExt, pause = Pause, hold_off = HoldOff,
-                          audio_level_ext = AudioLevel};
+                          audio_level_ext = AudioLevel, fec_ssrc = maps:get(fec_ssrc, Sec, Old#snd.fec_ssrc)};
         undefined ->
             #snd{
                 mid = Mid,
@@ -81,7 +81,9 @@ sender(#{mid := Mid, kind := K, ssrc := S, rtx_ssrc := R, send_codecs := Cs} = S
                 buffer = webrtc_nack_buffer:new(#{size => ?BUFFER_SIZE}),
                 pause = Pause,
                 hold_off = HoldOff,
-                audio_level_ext = AudioLevel
+                audio_level_ext = AudioLevel,
+                fec_ssrc = maps:get(fec_ssrc, Sec, undefined),
+                fec_seq = rand16()
             }
     end.
 
@@ -133,16 +135,18 @@ red_pt(#snd{codecs = Cs}) ->
 -spec fec_wrap(#snd{}, #rtp{}) -> #rtp{}.
 fec_wrap(S, #rtp{pt = Pt, payload = P} = Pkt) ->
     case fec_pts(S) of
-        {Red, _} when Pt =/= Red -> Pkt#rtp{pt = Red, payload = <<0:1, Pt:7, P/binary>>};
+        {ulp, Red, _} when Pt =/= Red -> Pkt#rtp{pt = Red, payload = <<0:1, Pt:7, P/binary>>};
         _ -> Pkt
     end.
 
-%% The RED and ulpfec payload types of a video sender, when both are
-%% negotiated.
-fec_pts(#snd{kind = video, codecs = Cs}) ->
+%% The video FEC of a sender: FlexFEC (RFC 8627, the SHOULD of RFC 8854
+%% §5.1) on its repair stream when negotiated, otherwise ULPFEC in RED
+%% when both are.
+fec_pts(#snd{kind = video, codecs = Cs, fec_ssrc = FecSsrc}) ->
     Pt = fun(Name) -> [P || #{pt := P, name := N} <- Cs, string:lowercase(N) =:= Name] end,
-    case {Pt(<<"red">>), Pt(<<"ulpfec">>)} of
-        {[Red | _], [Ulp | _]} -> {Red, Ulp};
+    case {Pt(<<"flexfec">>), Pt(<<"red">>), Pt(<<"ulpfec">>)} of
+        {[Flex | _], _, _} when is_integer(FecSsrc) -> {flex, Flex};
+        {_, [Red | _], [Ulp | _]} -> {ulp, Red, Ulp};
         _ -> undefined
     end;
 fec_pts(_) ->
@@ -150,7 +154,7 @@ fec_pts(_) ->
 
 %% The packet as ULPFEC protects it (the media payload type, no RED
 %% header), and the media payload for the frame statistics.
-unwrap_red(#rtp{pt = Red, payload = <<0:1, Pt:7, Inner/binary>>} = Pkt, {Red, _}) -> Pkt#rtp{pt = Pt, payload = Inner};
+unwrap_red(#rtp{pt = Red, payload = <<0:1, Pt:7, Inner/binary>>} = Pkt, {ulp, Red, _}) -> Pkt#rtp{pt = Pt, payload = Inner};
 unwrap_red(Pkt, _) -> Pkt.
 
 %% A video packet sent with ULPFEC joins its frame's group; the last
@@ -176,7 +180,26 @@ fec_sent(Key, Pkt, Now, M) ->
             {[], M}
     end.
 
-fec_packets(Key, Group, Ts, {Red, Ulp}, Now, M) ->
+fec_packets(Key, Group, Ts, {flex, Flex}, Now, M) ->
+    S0 = maps:get(Key, M#media.senders),
+    Rate = fec_rate(S0, M),
+    Payloads = lists:append([webrtc_flexfec:protect(C, fec_count(length(C), Rate)) || C <- chunk(Group, 110), Rate > 0]),
+    %% RFC 8627 §4.2.1: the repair stream's own SSRC and sequence, the
+    %% protected SSRC as its CSRC, the time of sending at 90 kHz.
+    _ = Ts,
+    {Pkts, S1} = lists:mapfoldl(
+        fun(P, S) ->
+            Pkt = #rtp{ssrc = S#snd.fec_ssrc, pt = Flex, seq = S#snd.fec_seq, ts = (Now * 90) band 16#FFFFFFFF,
+                       csrcs = [S#snd.ssrc],
+                       ext = mid_ext(S), payload = P},
+            {Pkt, S#snd{fec_seq = (S#snd.fec_seq + 1) band 16#FFFF}}
+        end,
+        S0,
+        Payloads
+    ),
+    M1 = count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}}),
+    egress([{Key, P, flexfec, Now} || P <- Pkts], Now, M1);
+fec_packets(Key, Group, Ts, {ulp, Red, Ulp}, Now, M) ->
     S0 = maps:get(Key, M#media.senders),
     Rate = fec_rate(S0, M),
     Chunks = chunk(Group, 48),
@@ -337,6 +360,9 @@ add_twcc(Id, Seq, #rtp{ext = Ext} = Pkt) ->
 %% the receiver accepts them since it never got that index.
 keep_wire(_Key, _Pkt, _Srtp, true, _Now, M) ->
     M;
+keep_wire(_Key, _Pkt, _Srtp, flexfec, _Now, M) ->
+    %% The repair stream is not retransmitted.
+    M;
 keep_wire(Key, Pkt, Srtp, fec, Now, M) ->
     keep_wire(Key, Pkt, Srtp, false, Now, M);
 keep_wire(Key, #rtp{seq = Seq} = Pkt, Srtp, false, Now, M) ->
@@ -361,6 +387,8 @@ sent_stats(Mid, Pkt, true, M) ->
                 M
         end,
     count(retransmitted, M1);
+sent_stats(_Mid, _Pkt, flexfec, M) ->
+    M;
 sent_stats(Mid, Pkt, fec, M) ->
     sent_stats(Mid, Pkt, false, M);
 sent_stats(Mid, Pkt, false, M) ->

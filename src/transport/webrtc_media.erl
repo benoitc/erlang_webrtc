@@ -101,7 +101,8 @@ configure(Sections, #media{} = M) ->
     SsrcMid = maps:from_list(
         lists:append([
             [{Ssrc, Mid} || #{ssrc := Ssrc} <- Rs] ++
-                [{X, Mid} || #{rtx_ssrc := X} <- Rs, is_integer(X)]
+                [{X, Mid} || #{rtx_ssrc := X} <- Rs, is_integer(X)] ++
+                [{X, Mid} || #{fec_ssrc := X} <- Rs, is_integer(X)]
          || #{mid := Mid, remote_ssrcs := Rs} <- Sections
         ])
     ),

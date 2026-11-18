@@ -98,7 +98,7 @@ Forward a packet received on one peer connection to another (SFU style). SSRC an
 {webrtc, In, {rtp, _Mid, Pkt}} -> webrtc:send_rtp_packet(Out, <<"1">>, Pkt).
 ```
 
-Video FEC (ULPFEC in RED, RFC 8854 §5.2) is negotiated by default: lost packets are rebuilt from FEC packets the sender adds after each frame. The sender adds them as the peer reports loss; `video_fec => 0.5` on `new_peer_connection/1` fixes one FEC packet for two media packets, `0.0` turns them off.
+Video FEC is negotiated by default: FlexFEC (RFC 8627) on its own stream, or ULPFEC in RED (RFC 8854 §5.2) with peers that do not have FlexFEC, such as browsers. Lost packets are rebuilt from FEC packets the sender adds after each frame. The sender adds them as the peer reports loss; `video_fec => 0.5` on `new_peer_connection/1` fixes one FEC packet for two media packets, `0.0` turns them off.
 
 Ask the sender for a keyframe when a new receiver joins:
 

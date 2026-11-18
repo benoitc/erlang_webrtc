@@ -15,11 +15,12 @@
 %% that packet back.
 -module(webrtc_ulpfec).
 
--export([protect/2, decode/1, new/0, media/3, fec/2, stats/1]).
+-export([protect/2, decode/1, new/0, media/3, fec/2, repair/2, stats/1]).
 
 -export_type([receiver/0]).
 
--define(MEDIA_KEPT, 96).
+%% FlexFEC masks reach 110 packets back (RFC 8627 §4.2.2.1).
+-define(MEDIA_KEPT, 160).
 -define(FEC_KEPT, 32).
 
 %%====================================================================
@@ -120,12 +121,25 @@ fec({Ssrc, Payload}, #rx{stats = S} = St0) ->
                             fec_bytes_received := maps:get(fec_bytes_received, S) + byte_size(Payload)}},
     case decode(Payload) of
         {ok, #{base := Base, offsets := Offs} = F} ->
-            {ExtBase, St2} = unwrap(Base, St1),
-            Seqs = [ExtBase + O || O <- Offs],
-            recover(keep(St2#rx{fec = [{Seqs, F, <<Ssrc:32>>} | St2#rx.fec]}));
+            add(Ssrc, Base, Offs, F, St1);
         {error, _} ->
             {[], discard(1, St1)}
     end.
+
+%% @doc A repair packet already read (FlexFEC, RFC 8627, see
+%% webrtc_flexfec): SN base and offsets of the packets of `Ssrc' it
+%% protects, the recovery fields and the repair payload, and its size.
+-spec repair({non_neg_integer(), {0..65535, [non_neg_integer()]}, map(), non_neg_integer()}, receiver()) ->
+    {[binary()], receiver()}.
+repair({Ssrc, {Base, Offs}, F, Size}, #rx{stats = S} = St0) ->
+    St1 = St0#rx{stats = S#{fec_packets_received := maps:get(fec_packets_received, S) + 1,
+                            fec_bytes_received := maps:get(fec_bytes_received, S) + Size}},
+    add(Ssrc, Base, Offs, F, St1).
+
+add(Ssrc, Base, Offs, F, St1) ->
+    {ExtBase, St2} = unwrap(Base, St1),
+    Seqs = [ExtBase + O || O <- Offs],
+    recover(keep(St2#rx{fec = [{Seqs, F, <<Ssrc:32>>} | St2#rx.fec]})).
 
 -spec stats(receiver()) -> map().
 stats(#rx{stats = S}) ->

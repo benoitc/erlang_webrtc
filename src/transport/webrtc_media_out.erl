@@ -22,6 +22,7 @@
     pick_pt/2,
     is_repair/1,
     red_pt/1,
+    fec_wrap/2,
     reports/3,
     retransmit/4,
     send_feedback/3,
@@ -126,6 +127,88 @@ red_pt(#snd{codecs = Cs}) ->
         [] -> error
     end.
 
+%% @doc ULPFEC inside RED (RFC 8854 §5.2, as libwebrtc sends it): a
+%% video packet of a sender with both negotiated goes as a RED packet
+%% with one block.
+-spec fec_wrap(#snd{}, #rtp{}) -> #rtp{}.
+fec_wrap(S, #rtp{pt = Pt, payload = P} = Pkt) ->
+    case fec_pts(S) of
+        {Red, _} when Pt =/= Red -> Pkt#rtp{pt = Red, payload = <<0:1, Pt:7, P/binary>>};
+        _ -> Pkt
+    end.
+
+%% The RED and ulpfec payload types of a video sender, when both are
+%% negotiated.
+fec_pts(#snd{kind = video, codecs = Cs}) ->
+    Pt = fun(Name) -> [P || #{pt := P, name := N} <- Cs, string:lowercase(N) =:= Name] end,
+    case {Pt(<<"red">>), Pt(<<"ulpfec">>)} of
+        {[Red | _], [Ulp | _]} -> {Red, Ulp};
+        _ -> undefined
+    end;
+fec_pts(_) ->
+    undefined.
+
+%% The packet as ULPFEC protects it (the media payload type, no RED
+%% header), and the media payload for the frame statistics.
+unwrap_red(#rtp{pt = Red, payload = <<0:1, Pt:7, Inner/binary>>} = Pkt, {Red, _}) -> Pkt#rtp{pt = Pt, payload = Inner};
+unwrap_red(Pkt, _) -> Pkt.
+
+%% A video packet sent with ULPFEC joins its frame's group; the last
+%% packet of the frame sends the FEC packets (RFC 5109) after it.
+fec_sent(Key, Pkt, Now, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, #snd{} = S} ->
+            case fec_pts(S) of
+                undefined ->
+                    {[], M};
+                Pts ->
+                    Media = unwrap_red(Pkt, Pts),
+                    Group = [{Media#rtp.seq, webrtc_rtp:encode(Media)} | S#snd.fec_group],
+                    case Pkt#rtp.marker of
+                        false ->
+                            {[], M#media{senders = (M#media.senders)#{Key := S#snd{fec_group = Group}}}};
+                        true ->
+                            fec_packets(Key, lists:reverse(Group), Pkt#rtp.ts, Pts, Now,
+                                        M#media{senders = (M#media.senders)#{Key := S#snd{fec_group = []}}})
+                    end
+            end;
+        error ->
+            {[], M}
+    end.
+
+fec_packets(Key, Group, Ts, {Red, Ulp}, Now, M) ->
+    S0 = maps:get(Key, M#media.senders),
+    Rate = fec_rate(S0, M),
+    Chunks = chunk(Group, 48),
+    Payloads = lists:append([webrtc_ulpfec:protect(C, fec_count(length(C), Rate)) || C <- Chunks, Rate > 0]),
+    {Pkts, S1} = lists:mapfoldl(
+        fun(P, S) ->
+            Next = (S#snd.seq + 1) band 16#FFFF,
+            Pkt = #rtp{ssrc = S#snd.ssrc, pt = Red, seq = S#snd.seq, ts = Ts, ext = mid_ext(S),
+                       payload = <<0:1, Ulp:7, P/binary>>},
+            {Pkt, S#snd{seq = Next, cycles = S#snd.cycles + case Next of 0 -> 1; _ -> 0 end}}
+        end,
+        S0,
+        Payloads
+    ),
+    M1 = count(fec_sent, length(Pkts), M#media{senders = (M#media.senders)#{Key := S1}}),
+    egress([{Key, P, fec, Now} || P <- Pkts], Now, M1).
+
+%% `video_fec': a fixed rate, or with `auto' twice the fraction lost the
+%% peer reports (RFC 3550 §6.4.2), at most one FEC packet for two.
+fec_rate(#snd{ssrc = Ssrc}, #media{video_fec = auto, streams = St}) ->
+    Lost = maps:get(remote_fraction_lost, maps:get({out, Ssrc}, St, #{}), 0) / 256,
+    min(0.5, 2 * Lost);
+fec_rate(_S, #media{video_fec = R}) ->
+    R.
+
+fec_count(_N, R) when R =< 0 -> 0;
+fec_count(N, R) -> max(1, min(N, ceil(N * R))).
+
+chunk([], _) -> [];
+chunk(L, N) when length(L) =< N -> [L];
+chunk(L, N) -> {A, B} = lists:split(N, L), [A | chunk(B, N)].
+
 %% Queue packets in the pacer, then protect and send what it releases.
 pace(Class, Items, Now, M) ->
     {Out, Cc} = lists:foldl(
@@ -177,11 +260,17 @@ egress(Items, Now, M0) ->
                             Ssrc = Pkt#rtp.ssrc,
                             M3 = scount(out, Ssrc, header_bytes_sent, byte_size(Plain) - byte_size(Pkt#rtp.payload),
                                         scount(out, Ssrc, total_packet_send_delay_ms, Now - Queued, M2)),
-                            M4 = case Rtx of
-                                     false when Kind =:= video -> frame_sent(Key, Pkt, Now, M3);
-                                     _ -> M3
-                                 end,
-                            {[out(Srtp, M1) | Acc], sent_stats(Key, Pkt, Rtx, M4)};
+                            {Fec, M4} = case Rtx of
+                                            false when Kind =:= video ->
+                                                Pts = case maps:find(Key, M3#media.senders) of
+                                                          {ok, Sn} -> fec_pts(Sn);
+                                                          error -> undefined
+                                                      end,
+                                                fec_sent(Key, Pkt, Now, frame_sent(Key, unwrap_red(Pkt, Pts), Now, M3));
+                                            _ ->
+                                                {[], M3}
+                                        end,
+                            {lists:reverse(Fec, [out(Srtp, M1) | Acc]), sent_stats(Key, Pkt, Rtx, M4)};
                         {error, _} ->
                             {Acc, count(srtp_failed, M1)}
                     end
@@ -248,6 +337,8 @@ add_twcc(Id, Seq, #rtp{ext = Ext} = Pkt) ->
 %% the receiver accepts them since it never got that index.
 keep_wire(_Key, _Pkt, _Srtp, true, _Now, M) ->
     M;
+keep_wire(Key, Pkt, Srtp, fec, Now, M) ->
+    keep_wire(Key, Pkt, Srtp, false, Now, M);
 keep_wire(Key, #rtp{seq = Seq} = Pkt, Srtp, false, Now, M) ->
     case maps:find(Key, M#media.senders) of
         {ok, S} ->
@@ -270,6 +361,8 @@ sent_stats(Mid, Pkt, true, M) ->
                 M
         end,
     count(retransmitted, M1);
+sent_stats(Mid, Pkt, fec, M) ->
+    sent_stats(Mid, Pkt, false, M);
 sent_stats(Mid, Pkt, false, M) ->
     case maps:find(Mid, M#media.senders) of
         {ok, S} ->

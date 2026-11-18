@@ -101,7 +101,12 @@ default_codecs(video) ->
         ),
         rtx(103, 102),
         codec(45, <<"AV1">>, 90000, undefined, [], Fb),
-        rtx(46, 45)
+        rtx(46, 45),
+        %% RFC 8854 §5.2: ULPFEC (RFC 5109) in RED (RFC 2198), with the
+        %% payload types browsers use.
+        codec(116, <<"red">>, 90000, undefined, [], []),
+        rtx(117, 116),
+        codec(118, <<"ulpfec">>, 90000, undefined, [], [])
     ].
 
 codec(Pt, Name, Rate, Ch, Fmtp, Fb) ->
@@ -152,7 +157,8 @@ answer_codecs(Offered0, Local) ->
      || O <- Offered, not is_rtx(O), {ok, L} <- [find_match(O, Local)]
     ],
     %% RED is kept with the offer's fmtp, which names the offer's
-    %% payload types, and only when all of those are kept.
+    %% payload types, and only when all of those are kept, or without
+    %% fmtp.
     Kept0 = [Pt || #{pt := Pt, name := N} <- Primary, string:lowercase(N) =/= <<"red">>],
     Primary1 = [case string:lowercase(N) of <<"red">> -> red_answer(C, Offered, Kept0); _ -> C end
                 || #{name := N} = C <- Primary],
@@ -169,7 +175,10 @@ red_answer(#{pt := Pt} = C, Offered, Kept) ->
     Fmtp = maps:get(fmtp, O, []),
     Pts = lists:append([[binary_to_integer(P) || P <- binary:split(F, <<"/">>, [global]), P =/= <<>>]
                         || F <- Fmtp, is_binary(F)]),
-    case Pts =/= [] andalso lists:all(fun(P) -> lists:member(P, Kept) end, Pts) of
+    %% RFC 2198 §5: video RED (RFC 8854 §5.2), ours without fmtp, is
+    %% offered without one too and names no payload types.
+    Video = maps:get(fmtp, C, []) =:= [] andalso Fmtp =:= [],
+    case lists:all(fun(P) -> lists:member(P, Kept) end, Pts) andalso (Pts =/= [] orelse Video) of
         true -> C#{fmtp => Fmtp};
         false -> drop
     end.

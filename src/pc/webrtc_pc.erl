@@ -485,7 +485,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
     TOpts = maps:merge(
         maps:with(
             [stun_servers, turn_servers, server_fallbacks, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
-                rtcp_report_interval, ice_tcp,
+                rtcp_report_interval, ice_tcp, video_fec,
                 mdns_host_candidates, mdns_expose_public, dtls, srtp_profiles],
             St#st.opts
         ),

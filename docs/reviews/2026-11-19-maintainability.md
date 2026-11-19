@@ -223,3 +223,17 @@ Each points to real modules, tests and docs:
    - the path diagrams;
    - more examples;
    - any directory moves the maintainer decides on.
+
+## Decisions (2026-11-19)
+
+The maintainer's answers to the questions above:
+
+| Question | Decision |
+|---|---|
+| Scope before 0.1.0 | All three steps of the suggested order |
+| The 500-line rule | Becomes "one responsibility per module"; size is a signal to check that, not a limit |
+| `src/transport` layout | The media session moves to `src/media` and mDNS to `src/mdns` before 0.1.0 |
+| `docs/prompts/` | Becomes a guide for people; the prompt is removed |
+| Generated API docs | ex_doc, published on hexdocs; CI checks they build |
+| Public API surface | `webrtc` and the `webrtc_media_codec` behaviour; every other module is internal |
+| Supported OTP versions | OTP 29 and later; CI tests 29 |

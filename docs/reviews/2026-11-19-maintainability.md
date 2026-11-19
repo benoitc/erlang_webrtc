@@ -237,3 +237,30 @@ The maintainer's answers to the questions above:
 | Generated API docs | ex_doc, published on hexdocs; CI checks they build |
 | Public API surface | `webrtc` and the `webrtc_media_codec` behaviour; every other module is internal |
 | Supported OTP versions | OTP 29 and later; CI tests 29 |
+
+## Status (2026-11-19)
+
+What the branch `docs/maintainability` did with each finding.
+
+| Finding | Status | Commit |
+|---|---|---|
+| LICENSE, SECURITY.md, CONTRIBUTING.md missing | Fixed | 95f34fd |
+| Stale rows and summary: AVPF-6, DTLS-27, COMPLIANCE summary, README status line | Fixed | 71d134c |
+| `src/transport` holds three subsystems | Fixed: `src/media` and `src/mdns` | d76f02c |
+| DEVELOPER_GUIDE: incomplete map, 500-line rule, few recipes | Fixed: rewritten as "Change the code" | a26ef4a |
+| ARCHITECTURE: no media session, no path diagrams, incomplete layout | Fixed | 0b9ffeb |
+| No vocabulary page | Fixed: CONCEPTS.md | 82d3265 |
+| Decisions visible only in code | Fixed: ADRs 0002 to 0006 | 802ebf6 |
+| `webrtc_pc`, the media session, the transport and `webrtc_jsep` need a map | Fixed in their module docs; the stale "one transport" limitation in `webrtc_jsep` removed | 34f55c4 |
+| More examples | Fixed: `browser_video`, `browser_relay`, run by `webrtc_examples_SUITE` | 8428f0f, 39d1482 |
+| CHANGELOG missing | Fixed: 0.1.0 section, release date left open | cad7a55 |
+| Guides, README too long, `docs/prompts` | Fixed: five guides, a short README, the prompt became the frames and codec plugins guide | 9455404 |
+| No configuration and events reference | Fixed: REFERENCE.md, kept in sync by `webrtc_docs_tests` | f42780e |
+| No generated API docs | Fixed: ex_doc with the two public modules and every page, checked in CI | 5878efa |
+
+Still open:
+
+- `webrtc_pc` (1,095 lines) is documented, not split. Splitting the ICE restart logic and the extra transports into their own modules is the next step if the module keeps growing.
+- The long dispatch functions (`webrtc_sctp_send:commit/4`, `webrtc_sctp_assoc:chunk/4`, the `call_/3` clauses) are unchanged.
+- Found while writing the relay example: `webrtc:send_rtp_packet/3` rewrites the SSRC and sequence number but not the payload type, so forwarding between peers that use different payload types for the same codec needs the application to map them. The forwarding guide says so.
+- The Firefox cases of the new examples run in CI on Linux only; they were not run on macOS.

@@ -173,3 +173,34 @@ send_frame_test_() ->
         ?assertEqual(length(Frames), length(Got)),
         ?assert(lists:all(fun({E, G}) -> Same(E, G) end, lists:zip(Frames, Got)))
     end} || C <- [vp8, vp9, h264, av1]].
+
+%% A padding-only packet on the media stream (what a sender's bandwidth
+%% probes are without RTX) between the frames: its sequence number is no
+%% gap, so codecs without picture IDs lose no frame.
+padding_between_frames_test_() ->
+    [{atom_to_list(C), fun() ->
+        {SA0, SB0} = pair(#{}, #{frames => true}),
+        Frames = webrtc_test_frames:frames(C),
+        {_, _, Acts} = lists:foldl(
+            fun({I, #{expect := D, key := K}}, {SA, SB, Acc}) ->
+                Ts = 1000 + I * 3000,
+                {ok, Out, SA1} = webrtc_media:send_frame(<<"1">>, D, #{timestamp => Ts, keyframe => K,
+                                                                      codec => webrtc_test_frames:name(C)}, I * 33, SA),
+                {SB1, A} = run(I * 33, Out, SB),
+                Pad = #rtp{pt = pt(C, SA1), ts = Ts, payload = <<>>, padding = 200},
+                {ok, PadOut, SA2} = webrtc_media:send_packet(<<"1">>, Pad, I * 33 + 10, SA1),
+                {SB2, A2} = run(I * 33 + 10, PadOut, SB1),
+                {SA2, SB2, Acc ++ A ++ A2}
+            end,
+            {SA0, SB0, []},
+            lists:enumerate(0, Frames)
+        ),
+        Got = [F || {event, {frame, <<"1">>, F}} <- Acts],
+        ?assertEqual(length(Frames), length(Got)),
+        ?assertEqual([], [R || {event, {keyframe_request, _} = R} <- Acts])
+    end} || C <- [vp8, vp9, h264, av1]].
+
+%% The payload type of codec `C': both sides use the default codecs.
+pt(C, _S) ->
+    Name = webrtc_test_frames:name(C),
+    hd([Pt || #{name := N, pt := Pt} <- webrtc_jsep_caps:default_codecs(video), N =:= Name]).

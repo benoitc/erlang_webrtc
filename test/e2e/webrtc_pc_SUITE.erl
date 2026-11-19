@@ -37,6 +37,7 @@
     candidates_before_local_description/1,
     fingerprint_change_refused/1,
     max_message_size_wired/1,
+    frames_without_rtx/1,
     loss_indications/1,
     dscp_marking/1,
     dscp_tcp_connection/1,
@@ -84,6 +85,7 @@ all() ->
         candidates_before_local_description,
         fingerprint_change_refused,
         max_message_size_wired,
+        frames_without_rtx,
         loss_indications,
         dscp_marking,
         dscp_tcp_connection,
@@ -1291,6 +1293,36 @@ loss_indications(_Config) ->
     {error, badarg} = webrtc:send_slice_loss(B, <<"1">>, [{8192, 0, 0}]),
     %% Audio negotiated neither.
     {error, not_negotiated} = webrtc:send_slice_loss(B, <<"0">>, [{0, 1, 0}]),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% Without RTX the sender's bandwidth probes are padding-only packets on
+%% the media stream, numbered with the media packets. Their sequence
+%% numbers are no gap for the frame buffer: every frame of AV1 and
+%% H.264, which have no picture ID to tell frames apart, is released, as
+%% for VP8.
+frames_without_rtx(_Config) ->
+    [frames_without_rtx_for(Codec) || Codec <- [h264, av1, vp8]],
+    ok.
+
+frames_without_rtx_for(Codec) ->
+    Name = maps:get(Codec, #{av1 => <<"AV1">>, h264 => <<"H264">>, vp8 => <<"VP8">>}),
+    [Only | _] = [C || #{name := N} = C <- webrtc_jsep_caps:default_codecs(video), N =:= Name],
+    Codecs = #{video => [Only]},
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, codecs => Codecs}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, codecs => Codecs, frames => true}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{}),
+    ?S:connect(A, B),
+    Frames = lists:append(lists:duplicate(5, webrtc_test_frames:frames(Codec))),
+    [begin
+         %% `expect' is the frame as sent: H.264 in Annex B.
+         ok = webrtc:send_frame(A, <<"0">>, D, #{timestamp => I * 3000, keyframe => K}),
+         timer:sleep(33)
+     end || {I, #{expect := D, key := K}} <- lists:enumerate(Frames)],
+    Got = ?S:collect(B, fun({frame, <<"0">>, _}) -> true; (_) -> false end, 3000),
+    #{transport := #{media := #{counters := Counters}}} = webrtc:get_stats(B),
+    ct:log("~s: ~p frames of ~p, counters ~p", [Codec, length(Got), length(Frames), Counters]),
+    ?assertEqual({Codec, length(Frames)}, {Codec, length(Got)}),
     webrtc:close(A),
     webrtc:close(B).
 

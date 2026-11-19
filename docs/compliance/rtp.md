@@ -396,6 +396,7 @@ With `frames` on a transceiver, `webrtc_frame_buffer` turns the packets of each 
 | FRAME-7 | RFC 4585 §6.3.1, RFC 5104 §4.3.1 | After a drop, a key frame request: PLI when negotiated, otherwise FIR with a new sequence number for each request; at most one per round trip and five a second. `webrtc:request_keyframe/2` and NACK use the same choice | webrtc_media_in | webrtc_media_frames_tests:pli_on_loss_test, fir_only_test, application_request_fir_test | Unit tested |
 | FRAME-8 | | Bounded: 2048 packets and 3 s per stream | webrtc_frame_buffer | bound_test, prop_garbage_never_crashes | Unit and property tested |
 | FRAME-9 | | Frames of independent packetizers decode: GStreamer (VP8, VP9, H.264, AV1, in order and with one packet in 40 lost and reordering), Chromium (VP8, VP9, H.264, AV1) and Firefox (VP8, VP9, AV1), with as many frames and key frames as the browser encoded | webrtc_frame_buffer | webrtc_frames_gst_SUITE, webrtc_pc_interop_SUITE:peer_sends_frames | Interoperability tested; ffmpeg decodes what GStreamer sent without an error, at the encoded size and with the same key frames |
+| FRAME-10 | RFC 3550 §5.1, A.1 | A padding-only packet of the stream (a bandwidth probe when RTX is not negotiated) is no gap: AV1 and H.264 frames, which follow each other by sequence number, are released across it | webrtc_media_in, webrtc_frame_buffer | webrtc_media_frames_tests:padding_between_frames_test_, webrtc_pc_SUITE:frames_without_rtx | E2E tested |
 
 ## Known limitations
 

@@ -2,6 +2,10 @@
 
 All notable changes are listed here, newest first. Each release section is also its release notes.
 
+## Unreleased
+
+- AV1 and H.264 frames were dropped, and key frames asked for again and again, when the peer sent bandwidth probes on the video stream, which it does when RTX is not negotiated. No frame is lost to them now.
+
 ## 0.1.0 (2026-11-19)
 
 The first release: a WebRTC stack in pure Erlang, with no native code and no dependency beyond OTP. You can use it to build servers that talk to browsers and other WebRTC stacks, such as SFUs, media gateways, data channel services and test peers. Signaling, media coding and routing stay in your application.

@@ -42,6 +42,7 @@
     erlang_offers_encrypted_audio_level/1,
     peer_sends_audio_level/1,
     peer_sends_frames/1,
+    peer_sends_frames_without_rtx/1,
     video_stats_agree/1,
     erlang_sends_video_fec/1,
     slice_loss_indications/1,
@@ -75,6 +76,7 @@ cases() ->
         erlang_offers_encrypted_audio_level,
         peer_sends_audio_level,
         peer_sends_frames,
+        peer_sends_frames_without_rtx,
         video_stats_agree,
         erlang_sends_video_fec,
         slice_loss_indications,
@@ -480,13 +482,37 @@ peer_sends_frames(Config) ->
             {skip, "only the browsers are given a codec to send"}
     end.
 
+%% The same for H.264 and AV1 with an answer that leaves RTX out: the
+%% browser then sends its bandwidth probes as padding on the video
+%% stream, which must cost no frame (codecs without picture IDs).
+peer_sends_frames_without_rtx(Config) ->
+    case ?config(peer, Config) of
+        P when P =:= chromium; P =:= firefox ->
+            Results = [{C, frames_from(Config, C, no_rtx(C))} || C <- [<<"H264">>, <<"AV1">>]],
+            ct:log("~p", [Results]),
+            case [C || {C, ok} <- Results] of
+                [] -> {skip, "the browser sends neither H.264 nor AV1"};
+                _ -> ok
+            end;
+        _ ->
+            {skip, "only the browsers are given a codec to send"}
+    end.
+
+%% Our video codecs narrowed to `Codec', without its rtx entry.
+no_rtx(Codec) ->
+    #{codecs => #{video => [C || #{name := N} = C <- webrtc_jsep_caps:default_codecs(video),
+                                 string:lowercase(N) =:= string:lowercase(Codec)]}}.
+
 frames_from(Config, Codec) ->
-    {Pc, P0} = start(Config, #{frames => true}),
+    frames_from(Config, Codec, #{}).
+
+frames_from(Config, Codec, PcOpts) ->
+    {Pc, P0} = start(Config, PcOpts#{frames => true}),
     P1 = ?P:cmd(P0, #{cmd => init, media => [<<"video">>], codec => Codec}),
     {ok, P2, Ev} = ?P:wait_event(P1, <<"codec">>, #{}),
     Result =
         case Ev of
-            #{<<"supported">> := true} -> frames_from(Pc, consume(P2, Ev), Codec);
+            #{<<"supported">> := true} -> frames_from(Pc, consume(P2, Ev), Codec, maps:is_key(codecs, PcOpts));
             _ -> unsupported
         end,
     ?P:stop(get(peer)),
@@ -496,11 +522,13 @@ frames_from(Config, Codec) ->
     flush(),
     Result.
 
-frames_from(Pc, P0, Codec) ->
+frames_from(Pc, P0, Codec, NoRtx) ->
     P1 = ?P:cmd(P0, #{cmd => create_offer}),
     {ok, P2, #{<<"sdp">> := Offer} = Ev} = ?P:wait_event(P1, <<"local_description">>, #{}),
     ok = webrtc:set_remote_description(Pc, offer, Offer),
     {ok, Answer} = webrtc:create_answer(Pc, #{}),
+    %% Without RTX in our codecs, the answer negotiates none.
+    ?assertEqual({NoRtx, nomatch}, {NoRtx, case NoRtx of true -> binary:match(Answer, <<" rtx/">>); false -> nomatch end}),
     ok = webrtc:set_local_description(Pc, answer, Answer),
     P3 = connected(Pc, ?P:cmd(consume(P2, Ev), #{cmd => remote_description, type => answer, sdp => Answer})),
     put(peer, P3),

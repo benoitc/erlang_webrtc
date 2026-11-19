@@ -2,6 +2,8 @@
 
 A WebRTC protocol stack in pure Erlang for OTP 29: ICE (full and lite) with TURN and mDNS candidates, DTLS 1.3 and 1.2 with DTLS-SRTP, SRTP/SRTCP, RTP/RTCP with retransmission, feedback, simulcast and congestion control, SCTP over DTLS with data channels, and JSEP negotiation on structured SDP. No NIFs and no runtime dependency beyond OTP (`crypto`, `public_key`).
 
+Demo: [your webcam in a browser, served by Erlang](https://youtu.be/vVp7s2ch2u8) (video). The examples in [examples](https://github.com/benoitc/erlang_webrtc/tree/main/examples) run the same way.
+
 Use it to build servers that talk to browsers and other WebRTC stacks: SFUs, media gateways, SIP to WebRTC bridges, data channel services, test peers. Those applications are not part of the library; it gives you peer connections and leaves signaling, codecs and routing to you.
 
 Status: the transport stack works end to end against Chromium, Firefox, Pion, aiortc, GStreamer, pion/turn, OTP ssl and OpenSSL; see the summary and known gaps at the top of [docs/COMPLIANCE.md](docs/COMPLIANCE.md). What is implemented and tested is tracked requirement by requirement in [docs/COMPLIANCE.md](docs/COMPLIANCE.md); which independent implementations it has been tested against is in [docs/INTEROP.md](docs/INTEROP.md).

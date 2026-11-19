@@ -1325,6 +1325,9 @@ frames_without_rtx_for(Codec) ->
     #{transport := #{media := #{counters := Counters}}} = webrtc:get_stats(B),
     ct:log("~s: ~p frames of ~p, counters ~p", [Codec, length(Got), length(Frames), Counters]),
     ?assertEqual({Codec, length(Frames)}, {Codec, length(Got)}),
+    webrtc:close(A),
+    webrtc:close(B).
+
 %% prefer_codec/2: A offers AV1 first and its rtx with it, the others
 %% after; B, on the defaults, answers in the offer's order (RFC 3264
 %% §6.1), so A sends AV1 and B gets AV1 frames, with RTX negotiated.

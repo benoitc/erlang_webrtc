@@ -264,3 +264,12 @@ Still open:
 - The long dispatch functions (`webrtc_sctp_send:commit/4`, `webrtc_sctp_assoc:chunk/4`, the `call_/3` clauses) are unchanged.
 - Found while writing the relay example: `webrtc:send_rtp_packet/3` rewrites the SSRC and sequence number but not the payload type, so forwarding between peers that use different payload types for the same codec needs the application to map them. The forwarding guide says so.
 - The Firefox cases of the new examples run in CI on Linux only; they were not run on macOS.
+
+## Before the 0.1.0 release
+
+Merged after the status above, and checked against this review:
+
+- #67 fixed two flaky end-to-end tests; it changed tests only.
+- #68 gave data channels the browsers' SCTP timers and turned automatic ICE restarts off by default. Its new `sctp` option is in REFERENCE.md and the sync test, its requirements in `compliance/sctp.md` (SCTP-57, DT-9, DT-10) and `compliance/ice.md`, and its changes in the CHANGELOG.
+
+Nothing new for the documentation plan. The release goes ahead with the open items listed in the status.

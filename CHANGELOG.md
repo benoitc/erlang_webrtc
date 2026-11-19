@@ -5,6 +5,7 @@ All notable changes are listed here, newest first. Each release section is also 
 ## Unreleased
 
 - AV1 and H.264 frames were dropped, and key frames asked for again and again, when the peer sent bandwidth probes on the video stream, which it does when RTX is not negotiated. No frame is lost to them now.
+- The LICENSE file had one word more than the Apache License 2.0 ("submitted to the Licensor"); its terms now match the licence word for word.
 
 ## 0.1.0 (2026-11-19)
 

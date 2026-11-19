@@ -1,6 +1,36 @@
 %% @private One peer connection (RTCPeerConnection): JSEP signaling,
 %% transceivers, data channel bookkeeping and the connection state. The
 %% transport process does the packet work. See `webrtc' for the API.
+%%
+%% The parts of this module, in file order:
+%% <ul>
+%% <li>Callbacks: `init/1', the redacted `format_status/1', and `call_/3',
+%%   one clause per API call, each delegating to the functions below.</li>
+%% <li>ICE restart: automatic restart when the path stops working
+%%   (`troubled', `auto_restart', `restart_now'), new credentials
+%%   (`restart_ice_creds'), and a restart the remote side asked for
+%%   (`remote_credentials', `defer_restart', `apply_restart',
+%%   `push_remote_ice'); `yield_restart' handles glare.</li>
+%% <li>Candidates: `add_candidate', held until the transport of their mid
+%%   exists (`hold_candidate', `flush_candidates').</li>
+%% <li>Negotiation glue: `create', `set_local', `set_remote' call
+%%   `webrtc_jsep', then `after_negotiation' configures the transports
+%%   from `webrtc_jsep:negotiated/1' and `announce_tracks' tells the
+%%   owner about new remote tracks.</li>
+%% <li>Signaling helper (option `signaling'): `signal', `to_signaler',
+%%   `signaler', and the automatic offer and answer (`auto_offer',
+%%   `auto_answer').</li>
+%% <li>The first transport: `ensure_transport', `start_transport',
+%%   `stop_transport', its events (`transport_event') and the aggregated
+%%   connection state (`update_connection').</li>
+%% <li>Extra transports, when sections are not all in one BUNDLE group:
+%%   the `extra_*' functions, `ensure_extra', `push_extra',
+%%   `restart_extra' and the registry rows (`data_row').</li>
+%% <li>Helpers: `notify' (events to the owner), ICE server resolution
+%%   (`ice_servers'), statistics servers.</li>
+%% </ul>
+%% Tests: `webrtc_pc_SUITE' (negotiation, restarts, unbundled cases) and
+%% `webrtc_lifecycle_SUITE' (how it ends).
 -module(webrtc_pc).
 -behaviour(gen_server).
 

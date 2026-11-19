@@ -20,7 +20,9 @@
 %% single timer. `webrtc_transport_net' handles sockets, received
 %% datagrams and ICE actions; `webrtc_transport_secure' handles DTLS,
 %% SRTP, media actions and SCTP. All three share the state record of
-%% `webrtc_transport.hrl'.
+%% `webrtc_transport.hrl'. This module keeps `pc', `app', `timer' and
+%% the mDNS client, and calls into the engines for the API; each of the
+%% other two says which fields it mainly works on.
 -module(webrtc_transport).
 -behaviour(gen_server).
 

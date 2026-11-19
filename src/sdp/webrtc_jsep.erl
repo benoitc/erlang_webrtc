@@ -15,9 +15,33 @@
 %% #{media := [_ | _]} = webrtc_jsep:negotiated(J4).
 %% '''
 %%
-%% Limitation: all active m= sections must share one transport, either
-%% through a BUNDLE group (RFC 9143) or because there is only one. This
-%% matches the max-bundle policy every browser offers by default.
+%% Each BUNDLE group (RFC 9143) and each section outside a group gets its
+%% own transport, with its own ICE credentials and candidates; the
+%% `bundle' option set to false offers every section on its own.
+%%
+%% `negotiated/1' is the contract between negotiation and the transport
+%% process, available once both descriptions are set:
+%% <ul>
+%% <li>`ice': local and remote credentials, remote candidates, ICE lite,
+%%   end of candidates; read by the transport for its ICE agent.</li>
+%% <li>`dtls': our role, the remote fingerprints and tls-id; read by
+%%   `webrtc_transport_secure' for the DTLS association.</li>
+%% <li>`media': one map per active section (mid, kind, direction, send
+%%   and receive codecs and extensions, SSRCs, RTX and FEC SSRCs,
+%%   simulcast layers, feedback, cryptex, frames, codec plugin,
+%%   priority, and the transport it belongs to); read by
+%%   `webrtc_media:configure/2'.</li>
+%% <li>`data': the SCTP ports and message size of the data section; read
+%%   by the transport for SCTP and the data channels.</li>
+%% <li>`bundle' and `transports': the groups, and the parameters of
+%%   each transport; read by `webrtc_pc' to start one transport per
+%%   group and route calls by mid.</li>
+%% </ul>
+%%
+%% Offers and answers are built in `webrtc_jsep_build', the negotiated
+%% parameters in `webrtc_jsep_params', codecs, extensions and feedback in
+%% `webrtc_jsep_caps', simulcast in `webrtc_jsep_simulcast', and the
+%% grouping of sections into transports in `webrtc_jsep_transport'.
 -module(webrtc_jsep).
 
 -include("webrtc_sdp.hrl").

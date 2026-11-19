@@ -91,7 +91,7 @@ This page tracks the RTP and RTCP requirements implemented under `src/rtp` and `
 | AVPF-3 | 6.2.1 | Conversion between lost sequence numbers and PID / BLP, across wraparound | webrtc_rtcp_fb | nack_helpers_test_, prop_nack_items | Unit tested |
 | AVPF-4 | 6.3.1 | PLI has no FCI (length 2) | webrtc_rtcp_fb | pli_test | Unit tested |
 | AVPF-5 | 6.3.2 | SLI: First, Number, PictureID | webrtc_rtcp_fb | sli_test | Unit tested |
-| AVPF-6 | 6.3.3 | RPSI | | | Not implemented (kept raw) |
+| AVPF-6 | 6.3.3 | RPSI: PB, payload type, native bit string, padded to 32 bits | webrtc_rtcp_fb | rpsi_libwebrtc_test, rpsi_padding_test, rpsi_errors_test_, prop_rtcp_roundtrip | Unit tested (use in WRTP-13) |
 | AVPF-7 | 6.4 | Application layer feedback other than REMB kept raw | webrtc_rtcp_fb | afb_other_raw_test | Unit tested |
 | AVPF-8 | 3.4 d, 3.5.1 | Initial Tmin 0 point-to-point, 1 s multiparty | webrtc_rtcp_interval | min_interval_test_ | Unit tested |
 | AVPF-9 | 3.5.3 | Tmin is 0 after the first regular report | webrtc_rtcp_interval | min_interval_test_ | Unit tested |

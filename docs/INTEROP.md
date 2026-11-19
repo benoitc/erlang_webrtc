@@ -98,7 +98,7 @@ The RFC 6051 ntp-64 header extension, against GStreamer's `rtphdrextntp64` drive
 
 ## Guide examples (webrtc_examples_SUITE)
 
-The examples of [docs/guides](guides) run as written. `examples/browser_datachannel` serves its page with OTP's inets; headless Chromium and Firefox load it, post their offer, and get the greeting and the echo over the data channel. Playwright's Firefox does not start from a terminal on macOS, so the Firefox case runs on Linux.
+The examples the guides use run as written, in `webrtc_examples_SUITE`. Each serves its page with OTP's inets and headless Chromium and Firefox load it, with a fake camera where it needs one: `examples/browser_datachannel` gets the greeting and the echo over the data channel, `examples/browser_video` gets frame and keyframe counts back from Erlang, and `examples/browser_relay` plays on a second page the video Erlang relays from the first. Playwright's Firefox does not start from a terminal on macOS, so the Firefox case runs on Linux.
 
 ## Harness control (webrtc_harness_SUITE)
 

@@ -1,6 +1,15 @@
 %% @private Media session send path: pacing, transport-wide sequence numbers, SRTP protect,
 %% retransmission over RTX and RTCP reports.
 %% Internal module of `webrtc_media'.
+%%
+%% Its job in the media session is everything that leaves: the senders
+%% of each mid and simulcast layer, the pacer queue (`pace/4', after the
+%% TMMBR limit of `webrtc_media_limit'), `egress/3' (circuit breakers,
+%% transport-wide sequence numbers, SRTP, FEC packets, DSCP),
+%% retransmissions, and RTCP reports and feedback (`reports',
+%% `send_feedback'). It also holds the counters (`count', `scount') that
+%% both halves use. The send path is drawn in docs/ARCHITECTURE.md,
+%% "Inside the media session".
 -module(webrtc_media_out).
 
 -include("webrtc_rtp.hrl").

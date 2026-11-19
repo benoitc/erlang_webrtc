@@ -4,6 +4,12 @@
 %% test filter, and its events). DTLS and SRTP only receive what ICE
 %% validated (RFC 8445 §12.2, RFC 8826 §4.2). Internal module of
 %% `webrtc_transport', working on its state.
+%%
+%% The `#st{}' fields it mainly works on: `sockets', `ice', `streams',
+%% `tcp_listeners', `workers' (TCP and TLS connect workers, linked),
+%% `pair', `filter', the DSCP fields (`marking', `stream_dscp',
+%% `data_dscp', `dscp_off') and the `io', `received' and `dropped'
+%% counters.
 -module(webrtc_transport_net).
 
 -include("webrtc_transport.hrl").

@@ -5,7 +5,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -include("webrtc_rtp.hrl").
 -include("webrtc_rtp_rtcp.hrl").
--include_lib("webrtc/src/transport/webrtc_media.hrl").
+-include_lib("webrtc/src/media/webrtc_media.hrl").
 
 -define(PROFILE, srtp_aead_aes_128_gcm).
 

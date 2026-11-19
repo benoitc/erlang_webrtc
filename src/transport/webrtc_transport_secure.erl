@@ -4,6 +4,10 @@
 %% SRTP keyed from it, the media engine's actions, and SCTP with the data
 %% channels on top of it. Internal module of `webrtc_transport', working
 %% on its state.
+%%
+%% The `#st{}' fields it mainly works on: `dtls', `dtls_role', `cert',
+%% `remote_fps', `remote_tls_id', `early_dtls', `dtls_out', `connected',
+%% `media', `data', `dcep' and `pending_channels'.
 -module(webrtc_transport_secure).
 
 -include("webrtc_transport.hrl").

@@ -549,9 +549,6 @@ restart(Opts, Now, S) ->
     check_credentials(U, P),
     finish(Now, webrtc_ice_session:restart(U, P, Now, S), []).
 
-%% @doc Close the agent: TURN allocations are deleted, nothing is sent
-%% afterwards.
--spec close(integer(), agent()) -> {agent(), [action()]}.
 %% @doc A stream connection to a TURN server asked with `{connect, ...}'
 %% is up.
 -spec stream_up({stream, pos_integer()}, integer(), agent()) -> {agent(), [action()]}.
@@ -616,6 +613,9 @@ stream_server(Ref, #ice{turn = T, streams = P}) ->
             end
     end.
 
+%% @doc Close the agent: TURN allocations are deleted, nothing is sent
+%% afterwards.
+-spec close(integer(), agent()) -> {agent(), [action()]}.
 close(_Now, #ice{state = closed} = S) ->
     {S, []};
 close(Now, S) ->

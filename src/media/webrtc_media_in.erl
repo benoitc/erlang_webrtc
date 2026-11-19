@@ -1,6 +1,15 @@
 %% @private Media session receive path: SRTP unprotect, demultiplexing to transceivers and
 %% simulcast layers, RTX, NACK generation and RTCP processing.
 %% Internal module of `webrtc_media'.
+%%
+%% Its job in the media session is everything that arrives: `rtp_in/4'
+%% (SRTP, routing by SSRC, MID, payload type and rid, RTX and FEC
+%% repair, statistics, NACK, the frame buffer and the codec plugin) and
+%% `rtcp_in/3' (reports, feedback, TMMBR, SR requests, BYE). What it
+%% decides to send back (NACK, keyframe requests, TMMBN) goes out through
+%% `webrtc_media_out'. Per-SSRC state is bounded by the limits in
+%% `webrtc_media.hrl'. The receive path is drawn in docs/ARCHITECTURE.md,
+%% "Inside the media session".
 -module(webrtc_media_in).
 
 -include("webrtc_rtp.hrl").

@@ -26,6 +26,10 @@ jobs:
       - run: rebar3 proper -n 200
       - run: rebar3 xref
       - run: rebar3 dialyzer
+      - name: API docs build without warnings
+        run: |
+          rebar3 ex_doc 2>&1 | tee ex_doc.log
+          ! grep -q warning ex_doc.log
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

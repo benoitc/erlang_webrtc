@@ -238,7 +238,6 @@ paced(#cc{pacing = P, gcc = G}) -> P andalso webrtc_gcc:has_input(G).
 twcc_seq(#cc{twcc_tx = undefined}) -> undefined;
 twcc_seq(#cc{twcc_tx = Tx}) -> webrtc_twcc_sender:next_seq(Tx).
 
-%% @doc A packet of stream `Key' left with `Size' bytes on the wire.
 %% @doc RTP packet `Ssrc'/`Seq' of stream `Key' left with `Size' bytes:
 %% `sent/4', and kept for RFC 8888 feedback when that is negotiated.
 -spec sent_rtp(term(), 0..16#FFFFFFFF, 0..65535, non_neg_integer(), integer(), state()) -> state().
@@ -278,6 +277,7 @@ ccfb_arrival(_Ssrc, _Seq, _Ecn, _Now, #cc{ccfb_rx = undefined} = Cc) ->
 ccfb_arrival(Ssrc, Seq, Ecn, Now, #cc{ccfb_rx = Rx} = Cc) ->
     Cc#cc{ccfb_rx = webrtc_ccfb_receiver:packet(Ssrc, Seq, Ecn, Now, Rx)}.
 
+%% @doc A packet of stream `Key' left with `Size' bytes on the wire.
 -spec sent(term(), non_neg_integer(), integer(), state()) -> state().
 sent(Key, Size, Now, Cc) ->
     %% Media leaving while a probe cluster is sent is part of it.

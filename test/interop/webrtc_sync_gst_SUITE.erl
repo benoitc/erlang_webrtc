@@ -7,7 +7,7 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 -include("webrtc_rtp.hrl").
--include_lib("webrtc/src/transport/webrtc_media.hrl").
+-include_lib("webrtc/src/media/webrtc_media.hrl").
 
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([gst_sends_ntp64/1, erlang_sends_ntp64/1]).

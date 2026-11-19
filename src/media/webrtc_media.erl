@@ -6,6 +6,17 @@
 %% Media payloads are never decoded: the application sends and receives
 %% RTP payloads (or whole packets when forwarding).
 %%
+%% This module is the API of the media session and its sans-IO entry
+%% points (`new/1', `configure/2', `handle_packet/3', `handle_timeout/2',
+%% `next_timeout/1'). The work is split by direction and by feature:
+%% `webrtc_media_in' receives, `webrtc_media_out' sends, and
+%% `webrtc_media_fb' (SLI, RPSI), `webrtc_media_limit' (TMMBR),
+%% `webrtc_media_sync' (RFC 6051), `webrtc_media_rid' (simulcast
+%% receive), `webrtc_media_pause' (RFC 7728) and `webrtc_media_report'
+%% (statistics reported by the application) each hold one feature. They
+%% share the `#media{}' record of `webrtc_media.hrl'. The two paths are
+%% drawn in docs/ARCHITECTURE.md, "Inside the media session".
+%%
 %% Incoming RTP is matched to a transceiver (mid) in this order
 %% (RFC 9143 §9.2): known SSRC, the MID header extension, then a payload
 %% type used by a single m= section. In a section with negotiated

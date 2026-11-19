@@ -1,0 +1,50 @@
+# Changelog
+
+All notable changes are listed here, newest first. Each release section is also its release notes.
+
+## 0.1.0 (unreleased)
+
+The first release: a WebRTC stack in pure Erlang, with no native code and no dependency beyond OTP. You can use it to build servers that talk to browsers and other WebRTC stacks, such as SFUs, media gateways, data channel services and test peers. Signaling, media coding and routing stay in your application.
+
+### Connections
+
+- Peer connections negotiate offers and answers as browsers do, including renegotiation, rollback and provisional answers.
+- ICE finds a path through NATs with STUN and TURN servers given as browser-style URIs, over UDP, TCP or TLS, and with ICE-TCP. It accepts the hidden `.local` addresses browsers send by default, restarts on its own when the path stops working, and can run as ICE lite.
+- DTLS 1.3 is used by default, with fallback to DTLS 1.2. Certificates are checked against the fingerprints in the session description.
+- Media and data share one network path by default (BUNDLE). Sessions that use several paths, or none bundled, also work.
+
+### Data channels
+
+- Reliable, unordered and partially reliable channels, large messages, channel priorities, and a signal when a full send buffer has room again.
+
+### Audio and video
+
+- Send and receive Opus, G.711, VP8, VP9, H.264 and AV1, as RTP packets or as whole frames.
+- Forward packets between peer connections without decoding them, SFU style, with keyframe requests passed to the sender.
+- Simulcast: receive several layers from a browser and send layers to peers that accept them, and pause and resume a layer.
+- Lost packets are retransmitted. Audio can carry redundancy (RED), and video can carry FEC, so a lost packet is rebuilt without waiting for a retransmission.
+- Frames arrive in order through a jitter buffer, and a keyframe is requested when a frame cannot be completed.
+- New streams are synchronised quickly, without waiting for the first sender report.
+- A codec plugin can decode the frames you receive and encode what you send. The library itself does no media coding.
+
+### Bandwidth and quality of service
+
+- Congestion control estimates the available bandwidth from the peer's feedback, paces what you send, and tells you the rate to give your encoders. It is tested against the standard RMCAT evaluation cases in simulation.
+- Circuit breakers stop a stream that would harm the network.
+- A peer can limit the rate you send on a stream, and you can limit what a peer sends you (TMMBR).
+- Packets are marked for network quality of service (DSCP), by media type and priority.
+
+### Statistics
+
+- The W3C statistics a browser's `getStats()` returns, with the decoder and encoder figures coming from your codec plugin or from your application.
+
+### Security and robustness
+
+- Every parser is tested with hostile input, and each connection's state has fixed limits, whatever a peer sends.
+- Private keys, passwords and session keys never appear in logs or crash reports.
+- Every process of a peer connection ends with it, however it ends.
+- 0-RTT data cannot be replayed, even after the application restarts.
+
+### Tested against
+
+- Chromium, Firefox, Pion, aiortc, GStreamer, pion/turn, OTP ssl and OpenSSL, plus the BoringSSL DTLS tests, DTLS-Fuzzer and the ETSI SCTP conformance tests.

@@ -1,6 +1,6 @@
 # Architecture
 
-This page explains how the stack is split into layers, which process owns what, and how a packet travels through it. Read it before you change a protocol module or add a new one.
+This page explains how the stack is split into layers, which process owns what, and how a packet travels through it. Read it before you change a protocol module or add a new one. If a term is new to you, [CONCEPTS.md](CONCEPTS.md) defines it; [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) then maps each part to its modules and tests.
 
 ## Layers
 
@@ -21,7 +21,9 @@ This page explains how the stack is split into layers, which process owns what, 
   |   0..3     -> webrtc_ice_agent  (webrtc_stun, webrtc_turn)       |
   |   20..63   -> webrtc_dtls       -> app data -> webrtc_sctp_assoc |
   |                                                -> webrtc_dcep    |
-  |   128..191 -> webrtc_srtp       -> webrtc_rtp / webrtc_rtcp      |
+  |   128..191 -> media session (webrtc_media, src/media)            |
+  |               SRTP, RTP / RTCP, retransmission, FEC, frames,     |
+  |               congestion control (webrtc_cc), codec plugins      |
   +----------------------+------------------------------------------+
                          |  gen_udp (IPv4 / IPv6)
                        network
@@ -62,6 +64,16 @@ webrtc_sup (one_for_one)
       webrtc_transport     one per BUNDLE group, temporary, monitored by webrtc_pc (gen_server)
 ```
 
+Who watches whom:
+
+```
+webrtc_registry --monitors--> webrtc_pc          drops the pc's rows in webrtc_transports
+webrtc_pc       --monitors--> owner process      closes the peer connection when the owner exits
+webrtc_pc       --monitors--> webrtc_transport   a transport that dies: connection_state failed, the pc ends
+webrtc_pc       --links-----> signaling helper   the helper also monitors webrtc_pc and exits with it
+webrtc_transport --links----> TCP and TLS connect workers
+```
+
 - `webrtc_pc` owns the signaling state, the local and remote descriptions, the transceivers and the data channel registry. It is the process the application talks to.
 - `webrtc_transport` owns the UDP sockets and every engine of the transport. Media send calls go straight from the application to the transport process, so RTP forwarding does not pass through `webrtc_pc`. The process code is split in three modules over one state: `webrtc_transport` (API, callbacks, timer), `webrtc_transport_net` (sockets, received datagrams, ICE actions) and `webrtc_transport_secure` (DTLS, SRTP, media actions, SCTP).
 - Each transport process handles one ICE component. With BUNDLE (the WebRTC default) that is one per peer connection. Without it, or with several BUNDLE groups, `webrtc_pc` starts one transport per group or unbundled m= section and routes media calls to it by mid; the connection state aggregates them all.
@@ -82,7 +94,53 @@ Inbound:
 4. DTLS records go to the DTLS endpoint. Handshake output is sent back through the best valid pair (RFC 8445 §12.1), and kept until one exists. Once connected, application data goes to the SCTP association; the exported keying material configures SRTP.
 5. RTP/RTCP is unprotected with the SRTP context of the remote side, parsed, and delivered to the owner as `{webrtc, Pc, {rtp, Mid, Packet}}` (`{rtp, Mid, Rid, Packet}` for a simulcast layer, told apart by its rid header extension) or handed to the RTCP handler.
 
-Outbound follows the reverse path. DTLS, SRTP and SCTP traffic uses the best valid pair until ICE selects one, then only the selected pair; data is never sent before ICE has a valid pair and consent is fresh (RFC 7675).
+Outbound follows the reverse path.
+
+### Inside the media session
+
+The media session (`webrtc_media`) is the engine that handles RTP and RTCP for one transport. `webrtc_media_in` holds the receive half and `webrtc_media_out` the send half; the other `webrtc_media_*` modules each hold one feature that both halves use.
+
+Receive path:
+
+```
+datagram (128..191)
+  -> webrtc_srtp:unprotect_rtp              unknown key or replay: dropped and counted
+  -> webrtc_rtp:decode
+  -> transport-wide and RFC 8888 arrival    webrtc_cc (feedback to the sender)
+  -> route: SSRC, MID extension, payload type, rid (webrtc_media_rid)
+  -> RTX unwrap, FEC recovery               webrtc_rtx, webrtc_ulpfec, webrtc_flexfec
+  -> receive statistics, NACK generation    webrtc_rtp_stats, webrtc_nack
+  -> frames => true ?  webrtc_frame_buffer  (then the codec plugin, if any)
+  -> owner: {rtp, Mid, Pkt} | {frame, Mid, Frame} | {decoded, Mid, Media}
+```
+
+Send path:
+
+```
+owner: send_rtp | send_frame (packetized here) | send_media (plugin encodes) | send_rtp_packet
+  -> sender of the mid (or of the simulcast layer): SSRC, sequence number, header extensions,
+     RTCP rapid sync (webrtc_media_sync), RED wrap when ULPFEC is negotiated
+  -> NACK buffer (webrtc_nack_buffer)       kept for retransmission
+  -> TMMBR limit (webrtc_media_limit)       the rate the peer allows
+  -> pacer (webrtc_pacer via webrtc_cc)     audio > retransmission > video
+  -> circuit breaker check, transport-wide sequence number
+  -> webrtc_srtp:protect_rtp -> FEC packets after each frame -> DSCP -> {send, Datagram}
+```
+
+RTCP goes through `webrtc_media_in:rtcp_packet2/3` on receive (reports, NACK, PLI, FIR, SLI, RPSI, TMMBR, SR requests) and `webrtc_rtcp_sched` decides when reports go out.
+
+### One transceiver, several RTP streams
+
+A transceiver is one m= section (one mid). On the wire it can be several RTP streams, each with its own SSRC:
+
+```
+transceiver mid "1" (video)
+  |- media stream        SSRC A                 (one per simulcast layer: rid "h", "m", "l")
+  |- retransmissions     SSRC A' (RTX)          one per media stream, repaired-rid on layers
+  |- FlexFEC repair      SSRC F                 or ULPFEC inside RED on the media SSRC
+```
+
+Received streams are found by SSRC once known; a new SSRC is matched by its MID or rid header extension, or by a payload type that only one section uses (RFC 9143 §9.2). [CONCEPTS.md](CONCEPTS.md) explains each term. DTLS, SRTP and SCTP traffic uses the best valid pair until ICE selects one, then only the selected pair; data is never sent before ICE has a valid pair and consent is fresh (RFC 7675).
 
 ## Interaction between ICE, DTLS, SRTP and SCTP
 
@@ -133,9 +191,17 @@ RTP in:  transport-wide seq -> webrtc_twcc_receiver -> feedback every 100 ms
 | `src/cc`           | congestion control, pacer, circuit breakers  |
 | `src/sctp`         | SCTP chunks, association, DCEP               |
 | `src/sdp`          | SDP codec and JSEP                           |
-| `src/transport`    | demux, UDP transport process, mDNS and DNS resolution of candidate names |
-| `src/pc`           | peer connection process and supervision      |
+| `src/transport`    | the transport process, demux, DSCP marking   |
+| `src/media`        | the media session: receive, send, feedback, limits, sync, codec plugin behaviour |
+| `src/mdns`         | mDNS and DNS resolution of candidate names, mDNS responder for our own candidates |
+| `src/pc`           | peer connection process, supervision, statistics |
+| `src/` (top)       | public API (`webrtc`), application, registry, log redaction |
+| `include/`         | records shared between modules and tests     |
 | `test/`            | eunit and PropEr conformance tests           |
+| `test/support`     | test helpers: impairment, signaling, TURN server, test codec |
 | `test/e2e`         | Common Test suites over real UDP sockets     |
-| `test/interop`     | interop controller and peer adapters         |
-| `bench/`           | benchmarks, never run by the functional suites |
+| `test/interop`     | interop suites against independent stacks    |
+| `interop/`         | the peer adapters (Pion, aiortc, browsers, GStreamer, ...) and their protocol |
+| `examples/`        | runnable examples, run by `webrtc_examples_SUITE` |
+| `bench/`           | benchmarks and the soak run, never run by the functional suites |
+| `docs/`            | guides, reference, compliance pages, ADRs    |

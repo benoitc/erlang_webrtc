@@ -440,6 +440,14 @@ deliver1(Mid, #rtp{ssrc = Ssrc, seq = Seq, ts = Ts} = Pkt, Now, Mx, How) ->
     {Out, M2a} = nack_actions(Mid, Ssrc, NackActions, Now, M1),
     {M2, PauseEvents} = webrtc_media_pause:rtp(Ssrc, M2a),
     case Pkt of
+        #rtp{payload = <<>>, padding = P} when P > 0, R1#rcv.frames =/= undefined ->
+            %% Padding only (a bandwidth probe when RTX is not negotiated):
+            %% its sequence number is no gap for the frame buffer, which
+            %% tells the frames of codecs without picture IDs (AV1, H.264)
+            %% apart by sequence number alone.
+            {FrameOut, M3} = frames(Mid, Ssrc, fun(Fb) -> webrtc_frame_buffer:padding(Seq, Now, Fb) end, Now,
+                                    webrtc_media_out:count(padding_received, M2)),
+            {M3, PauseEvents ++ FrameOut ++ Out};
         #rtp{payload = <<>>, padding = P} when P > 0 ->
             %% Padding only: it counts for the stream, not for the
             %% application.

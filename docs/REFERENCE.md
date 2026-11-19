@@ -40,7 +40,7 @@ You pass these in the map of `webrtc:new_peer_connection/1`. Every key is option
 | `encrypt_header_extensions` | `accept \| offer \| false` | `accept` | RFC 6904 encrypted header extensions: `accept` answers an encrypted offer encrypted but offers only the clear form, `offer` offers both forms, `false` neither offers nor accepts them. |
 | `bundle` | `boolean()` | `true` | Offer every m= section in one BUNDLE group. With `false` each section gets its own ICE and DTLS transport, and you relay candidates with `webrtc:add_ice_candidate/3` and the mid of their event. Answers follow the offer whatever this says. |
 | `rtcp_mux_policy` | `negotiate \| require` | `negotiate` | `require` adds `a=rtcp-mux-only` to offers. RTP and RTCP are always multiplexed. |
-| `codecs` | `#{audio => [map()], video => [map()]}` | computed by `webrtc_jsep_caps:default_codecs/1` for each kind | Codecs to negotiate. A codec on payload type 64 to 95 returns `{error, {badarg, {payload_type, Pt}}}`. See [send media](guides/send-media.md). |
+| `codecs` | `#{audio => [map()], video => [map()]}` | `webrtc:default_codecs/1` for each kind | Codecs to negotiate, in order of preference. A codec on payload type 64 to 95 returns `{error, {badarg, {payload_type, Pt}}}`. See [Codecs](#codecs) and [send media](guides/send-media.md). |
 | `extensions` | `#{audio => [map()], video => [map()]}` | computed by `webrtc_jsep_caps:default_extensions/1` for each kind | RTP header extensions to negotiate, as `#{id, uri}` maps; `encrypt => true` marks the encrypted form. |
 | `max_message_size` | positive integer, bytes | `262144` | Largest data channel message you accept, announced in the SDP. A peer message over it closes the channel. Zero or a non-integer returns `{error, {badarg, max_message_size}}`. See [data channels](guides/data-channels.md). |
 | `congestion_control` | `map()` | `#{}` | Initial options of the bandwidth estimator, pacer and circuit breakers, see [Congestion control options](#congestion-control-options). A non-map returns `{error, {badarg, congestion_control}}`. |
@@ -153,6 +153,22 @@ You pass these in the third argument of `webrtc:create_data_channel(Pc, Label, O
 | `priority` | `very_low \| low \| medium \| high` or 0..65535 | `low` | Share of the association the channel gets (RFC 8831), told to the peer. |
 
 Invalid values return `{error, badarg}`.
+
+## Codecs
+
+Two functions build the `codecs` option:
+
+| Function | Returns |
+|----------|---------|
+| `webrtc:default_codecs(audio \| video)` | The codecs a peer connection offers when `codecs` is not given, in order of preference: VP8, VP9, H.264, AV1 for video, each followed by its rtx entry, then RED, ULPFEC and FlexFEC; Opus, RED, PCMU, PCMA and telephone-event for audio. |
+| `webrtc:prefer_codec(Name, Codecs)` | `{ok, List}` with codec `Name` first, followed by its rtx entries and then the others in their order, or `{error, {unknown_codec, Name}}`. Every entry with that name moves (all H.264 profiles); names compare without case. |
+
+```erlang
+{ok, Video} = webrtc:prefer_codec(<<"AV1">>, webrtc:default_codecs(video)),
+{ok, Pc} = webrtc:new_peer_connection(#{codecs => #{video => Video}}).
+```
+
+The order is that of our offers, and the peer answers in it, so the first codec it accepts is the one sent. When you answer an offer, the answer keeps the offer's order (RFC 3264 §6.1). Keep the rtx entries: without them, loss is repaired by key frames only.
 
 ## Other call options
 

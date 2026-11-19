@@ -13,7 +13,7 @@
 %%     back on that port; multicast replies are received on a socket
 %%     bound to the group port with `SO_REUSEPORT' (shared with the
 %%     system responder) and joined to the group.</li>
-%% <li>Other names are looked up with `inet:getaddrs/3' in a helper
+%% <li>Other names are looked up with `inet:getaddrs(Name, Family, Timeout)' in a helper
 %%     process, AAAA then A (RFC 8839 §5.1).</li>
 %% <li>Responses must come from an address on a local subnet
 %%     (RFC 6762 §11).</li>

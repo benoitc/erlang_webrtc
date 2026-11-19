@@ -1,4 +1,4 @@
-%% @private Receive side of RTP stream identifiers (RFC 8852) for
+%% @doc Receive side of RTP stream identifiers (RFC 8852) for
 %% `webrtc_media': which simulcast layer (rid) an incoming SSRC carries.
 %%
 %% Simulcast senders usually announce no SSRCs. A layer is recognised by

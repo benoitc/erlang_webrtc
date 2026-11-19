@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% DTLS 1.2 connection IDs (RFC 9146): the record format, the hello
 %% negotiation and records carrying the peer's CID.
 -module(webrtc_dtls12_cid_tests).

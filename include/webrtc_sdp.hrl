@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Structured SDP (RFC 8866) as used by WebRTC.
 %%
 %% Field values are kept as binaries unless a typed form helps

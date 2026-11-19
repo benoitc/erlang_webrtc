@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Congestion control between two Erlang peers over real UDP sockets.
 %% The sender's outbound filter (webrtc_impair with `rate') is a
 %% bandwidth limited bottleneck; the sender's application encodes video

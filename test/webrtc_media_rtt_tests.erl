@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The RTT measured from report blocks reaches the NACK requesters and
 %% the retransmission buffers (RFC 4585 §3.4, RFC 4588 §5).
 -module(webrtc_media_rtt_tests).

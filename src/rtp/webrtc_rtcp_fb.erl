@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTCP feedback messages (RFC 4585 §6): transport layer (RTPFB,
 %% PT 205) and payload specific (PSFB, PT 206).
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RTP payload for redundant data (RFC 2198) and its negotiation (RFC
 %% 8854 §4.2).
 -module(webrtc_red_tests).

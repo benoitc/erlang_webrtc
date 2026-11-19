@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO TURN client for UDP (RFC 8656), one allocation per
 %% client state.
 %%

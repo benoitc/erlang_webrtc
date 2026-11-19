@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sender-side retransmission buffer for NACK (RFC 4585 §6.2.1,
 %% RFC 4588).
 %%

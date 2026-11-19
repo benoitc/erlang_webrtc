@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO one-shot multicast DNS resolver (RFC 6762 §5.1) for the
 %% A and AAAA records of `.local' host names, with a small TTL cache.
 %%

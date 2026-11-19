@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Realistic session descriptions used by the SDP tests. They follow
 %% what current browsers and servers emit, with CRLF line endings.
 -module(webrtc_sdp_samples).

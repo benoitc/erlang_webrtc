@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Test helper: run a webrtc_dtls engine over a real gen_udp socket
 %% in the calling process.
 -module(webrtc_dtls_udp).

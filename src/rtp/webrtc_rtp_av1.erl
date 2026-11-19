@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc AV1 RTP payload format (AOMedia "RTP Payload Format for AV1"
 %% v1.0.0 §4.4 to §4.5): aggregation header, key frame detection,
 %% depacketization, packetization and the frame size of a sequence

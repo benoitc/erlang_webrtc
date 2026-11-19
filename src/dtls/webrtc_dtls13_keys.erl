@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc DTLS 1.3 key schedule (RFC 8446 §7, RFC 9147 §5.9): HKDF
 %% (RFC 5869), HKDF-Expand-Label with the "dtls13" label prefix,
 %% handshake and application traffic secrets, traffic keys including

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Frame assembly (webrtc_frame_buffer) against packetizers written apart
 %% from ours: GStreamer encodes and packetizes VP8, VP9, H.264 and AV1
 %% (rtpvp8pay, rtpvp9pay, rtph264pay, rtpav1pay) over plain RTP on UDP,

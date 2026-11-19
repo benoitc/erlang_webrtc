@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Private state of the DTLS engine (webrtc_dtls, webrtc_dtls_hs,
 %% webrtc_dtls13, webrtc_dtls13_hs).
 

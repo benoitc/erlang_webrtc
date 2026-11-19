@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Per-peer media state stays bounded by the streams we know: a peer
 %% that sends authenticated RTCP about SSRCs of its choice must not grow
 %% our maps.

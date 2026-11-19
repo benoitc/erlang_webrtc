@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for the DTLS engine: our client against our server
 %% over an in-memory network with a fake clock.
 -module(webrtc_dtls_tests).

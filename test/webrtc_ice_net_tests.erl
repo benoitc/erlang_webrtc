@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Multi-agent ICE scenarios over the in-memory network
 %% (webrtc_ice_net): host, server-reflexive, peer-reflexive and relayed
 %% paths through simulated NATs, lite agents, role conflicts, trickle,

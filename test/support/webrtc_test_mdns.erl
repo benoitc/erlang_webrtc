@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Test helper: a fake mDNS responder on a loopback port. It answers
 %% A queries for the names it knows by legacy unicast (RFC 6762 §6.7),
 %% the way the system responder answers one-shot queries.

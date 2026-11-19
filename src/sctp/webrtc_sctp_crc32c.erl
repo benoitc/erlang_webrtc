@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc CRC32c (Castagnoli) checksum used by SCTP (RFC 9260 Appendix A).
 %%
 %% `crc32c/1' returns the standard CRC32c value (reflected polynomial

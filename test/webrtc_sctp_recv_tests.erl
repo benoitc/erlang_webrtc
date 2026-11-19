@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Unit tests of the SCTP receive side on its own state.
 -module(webrtc_sctp_recv_tests).
 -include_lib("eunit/include/eunit.hrl").

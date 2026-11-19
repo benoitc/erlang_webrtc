@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% ICE candidate representation (RFC 8445 §5, RFC 8839 §5.1).
 -ifndef(WEBRTC_ICE_HRL).
 -define(WEBRTC_ICE_HRL, true).

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP acknowledgement processing, congestion control and
 %% retransmission timer (RFC 9260 §6.2.1, §6.3, §7.2, RFC 3758 §3.5).
 %%

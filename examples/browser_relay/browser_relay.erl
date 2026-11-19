@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Relay a browser's camera to another browser: one page sends its
 %% video, another receives it, and Erlang forwards every RTP packet from
 %% the first peer connection to the second without decoding it.

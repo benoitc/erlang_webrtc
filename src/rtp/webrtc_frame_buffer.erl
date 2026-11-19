@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Frame assembly and jitter buffer for one received RTP stream.
 %% No I/O: packets go in with `push/4', frames come out as actions, and
 %% the caller runs `timeout/2' at `next_timeout/1'.

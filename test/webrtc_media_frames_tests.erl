@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% `frames' on a transceiver: the receiving media session delivers
 %% frames from its buffer (webrtc_frame_buffer) instead of packets, and
 %% asks for a key frame with the request the stream negotiated.

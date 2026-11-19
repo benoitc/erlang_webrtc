@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% FlexFEC negotiation (RFC 8627 §5.2, §7.1): the repair stream grouped
 %% with its source by FEC-FR (RFC 5956), the repair window checked.
 -module(webrtc_jsep_flexfec_tests).

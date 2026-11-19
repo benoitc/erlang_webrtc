@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties for ICE: candidate and pair priorities, the
 %% candidate attribute codec, check ordering, and convergence of two
 %% agents over lossy networks.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests of the DCEP codec (RFC 8832) and the data channel manager
 %% (RFC 8831) over the in-memory network.
 -module(webrtc_dcep_tests).

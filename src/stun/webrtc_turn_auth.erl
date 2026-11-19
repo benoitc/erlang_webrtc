@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Long-term credential helpers for the TURN client (RFC 8489
 %% §9.2): request attributes, the nonce cookie and its security

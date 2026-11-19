@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% End to end behavior under network impairment: loss, bursts,
 %% duplication, reordering, jitter, a 1200 byte path MTU and a temporary
 %% blackhole. Every impairment is seeded (see webrtc_impair) and the seed

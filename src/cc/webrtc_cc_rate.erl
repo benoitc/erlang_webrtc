@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Bit rate over a sliding time window, in one-millisecond buckets.
 %%
 %% `add/3' records bytes at a time in milliseconds and `rate/2' returns

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Security and robustness of a live peer connection: traffic from
 %% addresses ICE did not validate, replayed datagrams, floods, teardown
 %% during traffic and resource cleanup.

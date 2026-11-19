@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Private state of the JSEP engine (webrtc_jsep, webrtc_jsep_build).
 
 -record(tr, {

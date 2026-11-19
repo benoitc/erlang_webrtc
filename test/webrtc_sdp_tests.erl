@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for webrtc_sdp (RFC 8866 and WebRTC attributes) on
 %% realistic browser and server session descriptions.
 -module(webrtc_sdp_tests).

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Receiver side of RTP Control Protocol feedback for congestion
 %% control (RFC 8888), as a sans-IO engine.
 %%

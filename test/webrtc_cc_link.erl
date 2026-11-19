@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Test-only bottleneck link: a drop-tail FIFO served at a fixed
 %% capacity, followed by a propagation delay, with optional seeded
 %% random loss before the queue, and optional ECN marking by CoDel (RFC

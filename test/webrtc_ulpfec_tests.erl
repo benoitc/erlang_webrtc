@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% ULPFEC (RFC 5109): FEC payloads made by protect/2 give back any one
 %% missing packet of each group, byte for byte.
 -module(webrtc_ulpfec_tests).

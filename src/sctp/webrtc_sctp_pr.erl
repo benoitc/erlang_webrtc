@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP partial reliability on the send side (RFC 3758 §3.5,
 %% RFC 8260 §2.3.1): abandoning messages, the Advanced.Peer.Ack.Point
 %% and FORWARD TSN / I-FORWARD-TSN generation.

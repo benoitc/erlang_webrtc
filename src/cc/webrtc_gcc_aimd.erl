@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc AIMD rate controller of the delay-based part of Google
 %% Congestion Control (draft-ietf-rmcat-gcc-02 §5.5).
 %%

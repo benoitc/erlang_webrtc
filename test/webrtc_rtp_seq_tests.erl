@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtp_seq (RFC 3550 §5.1 wraparound).
 -module(webrtc_rtp_seq_tests).
 -include_lib("eunit/include/eunit.hrl").

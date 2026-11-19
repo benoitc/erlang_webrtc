@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO SCTP association (RFC 9260) for SCTP over DTLS
 %% (RFC 8261), with partial reliability (RFC 3758, RFC 7496), stream
 %% reconfiguration (RFC 6525), message interleaving (RFC 8260) and zero

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Unit tests of the ICE agent driven directly, packet by packet: STUN
 %% server behavior for checks (RFC 8445 §7.3, RFC 8489 §6.3), response
 %% processing (§7.2.5), role conflicts, early checks, lite behavior,

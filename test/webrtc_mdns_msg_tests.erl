@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% DNS message codec (RFC 1035 §4, RFC 6762) with packets written byte
 %% by byte, in the shape real responders send them.
 -module(webrtc_mdns_msg_tests).

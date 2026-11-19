@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP related SDP attribute values: rtpmap and fmtp (RFC 8866 §6),
 %% rtcp-fb (RFC 4585 §4.2), extmap (RFC 8285 §8), msid (RFC 8830),
 %% legacy msid-semantic, ssrc and ssrc-group (RFC 5576). rid and

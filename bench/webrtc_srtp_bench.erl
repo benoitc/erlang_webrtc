@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SRTP throughput benchmark: packets per second for protect and
 %% unprotect with 1200-octet RTP payloads, for every supported profile.
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Inputs from libwebrtc's fuzz corpora (test/corpora/libwebrtc): unit
 %% test samples, captures, browser SDPs and inputs that once crashed a
 %% parser. Every file goes through every decoder of its kind and must

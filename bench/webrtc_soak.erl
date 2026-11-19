@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Soak run: connected pairs are created and closed without pause
 %% for a given time, with audio, H.264 frames carrying a malformed SPS
 %% (a picture order count cycle of 2^31 frames), data channel messages

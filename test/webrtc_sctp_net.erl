@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc In-memory network for deterministic tests of sans-IO engines.
 %%
 %% Wires two engines `a' and `b' (any module with handle_packet/3,

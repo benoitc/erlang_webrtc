@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtcp: SR, RR, SDES, BYE, APP, compound validation
 %% (RFC 3550 §6, Appendix A.2) and reduced-size RTCP (RFC 5506).
 -module(webrtc_rtcp_tests).

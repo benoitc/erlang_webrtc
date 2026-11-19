@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtp_opus (RFC 7587, RFC 6716 §3.1 TOC).
 -module(webrtc_rtp_opus_tests).
 -include_lib("eunit/include/eunit.hrl").

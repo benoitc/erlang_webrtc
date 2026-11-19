@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private One peer connection (RTCPeerConnection): JSEP signaling,
 %% transceivers, data channel bookkeeping and the connection state. The
 %% transport process does the packet work. See `webrtc' for the API.

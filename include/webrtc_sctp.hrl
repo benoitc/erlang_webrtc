@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% SCTP packet and chunk records (RFC 9260, RFC 3758, RFC 6525, RFC 8260).
 %%
 %% Chunks without a record are plain tuples, see the `chunk()' type in

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties of the frame buffer (webrtc_frame_buffer) over the
 %% frames of real encoders (test/corpora/frames): packets reordered,
 %% repeated and lost at random.

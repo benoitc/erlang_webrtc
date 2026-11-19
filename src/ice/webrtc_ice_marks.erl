@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Blocked DSCP marks on the selected pair (RFC 8835 §4.2, its
 %% suggested method). Each consent request goes once more per DSCP the

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for webrtc_jsep (RFC 9429, RFC 3264, RFC 9143,
 %% RFC 8842). Descriptions always go through encode and parse, as they
 %% would through signaling.

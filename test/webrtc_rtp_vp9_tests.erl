@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtp_vp9 key frame detection (RFC 9628 §4.2).
 -module(webrtc_rtp_vp9_tests).
 -include_lib("eunit/include/eunit.hrl").

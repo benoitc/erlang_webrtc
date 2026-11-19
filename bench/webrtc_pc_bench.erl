@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Peer connection benchmarks over loopback UDP. Not run by the
 %% functional suites; use `make bench' or call `run/0' from a shell
 %% started with the test profile paths.

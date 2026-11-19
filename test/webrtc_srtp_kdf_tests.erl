@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for webrtc_srtp_kdf and webrtc_srtp_profile:
 %% RFC 3711 Appendix B.2 (AES-CM keystream), B.3 (key derivation) and
 %% the RFC 5764 §4.2 keying material layout.

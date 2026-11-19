@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Relayed connectivity through an independent TURN server (pion/turn,
 %% interop/turn). A filter drops every datagram that is not addressed to
 %% the TURN server, so the only working candidate pairs are relayed

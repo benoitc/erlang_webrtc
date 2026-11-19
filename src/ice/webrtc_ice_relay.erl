@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Relayed candidates of the ICE agent (RFC 8656, RFC 8445
 %% §5.1.1.2, §7.2.1).

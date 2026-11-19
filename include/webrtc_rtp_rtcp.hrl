@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RTCP packet representation (RFC 3550 §6, RFC 4585, RFC 5104,
 %% RFC 3611, RFC 8888, draft-holmer-rmcat-transport-wide-cc-extensions,
 %% draft-alvestrand-rmcat-remb).

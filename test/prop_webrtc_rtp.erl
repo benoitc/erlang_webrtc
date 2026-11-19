@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties for the RTP / RTCP codecs: encode/decode round
 %% trips for RTP, header extensions and every RTCP packet type, and
 %% decoders that never crash on arbitrary or mutated input.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc VP9 RTP payload format (RFC 9628): payload descriptor, key frame
 %% detection, frame size and packetization.
 %%

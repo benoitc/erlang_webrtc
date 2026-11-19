@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Framing of TURN over a stream transport (TCP, TLS over TCP,
 %% RFC 8656 §3.1, §12.5): the messages on the stream are STUN messages
 %% and ChannelData, each self-delimiting, ChannelData padded to a

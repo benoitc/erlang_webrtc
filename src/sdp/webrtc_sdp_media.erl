@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Queries and updates on parsed SDP for JSEP.
 %%
 %% Attribute lookups take the key used in `webrtc_sdp:attribute()' (an

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Control experiment for the interop harness: two instances of the
 %% same independent implementation talk through the Erlang controller.
 %% If this suite fails, interop failures elsewhere are harness bugs.

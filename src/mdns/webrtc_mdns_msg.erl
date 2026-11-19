@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO DNS message codec for multicast DNS (RFC 1035 §4,
 %% RFC 6762).
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% A data channel between a browser and Erlang, with HTTP as the
 %% signaling channel: the page posts its offer, with every candidate in
 %% it, and gets the answer back. See docs/guides/data-channels.md.

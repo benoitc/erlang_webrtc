@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Bandwidth probing, without I/O: probe clusters sent ahead of the
 %% estimate and the bitrate they show, as libwebrtc's probe controller
 %% and probe bitrate estimator do.

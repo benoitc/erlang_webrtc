@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP stream reconfiguration (RFC 6525).
 %%
 %% Internal module of `webrtc_sctp_assoc'. Supported requests:

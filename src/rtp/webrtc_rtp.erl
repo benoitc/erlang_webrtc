@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP packet codec (RFC 3550 §5.1).
 %%
 %% `decode/1' parses a packet into an `#rtp{}' record and validates the

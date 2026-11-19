@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Owner of the `webrtc_transports' table: rows
 %% `{PeerConnection, Transport}' and `{{PeerConnection, Key}, Transport}'
 %% that let the API reach a transport without a call to its peer

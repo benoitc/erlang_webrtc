@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP packet and chunk codec (RFC 9260 §3, RFC 3758, RFC 4820,
 %% RFC 6525, RFC 8260, RFC 9653).
 %%

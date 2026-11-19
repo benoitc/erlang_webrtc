@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for ICE candidate priorities, foundations, pairing rules and
 %% the RFC 8839 candidate attribute.
 -module(webrtc_ice_candidate_tests).

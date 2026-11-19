@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc The W3C WebRTC statistics (https://www.w3.org/TR/webrtc-stats/)
 %% of a peer connection, built from the engines' own statistics.
 %%

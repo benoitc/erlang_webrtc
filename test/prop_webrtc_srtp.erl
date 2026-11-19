@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties for webrtc_srtp: protect/unprotect round trips on
 %% random packets, and unprotect never crashes on arbitrary input.
 -module(prop_webrtc_srtp).

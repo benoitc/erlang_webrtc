@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Profiling of a peer connection: where connection setup time goes,
 %% raw RTP send capacity, and tprof call time and allocation profiles of
 %% the data channel, RTP and handshake paths. Run with `make profile'.

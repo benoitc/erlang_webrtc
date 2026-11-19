@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 6051 ntp-64 header extension (RFC 8834 §5.2.1) against
 %% GStreamer's rtphdrextntp64, an implementation independent of ours,
 %% over plain RTP on UDP, driven by interop/gst/rtp_ntp.py:

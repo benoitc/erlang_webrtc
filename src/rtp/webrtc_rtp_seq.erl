@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Wrapping arithmetic for RTP sequence numbers (16 bits) and
 %% timestamps (32 bits), RFC 3550 §5.1 and Appendix A.1.
 %%

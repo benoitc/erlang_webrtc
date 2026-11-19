@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Rapid synchronisation of RTP streams (RFC 6051, RECOMMENDED by
 %% RFC 8834 §5.2.1).
 %%

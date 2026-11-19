@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SRTP key derivation (RFC 3711 §4.3) with the AES-CM PRF
 %% (RFC 3711 §4.3.3, RFC 6188 §7 for AES-256 master keys).
 %%

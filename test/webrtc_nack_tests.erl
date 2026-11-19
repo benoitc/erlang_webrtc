@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_nack, the receiver-side NACK generator.
 -module(webrtc_nack_tests).
 -include_lib("eunit/include/eunit.hrl").

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Every process and table row a peer connection creates ends with it,
 %% however it ends: close, owner exit, kill. A stuck application
 %% function or a hanging connect does not keep anything alive.

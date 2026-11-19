@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% ULPFEC (RFC 5109) in RED between two media sessions: video goes in
 %% RED, FEC packets follow each frame, and the receiver gets lost
 %% packets back without a retransmission.

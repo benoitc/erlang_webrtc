@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Erlang to Erlang peer connections over real UDP sockets on loopback:
 %% ICE, DTLS, SRTP, RTP/RTCP, SCTP and data channels end to end.
 -module(webrtc_pc_SUITE).

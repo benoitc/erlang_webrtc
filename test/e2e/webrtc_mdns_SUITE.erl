@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Host name ICE candidates end to end (draft-ietf-mmusic-mdns-ice-candidates,
 %% RFC 8839 §5.1): Erlang peers on loopback where one side only learns
 %% the other through `<uuid>.local' names (served by a fake responder or

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO STUN client transaction table for UDP (RFC 8489 §6.2.1).
 %%
 %% The table tracks outstanding requests by transaction ID, decides

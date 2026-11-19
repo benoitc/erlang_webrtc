@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.3 handshake, server side (RFC 9147 §5, RFC 8446 §4).
 %%
 %% The HelloRetryRequest is stateless (RFC 9147 §5.1): the cookie

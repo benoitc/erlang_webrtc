@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 -module(webrtc_demux_tests).
 -include_lib("eunit/include/eunit.hrl").
 

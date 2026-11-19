@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc JSEP (RFC 9429) negotiation on structured SDP.
 %%
 %% A pure state machine: it creates offers and answers, applies local and

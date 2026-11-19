@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Consent freshness (RFC 7675) and keepalives (RFC 8445 §11) on
 %% the selected pairs, and on the pairs kept alive across an ICE

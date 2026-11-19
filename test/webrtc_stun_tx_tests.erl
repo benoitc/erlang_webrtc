@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for the STUN client transaction table (RFC 8489 §6.2.1).
 -module(webrtc_stun_tx_tests).
 -include_lib("eunit/include/eunit.hrl").

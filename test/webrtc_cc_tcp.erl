@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Test-only TCP flow for the congestion control simulations (RFC 8867
 %% §5.6, §5.7): RFC 5681 congestion control (slow start, congestion
 %% avoidance, a halved window on loss) with SACK based loss recovery

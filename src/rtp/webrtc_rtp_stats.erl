@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP receiver and sender statistics (RFC 3550 §6.4, Appendix A).
 %%
 %% Receiver side, one state per remote source:

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties for the TMMBR bounding set (RFC 5104 §3.5.4.2) and
 %% the rate limiter that follows it, checked against the definitions
 %% rather than the algorithm: the bounding set gives the same lower

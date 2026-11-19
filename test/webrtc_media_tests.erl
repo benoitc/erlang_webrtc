@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_media: two media sessions configured from a real
 %% JSEP negotiation and DTLS-SRTP style keys.
 -module(webrtc_media_tests).

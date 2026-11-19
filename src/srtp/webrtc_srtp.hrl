@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Private records shared by the SRTP modules. Not part of the public API.
 
 %% Session keys and transform parameters for one direction of SRTP or

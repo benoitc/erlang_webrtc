@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SRTP protection profiles for DTLS-SRTP (RFC 5764 §4.1.2, RFC 7714
 %% §14.2) and the layout of the exported keying material (RFC 5764 §4.2).
 %%

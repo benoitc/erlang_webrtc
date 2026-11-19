@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for webrtc_srtp: RFC 7714 §16 and §17 vectors,
 %% round trips for every profile, ROC handling (RFC 3711 §3.3.1),
 %% replay protection, authentication failures and malformed input.

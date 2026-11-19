@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Cryptographic building blocks for DTLS 1.2: cipher suite table,
 %% TLS 1.2 PRF (RFC 5246 §5), master secret including the extended
 %% master secret (RFC 7627), key block, Finished, exporters (RFC 5705),

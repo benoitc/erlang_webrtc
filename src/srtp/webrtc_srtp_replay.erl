@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sliding window replay list (RFC 3711 §3.3.2, RFC 2401 style
 %% bitmap).
 %%

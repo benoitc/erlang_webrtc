@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Resolve STUN and TURN servers given by URI (webrtc_ice_uri) to
 %% the addresses the ICE agent uses.
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The RFC 8867 test cases for congestion control of interactive media,
 %% run on the simulator (webrtc_cc_sim) with the evaluation settings of
 %% RFC 8867 §4: 50 ms one-way delay, packet delay variation as RFC 8868

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% STUN and TURN server URIs (RFC 7064, RFC 7065) and their resolution
 %% (RFC 5928 §3, RFC 8489 §8.1), with a fake resolver.
 -module(webrtc_ice_uri_tests).

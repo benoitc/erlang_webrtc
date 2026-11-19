@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Leaky bucket pacer for outgoing media, as a sans-IO engine.
 %%
 %% Packets are `{Class, Size, Data}' with `Class' one of `audio', `rtx'

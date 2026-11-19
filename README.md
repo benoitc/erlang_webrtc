@@ -109,4 +109,4 @@ Project:
 
 ## License
 
-Apache 2.0, see [LICENSE](LICENSE).
+Copyright (c) 2026 Enki Multimedia and Benoit Chesneau. Apache 2.0, see [LICENSE](LICENSE).

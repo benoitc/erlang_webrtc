@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SDP codec (RFC 8866) with the attributes used by WebRTC.
 %%
 %% `parse/1' turns a session description into an `#sdp{}' record (see

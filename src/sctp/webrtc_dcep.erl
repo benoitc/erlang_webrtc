@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc WebRTC data channels: the Data Channel Establishment Protocol
 %% (RFC 8832) and the data channel rules of RFC 8831 on top of
 %% `webrtc_sctp_assoc'.

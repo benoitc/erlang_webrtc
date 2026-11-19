@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests of TURN stream framing (RFC 8656 §3.1, §12.5).
 -module(webrtc_turn_stream_tests).
 -include_lib("eunit/include/eunit.hrl").

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% A DTLS 1.2 server takes the client's ChangeCipherSpec only after the
 %% CertificateVerify (RFC 5246 §7.4.8), found by DTLS-Fuzzer: before,
 %% an early CCS made the server read the CertificateVerify encrypted.

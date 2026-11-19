@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for webrtc_stun (RFC 8489) using RFC 5769 vectors.
 -module(webrtc_stun_tests).
 -include_lib("eunit/include/eunit.hrl").

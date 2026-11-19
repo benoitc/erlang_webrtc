@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc DSCP values for WebRTC flows (RFC 8837 §5, Table 1), as RFC 8835
 %% §4.2 asks implementations to mark their packets.
 %%

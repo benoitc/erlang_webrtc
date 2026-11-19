@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% A codec plugin (webrtc_media_codec) for the tests: it decodes a
 %% frame into its size and "encodes" `{frame, Data, Keyframe}' into
 %% that frame, with fixed statistics. `#{crash => N}' raises at the Nth

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Name resolution for ICE candidates whose address is a host name,
 %% and an optional mDNS responder for our own host candidates
 %% (draft-ietf-mmusic-mdns-ice-candidates).

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for DTLS 1.3 (RFC 9147): our client against our
 %% server over an in-memory network with a fake clock, plus unit tests
 %% of the key schedule (RFC 8448 vectors), record layer, ACK codec and

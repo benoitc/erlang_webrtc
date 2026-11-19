@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Lexical helpers shared by the SDP codec modules.
 %%
 %% Character classes follow the ABNF of RFC 8866 §9 (token, byte-string,

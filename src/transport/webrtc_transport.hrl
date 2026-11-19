@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Private state of the transport process, shared by webrtc_transport
 %% (the process), webrtc_transport_net (sockets and ICE) and
 %% webrtc_transport_secure (DTLS, SRTP and SCTP).

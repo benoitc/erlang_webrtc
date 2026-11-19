@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties for the SCTP codec (webrtc_sctp_chunk,
 %% webrtc_sctp_param, webrtc_sctp_crc32c) and the association engine
 %% (webrtc_sctp_assoc over the in-memory network of webrtc_sctp_net).

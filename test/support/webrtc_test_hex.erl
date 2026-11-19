@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Helpers to turn RFC hex dumps into binaries.
 -module(webrtc_test_hex).
 -export([b/1]).

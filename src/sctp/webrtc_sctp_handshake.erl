@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP association setup (RFC 9260 §5, §8.4, §8.5.1).
 %%
 %% Internal module of `webrtc_sctp_assoc': four-way handshake with a

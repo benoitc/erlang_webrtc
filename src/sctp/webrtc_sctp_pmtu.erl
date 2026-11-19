@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Packetization layer path MTU discovery for SCTP over DTLS
 %% (RFC 8899 §4, §5 and §6.2, RFC 8261 §5, RFC 8831 §5).
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The examples of docs/guides run as written: each one under examples/
 %% serves its page, a headless browser with a fake camera loads it, and
 %% the page must show what the guide says it shows.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Controller side of the interop peer protocol (interop/PROTOCOL.md).
 %% Starts an adapter as a port, sends commands, waits for events.
 -module(webrtc_interop_peer).

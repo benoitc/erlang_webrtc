@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTCP extended reports (RFC 3611), PT 207.
 %%
 %% Decoded blocks: Receiver Reference Time `{rrtr, Ntp64}' (§4.4) and

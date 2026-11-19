@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RED (RFC 2198) against GStreamer's rtpredenc and rtpreddec, an
 %% implementation independent of libwebrtc, over plain RTP on UDP: RED is
 %% an RTP payload format, so no WebRTC layer is needed around it.

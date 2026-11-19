@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Simulcast media (RFC 8853) with RTP stream identifiers (RFC 8852):
 %% per-layer SSRCs and rid extension on send, demultiplexing by MID and
 %% rid / repaired-rid on receive, NACK, RTX and PLI per layer.

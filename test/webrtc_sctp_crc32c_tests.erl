@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_sctp_crc32c (RFC 9260 Appendix A, RFC 3720 B.4,
 %% RFC 9653 Figure 1).
 -module(webrtc_sctp_crc32c_tests).

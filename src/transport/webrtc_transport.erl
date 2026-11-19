@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private The transport of one peer connection (one BUNDLE group): it
 %% owns the UDP sockets and drives the sans-IO engines.
 %%

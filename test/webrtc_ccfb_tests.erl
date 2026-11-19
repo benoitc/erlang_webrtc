@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 8888 congestion control feedback in webrtc_cc and
 %% webrtc_ccfb_receiver, with ECN (RFC 6679, RFC 8888 §6) and the ECN
 %% circuit breaker (RFC 8083 §4.4).

@@ -6,6 +6,7 @@ All notable changes are listed here, newest first. Each release section is also 
 
 - AV1 and H.264 frames were dropped, and key frames asked for again and again, when the peer sent bandwidth probes on the video stream, which it does when RTX is not negotiated. No frame is lost to them now.
 - The LICENSE file had one word more than the Apache License 2.0 ("submitted to the Licensor"); its terms now match the licence word for word.
+- `webrtc:default_codecs/1` returns the codecs a peer connection offers by default, and `webrtc:prefer_codec/2` moves one codec, with its retransmission entry, to the front of such a list. Use them with the `codecs` option to offer AV1 or H.264 first, without reaching into internal modules.
 
 ## 0.1.0 (2026-11-19)
 

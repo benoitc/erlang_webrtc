@@ -50,3 +50,26 @@ h264_interleaved_test() ->
     Local = [h264(120, <<"2">>)],
     ?assertEqual([100], [Pt || #{pt := Pt} <- ?C:answer_codecs(Offer, Local)]),
     ?assertNot(?C:same_codec(h264(1, <<"1">>), h264(2, <<"2">>))).
+
+%% prefer/2: the codec, then its rtx, then the others in their order.
+prefer_test_() ->
+    Video = ?C:default_codecs(video),
+    Names = fun(Cs) -> [{N, Pt} || #{name := N, pt := Pt} <- Cs] end,
+    {ok, Av1} = ?C:prefer(<<"AV1">>, Video),
+    [?_assertEqual([{<<"AV1">>, 45}, {<<"rtx">>, 46}], lists:sublist(Names(Av1), 2)),
+     ?_assertEqual(lists:sort(Video), lists:sort(Av1)),
+     ?_assertEqual(Names(Video) -- [{<<"AV1">>, 45}, {<<"rtx">>, 46}], tl(tl(Names(Av1)))),
+     ?_assertEqual({ok, Av1}, ?C:prefer(<<"av1">>, Video)),
+     ?_assertEqual({ok, Video}, ?C:prefer(<<"VP8">>, Video)),
+     ?_assertEqual({error, {unknown_codec, <<"H265">>}}, ?C:prefer(<<"H265">>, Video)),
+     ?_assertEqual({error, {unknown_codec, <<"rtx">>}}, ?C:prefer(<<"rtx">>, Video)),
+     %% Every H.264 entry goes first, each followed by nothing else
+     %% before the rtx entries that name them.
+     ?_test(begin
+                Two = [h264(100, <<"1">>), #{name => <<"rtx">>, pt => 101, clock_rate => 90000, channels => undefined,
+                                             fmtp => [{<<"apt">>, <<"100">>}], rtcp_fb => []},
+                       hd(Video), h264(102, <<"0">>), #{name => <<"rtx">>, pt => 103, clock_rate => 90000,
+                                                        channels => undefined, fmtp => [{<<"apt">>, <<"102">>}], rtcp_fb => []}],
+                {ok, P} = ?C:prefer(<<"H264">>, Two),
+                ?assertEqual([100, 102, 101, 103, 96], [Pt || #{pt := Pt} <- P])
+            end)].

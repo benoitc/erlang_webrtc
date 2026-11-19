@@ -15,6 +15,7 @@
 
 -export([
     default_codecs/1,
+    prefer/2,
     default_extensions/1,
     answer_codecs/2,
     match_remote/2,
@@ -159,6 +160,24 @@ default_extensions(video) ->
         #{id => 6, uri => ?URI_NTP64},
         #{id => 7, uri => ?URI_NTP56}
     ].
+
+%% @doc `Codecs' with codec `Name' first: its entries (every profile of
+%% H.264), then the rtx entries whose apt names one of them, then the
+%% others in their order. The others stay offered, so the peer can fall
+%% back on them and the repair formats (RED, ULPFEC, FlexFEC) stay
+%% negotiated. Names compare without case.
+-spec prefer(binary(), [codec()]) -> {ok, [codec()]} | {error, {unknown_codec, binary()}}.
+prefer(Name, Codecs) ->
+    Want = string:lowercase(Name),
+    Named = [C || #{name := N} = C <- Codecs, string:lowercase(N) =:= Want, not is_rtx(C)],
+    case Named of
+        [] ->
+            {error, {unknown_codec, Name}};
+        _ ->
+            Pts = [Pt || #{pt := Pt} <- Named],
+            Rtx = [C || C <- Codecs, is_rtx(C), {ok, Apt} <- [apt(C)], lists:member(Apt, Pts)],
+            {ok, Named ++ Rtx ++ [C || C <- Codecs, not lists:member(C, Named ++ Rtx)]}
+    end.
 
 %%====================================================================
 %% Negotiation

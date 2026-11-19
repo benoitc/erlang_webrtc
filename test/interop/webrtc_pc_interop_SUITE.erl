@@ -500,7 +500,7 @@ peer_sends_frames_without_rtx(Config) ->
 
 %% Our video codecs narrowed to `Codec', without its rtx entry.
 no_rtx(Codec) ->
-    #{codecs => #{video => [C || #{name := N} = C <- webrtc_jsep_caps:default_codecs(video),
+    #{codecs => #{video => [C || #{name := N} = C <- webrtc:default_codecs(video),
                                  string:lowercase(N) =:= string:lowercase(Codec)]}}.
 
 frames_from(Config, Codec) ->

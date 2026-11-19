@@ -24,6 +24,8 @@
 -export([
     new_peer_connection/0,
     new_peer_connection/1,
+    default_codecs/1,
+    prefer_codec/2,
     add_transceiver/3,
     set_direction/3,
     stop_transceiver/2,
@@ -146,6 +148,23 @@ valid_sctp(S) when is_map(S) ->
     lists:all(fun({K, V}) -> case Check of #{K := F} -> F(V); _ -> false end end, maps:to_list(S));
 valid_sctp(_) ->
     false.
+
+%% @doc The codecs a peer connection offers when the `codecs' option is
+%% not given, in their order of preference. See docs/REFERENCE.md
+%% ("Codecs").
+-spec default_codecs(audio | video) -> [map()].
+default_codecs(Kind) when Kind =:= audio; Kind =:= video ->
+    webrtc_jsep_caps:default_codecs(Kind).
+
+%% @doc `Codecs' with codec `Name' (`<<"AV1">>', `<<"H264">>', ...) moved
+%% first, with its rtx entries; the others follow in their order, so the
+%% peer can still fall back on them. For the `codecs' option:
+%% `#{video => V}' with `{ok, V} = prefer_codec(<<"AV1">>,
+%% default_codecs(video))'. It sets the order of our offers; an answer
+%% keeps the order of the offer it answers.
+-spec prefer_codec(binary(), [map()]) -> {ok, [map()]} | {error, {unknown_codec, binary()}}.
+prefer_codec(Name, Codecs) when is_binary(Name), is_list(Codecs) ->
+    webrtc_jsep_caps:prefer(Name, Codecs).
 
 %% @doc Add a transceiver. `Opts': `direction' (default `sendrecv'),
 %% `stream_id', `track_id', the simulcast layers `send_encodings' and

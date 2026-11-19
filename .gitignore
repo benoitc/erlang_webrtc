@@ -16,3 +16,4 @@ __pycache__/
 /interop/dtlsfuzzer/dtls-fuzzer
 /interop/dtlsfuzzer/ebin/
 /interop/dtlsfuzzer/output/
+/doc/

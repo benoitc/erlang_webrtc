@@ -79,7 +79,7 @@ You give the servers as a browser would, with `stun:`, `turn:` and `turns:` URIs
 Start here:
 
 - [docs/CONCEPTS.md](docs/CONCEPTS.md): the WebRTC terms the code and the docs use.
-- [examples](examples): pages that talk to Erlang, ready to run.
+- [examples](https://github.com/benoitc/erlang_webrtc/tree/main/examples): pages that talk to Erlang, ready to run.
 
 Guides, task by task:
 
@@ -97,7 +97,7 @@ Reference and internals:
 - [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md): where things live and how to add a feature.
 - [docs/TESTING.md](docs/TESTING.md): test layers, interop adapters, reproducing failures.
 - [docs/COMPLIANCE.md](docs/COMPLIANCE.md) and [docs/INTEROP.md](docs/INTEROP.md): what is implemented, and against what it is tested.
-- [docs/adr](docs/adr): design decisions.
+- [docs/adr](https://github.com/benoitc/erlang_webrtc/tree/main/docs/adr): design decisions.
 
 Project:
 

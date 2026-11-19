@@ -175,7 +175,6 @@ abs_send_time(V) when is_integer(V), V >= 0, V =< 16#FFFFFF ->
 decode_abs_send_time(<<V:24>>) -> {ok, V};
 decode_abs_send_time(_) -> {error, bad_length}.
 
-%% @doc 6.18 fixed point abs-send-time from a 64-bit NTP timestamp.
 %% @doc RFC 6051 §3.3 Variant A: the 64-bit NTP timestamp of the
 %% packet's RTP timestamp (`urn:ietf:params:rtp-hdrext:ntp-64').
 -spec ntp64(0..16#FFFFFFFFFFFFFFFF) -> <<_:64>>.
@@ -187,6 +186,7 @@ ntp64(Ntp) when is_integer(Ntp), Ntp >= 0, Ntp =< 16#FFFFFFFFFFFFFFFF -> <<Ntp:6
 -spec ntp56(0..16#FFFFFFFFFFFFFFFF) -> <<_:56>>.
 ntp56(Ntp) when is_integer(Ntp), Ntp >= 0, Ntp =< 16#FFFFFFFFFFFFFFFF -> <<(Ntp band 16#FFFFFFFFFFFFFF):56>>.
 
+%% @doc 6.18 fixed point abs-send-time from a 64-bit NTP timestamp.
 -spec abs_send_time_from_ntp(0..16#FFFFFFFFFFFFFFFF) -> 0..16#FFFFFF.
 abs_send_time_from_ntp(Ntp) ->
     (Ntp bsr 14) band 16#FFFFFF.

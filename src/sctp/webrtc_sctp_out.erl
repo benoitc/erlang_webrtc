@@ -103,12 +103,12 @@ pack([C | Rest], Mtu, Size, Cur, Pkts) ->
         false -> pack([C | Rest], Mtu, ?SCTP_COMMON_HEADER_SIZE, [], [lists:reverse(Cur) | Pkts])
     end.
 
-%% @doc The association is over: stop every timer and report `Reason'.
 %% @doc An ABORT to the peer, when its tag is known (§8.1).
 -spec abort_peer(#assoc{}) -> #assoc{}.
 abort_peer(#assoc{peer_vtag = 0} = A) -> A;
 abort_peer(#assoc{peer_vtag = Tag} = A) -> raw(Tag, [{abort, false, []}], crc32c, A).
 
+%% @doc The association is over: stop every timer and report `Reason'.
 -spec terminate(term(), #assoc{}) -> #assoc{}.
 terminate(Reason, #assoc{snd = Snd, rcv = Rcv, rcf = Rcf} = A) ->
     A1 = A#assoc{

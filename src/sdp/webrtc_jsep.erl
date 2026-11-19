@@ -280,7 +280,6 @@ add_data_channel(J) ->
 restart_ice(U, P, J) ->
     J#jsep{ice_ufrag = U, ice_pwd = P, ice_restart = true}.
 
-%% @doc Candidates to include in descriptions created from now on.
 %% @doc Candidates of the transport `Key' (see `transports/1') to
 %% include in descriptions created from now on.
 -spec set_local_candidates(binary(), [#sdp_candidate{}], boolean(), state()) -> state().
@@ -317,6 +316,7 @@ transports(J) ->
      end
      || {K, Ms, _} <- Groups].
 
+%% @doc Candidates to include in descriptions created from now on.
 -spec set_local_candidates([#sdp_candidate{}], boolean(), state()) -> state().
 set_local_candidates(Cands, EndOfCandidates, J) ->
     J#jsep{local_candidates = Cands, local_eoc = EndOfCandidates}.
@@ -860,13 +860,13 @@ remote_ice(#sdp{media = Media} = Sdp) ->
         [] -> undefined
     end.
 
-%% @doc Negotiated parameters from the current (or provisional)
-%% descriptions, or `undefined' before the first answer.
--spec negotiated(state()) -> map() | undefined.
 %% @doc The local ICE ufrag and password.
 -spec local_ice(state()) -> {binary(), binary()}.
 local_ice(#jsep{ice_ufrag = U, ice_pwd = P}) -> {U, P}.
 
+%% @doc Negotiated parameters from the current (or provisional)
+%% descriptions, or `undefined' before the first answer.
+-spec negotiated(state()) -> map() | undefined.
 negotiated(#jsep{} = J) ->
     {Local, Remote} =
         case J#jsep.signaling of

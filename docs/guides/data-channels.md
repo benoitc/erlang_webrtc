@@ -1,6 +1,6 @@
 # Talk to a browser over a data channel
 
-A data channel carries text and binary messages between a browser and your Erlang node, encrypted, over the same connection as WebRTC audio and video, with no server in between once it is set up. You need it to push events to a page, take commands from it, or move files and telemetry with a latency close to the network's. This guide builds a page that opens a channel to Erlang, gets a greeting and has its messages echoed back. The finished code is in [`examples/browser_datachannel`](../../examples/browser_datachannel).
+A data channel carries text and binary messages between a browser and your Erlang node, encrypted, over the same connection as WebRTC audio and video, with no server in between once it is set up. You need it to push events to a page, take commands from it, or move files and telemetry with a latency close to the network's. This guide builds a page that opens a channel to Erlang, gets a greeting and has its messages echoed back. The finished code is in [`examples/browser_datachannel`](https://github.com/benoitc/erlang_webrtc/tree/main/examples/browser_datachannel).
 
 ## How it works
 

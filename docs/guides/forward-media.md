@@ -1,6 +1,6 @@
 # Forward media between peers
 
-An SFU (selective forwarding unit) receives each participant's media and sends it on to the others without decoding it. With this library you hold one peer connection per participant and move RTP packets from one to another; the library gives the forwarded stream its own SSRC and sequence numbers and handles retransmissions on each leg. You need this guide to build a conference server, a broadcast relay or a recorder that also forwards. The example [`examples/browser_relay`](../../examples/browser_relay) relays one browser page's video to a second page.
+An SFU (selective forwarding unit) receives each participant's media and sends it on to the others without decoding it. With this library you hold one peer connection per participant and move RTP packets from one to another; the library gives the forwarded stream its own SSRC and sequence numbers and handles retransmissions on each leg. You need this guide to build a conference server, a broadcast relay or a recorder that also forwards. The example [`examples/browser_relay`](https://github.com/benoitc/erlang_webrtc/tree/main/examples/browser_relay) relays one browser page's video to a second page.
 
 ## When to use
 

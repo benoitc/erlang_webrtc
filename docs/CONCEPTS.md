@@ -87,4 +87,4 @@ Where: `src/pc/webrtc_peer_sup.erl`, the process tree in [ARCHITECTURE.md](ARCHI
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): how these pieces fit together.
 - [REFERENCE.md](REFERENCE.md): every option and event.
-- [The guides](guides/): task by task.
+- The guides, task by task: [send media](guides/send-media.md), [forward media](guides/forward-media.md), [frames and codec plugins](guides/frames-and-codec-plugins.md), [data channels](guides/data-channels.md), [statistics](guides/statistics.md), [bandwidth and QoS](guides/bandwidth-and-qos.md).

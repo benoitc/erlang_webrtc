@@ -55,14 +55,20 @@ pair(Config, Impair) ->
     Seed = ?config(seed, Config),
     Mk = fun(N) ->
         F = webrtc_impair:filter(Impair#{seed => Seed + N}),
-        {ok, Pc} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => F}),
+        %% At 30% loss consent responses go missing for 10 s now and
+        %% then, and an automatic ICE restart would wait for an offer
+        %% the test never sends.
+        {ok, Pc} = webrtc:new_peer_connection(#{loopback => true, ice_auto_restart => false, outbound_filter => F}),
         Pc
     end,
     {Mk(0), Mk(1)}.
 
 channel(Pc, Label) ->
+    channel(Pc, Label, 30000).
+
+channel(Pc, Label, Timeout) ->
     {ok, {datachannel_open, Id, _, _, _}} =
-        ?S:wait(Pc, fun({datachannel_open, _, L, _, _}) -> L =:= Label; (_) -> false end, 30000),
+        ?S:wait(Pc, fun({datachannel_open, _, L, _, _}) -> L =:= Label; (_) -> false end, Timeout),
     Id.
 
 %% Send N numbered messages and check they all arrive, in order.
@@ -90,11 +96,14 @@ collect(B, N, T, Acc) ->
     end.
 
 setup_channel(Config, Impair) ->
+    setup_channel(Config, Impair, 30000).
+
+setup_channel(Config, Impair, Timeout) ->
     {A, B} = pair(Config, Impair),
     ok = webrtc:create_data_channel(A, <<"c">>, #{}),
     ?S:connect(A, B, 60000),
-    Id = channel(A, <<"c">>),
-    _ = channel(B, <<"c">>),
+    Id = channel(A, <<"c">>, Timeout),
+    _ = channel(B, <<"c">>, Timeout),
     {A, B, Id}.
 
 close(A, B) ->
@@ -104,7 +113,10 @@ close(A, B) ->
 handshake_under_30pct_loss(Config) ->
     %% ICE retransmits checks, DTLS retransmits flights, SCTP retransmits
     %% INIT and COOKIE: the connection still comes up.
-    {A, B, Id} = setup_channel(Config, #{loss => 0.3}),
+    %% Each SCTP and DCEP exchange then fails about half the time, and
+    %% the retransmission timer doubles from 1 s (RFC 9260 §6.3.3): a
+    %% few losses in a row take the channel past 30 s.
+    {A, B, Id} = setup_channel(Config, #{loss => 0.3}, 120000),
     ordered_transfer(A, B, Id, 20, 100),
     close(A, B).
 

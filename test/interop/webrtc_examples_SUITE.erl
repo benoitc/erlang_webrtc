@@ -1,16 +1,16 @@
-%% The examples of docs/guides run as written: examples/browser_datachannel
-%% serves its page, a headless browser loads it, and the data channel
-%% must carry the greeting and the echo both ways.
+%% The examples of docs/guides run as written: each one under examples/
+%% serves its page, a headless browser with a fake camera loads it, and
+%% the page must show what the guide says it shows.
 -module(webrtc_examples_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("stdlib/include/assert.hrl").
 
 -export([all/0, groups/0, init_per_suite/1, end_per_suite/1, init_per_group/2, end_per_group/2]).
--export([browser_datachannel/1]).
+-export([browser_datachannel/1, browser_video/1, browser_relay/1]).
 
 all() -> [{group, chromium}, {group, firefox}].
 
-groups() -> [{B, [], [browser_datachannel]} || B <- [chromium, firefox]].
+groups() -> [{B, [], [browser_datachannel, browser_video, browser_relay]} || B <- [chromium, firefox]].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -39,29 +39,66 @@ end_per_group(_, _Config) ->
 %% The page posts its offer, Erlang answers, the browser sends "hello
 %% from the browser" and gets it echoed after Erlang's greeting.
 browser_datachannel(Config) ->
-    Dir = ?config(priv_dir, Config),
-    Src = filename:join([?config(root, Config), "examples", "browser_datachannel"]),
-    %% Built and run from its own directory, as the guide does.
-    [{ok, _} = file:copy(filename:join(Src, F), filename:join(Dir, F)) || F <- ["browser_datachannel.erl", "index.html"]],
-    {ok, browser_datachannel} = compile:file(filename:join(Dir, "browser_datachannel.erl"), [{outdir, Dir}]),
-    true = code:add_patha(Dir),
-    code:purge(browser_datachannel),
-    {module, _} = code:load_file(browser_datachannel),
-    Port = free_port(),
-    {ok, _} = browser_datachannel:start(Port),
+    Url = start_example(browser_datachannel, Config),
     try
-        Url = "http://127.0.0.1:" ++ integer_to_list(Port) ++ "/",
-        Cmd = lists:flatten(io_lib:format("node ~s ~s ~s 'echo: hello from the browser'",
-                                          [?config(script, Config), ?config(browser, Config), Url])),
-        P = open_port({spawn, Cmd}, [exit_status, binary, stderr_to_stdout]),
-        {Status, Out} = collect(P, <<>>),
-        ct:log("~s", [Out]),
-        ?assertEqual(0, Status),
+        Out = open_pages(Config, [Url], "echo: hello from the browser"),
         ?assertMatch({_, _}, binary:match(Out, <<"erlang: hello from Erlang on chat">>)),
         ?assertMatch({_, _}, binary:match(Out, <<"erlang: echo: hello from the browser">>))
     after
         browser_datachannel:stop()
     end.
+
+%% The page sends its camera; Erlang counts the frames and reports them
+%% over the data channel, the size once a key frame came.
+browser_video(Config) ->
+    Url = start_example(browser_video, Config),
+    try
+        Out = open_pages(Config, [Url], "height: 480"),
+        {match, [N, K]} = re:run(Out, "frames: ([0-9]+) keyframes: ([0-9]+) width: 640 height: 480",
+                                 [{capture, all_but_first, list}]),
+        ?assert(list_to_integer(N) > 0),
+        ?assert(list_to_integer(K) > 0)
+    after
+        browser_video:stop()
+    end.
+
+%% One page sends its camera, the other gets it through Erlang, which
+%% forwards the RTP packets. The receiving page opens first; the relay
+%% works in either order.
+browser_relay(Config) ->
+    Url = start_example(browser_relay, Config),
+    try
+        Out = open_pages(Config, [Url ++ "?role=receive", Url ++ "?role=send"], "receiving: 640x480"),
+        ?assertMatch({_, _}, binary:match(Out, <<"[1] receiving: 640x480">>))
+    after
+        browser_relay:stop()
+    end.
+
+%% Built and run from its own directory, as the guide does. Returns the
+%% URL of its page.
+start_example(Mod, Config) ->
+    Dir = ?config(priv_dir, Config),
+    Src = filename:join([?config(root, Config), "examples", atom_to_list(Mod)]),
+    Erl = atom_to_list(Mod) ++ ".erl",
+    [{ok, _} = file:copy(filename:join(Src, F), filename:join(Dir, F)) || F <- [Erl, "index.html"]],
+    {ok, Mod} = compile:file(filename:join(Dir, Erl), [{outdir, Dir}]),
+    true = code:add_patha(Dir),
+    code:purge(Mod),
+    {module, _} = code:load_file(Mod),
+    Port = free_port(),
+    {ok, _} = Mod:start(Port),
+    "http://127.0.0.1:" ++ integer_to_list(Port) ++ "/".
+
+%% Open the pages in one headless browser until one logs Expect.
+open_pages(Config, Urls, Expect) ->
+    Cmd = lists:flatten(io_lib:format("node ~s ~s ~s '~s'",
+                                      [?config(script, Config), ?config(browser, Config),
+                                       lists:join(" ", ["'" ++ U ++ "'" || U <- Urls]), Expect])),
+    P = open_port({spawn, Cmd}, [exit_status, binary, stderr_to_stdout]),
+    {Status, Out} = collect(P, <<>>),
+    ct:log("~s", [Out]),
+    ?assertEqual(0, Status),
+    Out.
 
 collect(P, Acc) ->
     receive

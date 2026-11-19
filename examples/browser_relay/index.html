@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Video relay</title></head>
+<body>
+<video id="video" autoplay muted playsinline width="320"></video>
+<pre id="log"></pre>
+<script type="module">
+const log = (line) => { document.getElementById('log').textContent += line + '\n'; console.log(line); };
+// ?role=send sends the camera, ?role=receive shows what Erlang relays.
+const role = new URLSearchParams(location.search).get('role') === 'send' ? 'send' : 'receive';
+const video = document.getElementById('video');
+log('role: ' + role);
+
+const pc = new RTCPeerConnection();
+if (role === 'send') {
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+  video.srcObject = stream;
+  pc.addTrack(stream.getVideoTracks()[0], stream);
+} else {
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.ontrack = (e) => {
+    video.srcObject = new MediaStream([e.track]);
+    // Called once the first relayed frame is decoded and shown.
+    const shown = () => log(`receiving: ${video.videoWidth}x${video.videoHeight}`);
+    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(shown);
+    else video.addEventListener('loadeddata', shown, { once: true });
+  };
+}
+pc.onconnectionstatechange = () => log('connection: ' + pc.connectionState);
+
+// An offer with every candidate in it: one request, no trickling.
+await pc.setLocalDescription(await pc.createOffer());
+if (pc.iceGatheringState !== 'complete') {
+  await new Promise((done) => {
+    pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') done(); };
+  });
+}
+const res = await fetch('/' + role, { method: 'POST', body: pc.localDescription.sdp });
+await pc.setRemoteDescription({ type: 'answer', sdp: await res.text() });
+</script>
+</body>
+</html>

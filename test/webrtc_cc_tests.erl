@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_cc, the congestion control engine of a media
 %% session: when pacing applies, the retransmission limit and run time
 %% options.

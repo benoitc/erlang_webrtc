@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Test-only simulation of media flows over a bottleneck link
 %% (webrtc_cc_link), each flow driven by the real congestion control
 %% engine (webrtc_cc: pacer, transport-wide sequence numbers, GCC) on

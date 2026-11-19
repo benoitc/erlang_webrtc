@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_twcc_sender and webrtc_twcc_receiver, round trips
 %% through the real RTCP codec.
 -module(webrtc_twcc_tests).

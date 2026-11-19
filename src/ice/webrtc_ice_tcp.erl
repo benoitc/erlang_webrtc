@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc ICE-TCP (RFC 6544) of the ICE agent: TCP host candidates and the
 %% connections of TCP candidate pairs.

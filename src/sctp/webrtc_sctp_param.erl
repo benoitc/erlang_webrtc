@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP TLV codec: INIT / INIT ACK parameters (RFC 9260 §3.3.2.1,
 %% RFC 3758, RFC 4820, RFC 5061, RFC 9653), RE-CONFIG parameters
 %% (RFC 6525 §4) and error causes (RFC 9260 §3.3.10).

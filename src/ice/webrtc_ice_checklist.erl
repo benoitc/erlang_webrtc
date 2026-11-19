@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Checklist of the ICE agent (RFC 8445 §6.1.2, §6.1.4, RFC 8838
 %% §10 to §12): pair formation and pruning, pair states and the

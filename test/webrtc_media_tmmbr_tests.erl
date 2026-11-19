@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% TMMBR and TMMBN between two media sessions (RFC 5104 §4.2, RFC 8834
 %% §5.1.6): B asks A to send less on the video stream; A answers with
 %% TMMBN, tells its owner and holds the stream to the limit.

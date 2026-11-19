@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% One-shot mDNS resolver (RFC 6762 §5.1, §6.7, §18) driven with a
 %% synthetic clock.
 -module(webrtc_mdns_resolver_tests).

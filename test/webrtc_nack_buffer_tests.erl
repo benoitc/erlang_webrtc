@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_nack_buffer, the sender-side retransmission buffer.
 -module(webrtc_nack_buffer_tests).
 -include_lib("eunit/include/eunit.hrl").

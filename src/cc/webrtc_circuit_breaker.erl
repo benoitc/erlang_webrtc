@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP media circuit breakers (RFC 8083 §4), as a sans-IO engine.
 %%
 %% Streams are identified by an opaque key (the media session uses the

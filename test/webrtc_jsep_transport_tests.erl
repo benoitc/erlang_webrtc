@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Transports of later offers (RFC 9429 §5.2.2, RFC 9143 §7.5).
 -module(webrtc_jsep_transport_tests).
 -include_lib("eunit/include/eunit.hrl").

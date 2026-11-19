@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The ETSI SCTP conformance tests (ETSI TS 102 369, packetdrill scripts
 %% of github.com/nplab/ETSI-SCTP-Conformance-Testsuite, test/sctp_etsi),
 %% run by webrtc_sctp_drill against webrtc_sctp_assoc. Where the scripts

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.3 epochs (RFC 9147 §6.1) and KeyUpdate (§8): traffic
 %% keys per epoch, the next application traffic secret, and the rule
 %% that new sending keys are only used once the KeyUpdate is

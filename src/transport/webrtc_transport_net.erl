@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Network side of the transport process: the UDP sockets and
 %% host addresses, the demultiplexing of received datagrams, and the
 %% actions of the ICE agent (datagrams to send, through the optional

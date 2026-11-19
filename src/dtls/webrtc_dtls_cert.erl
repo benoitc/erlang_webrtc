@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Certificates for DTLS in WebRTC.
 %%
 %% WebRTC endpoints use self-signed certificates whose identity is the

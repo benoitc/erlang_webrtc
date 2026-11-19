@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Bandwidth probing (webrtc_cc_probe).
 -module(webrtc_cc_probe_tests).
 -include_lib("eunit/include/eunit.hrl").

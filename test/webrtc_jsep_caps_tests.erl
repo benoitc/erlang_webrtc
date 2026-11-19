@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 7728 §9: negotiation of `ccm pause'.
 -module(webrtc_jsep_caps_tests).
 -include_lib("eunit/include/eunit.hrl").

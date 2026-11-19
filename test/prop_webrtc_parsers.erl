@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Every externally reachable decoder returns a value or an error tuple
 %% on arbitrary input, and never raises.
 -module(prop_webrtc_parsers).

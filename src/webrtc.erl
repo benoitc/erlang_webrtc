@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc WebRTC peer connections in pure Erlang.
 %%
 %% A peer connection is a process. The process that creates it (or the

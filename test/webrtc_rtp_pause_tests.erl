@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RTP stream pause and resume (RFC 7728).
 -module(webrtc_rtp_pause_tests).
 -include_lib("eunit/include/eunit.hrl").

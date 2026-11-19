@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtp_ext (RFC 8285 and typed extension values).
 -module(webrtc_rtp_ext_tests).
 -include_lib("eunit/include/eunit.hrl").

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.2 handshake logic for both roles (RFC 6347 §4.2,
 %% RFC 5246 §7.4), full handshake only: WebRTC endpoints do not resume
 %% sessions, and renegotiation is refused.

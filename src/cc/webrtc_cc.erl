@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Congestion control of one media session, as a sans-IO engine:
 %% transport-wide sequence numbers and feedback
 %% (`webrtc_twcc_sender', `webrtc_twcc_receiver'), the bandwidth

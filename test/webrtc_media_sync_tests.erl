@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 6051 between two media sessions: A sends with the ntp-64 header
 %% extension, B takes its mapping from it, from SR, and asks for an SR
 %% with RTCP-SR-REQ when it has neither.

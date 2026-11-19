@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Test helper: the in-memory TURN server engine
 %% (`webrtc_test_turn_server') on a real UDP socket. Only the client
 %% side is served on the socket; relayed traffic to peers is dropped,

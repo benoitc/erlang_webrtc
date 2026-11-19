@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Media session send path: pacing, transport-wide sequence numbers, SRTP protect,
 %% retransmission over RTX and RTCP reports.
 %% Internal module of `webrtc_media'.

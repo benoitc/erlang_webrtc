@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests of the RTCP scheduler (RFC 3550 §6.3, Appendix A.7; RFC 4585
 %% §3.5). The randomisation factor is fixed at 0.5, so every dither
 %% factor (U + 0.5) is exactly 1.

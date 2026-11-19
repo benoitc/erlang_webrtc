@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% BoringSSL's DTLS tests (BoGo) against our DTLS engine, through the shim
 %% in interop/bogo. Every DTLS test of the runner that is not disabled in
 %% interop/bogo/config.json must pass; tests needing features the shim

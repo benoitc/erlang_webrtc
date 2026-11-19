@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Opus RTP payload format (RFC 7587).
 %%
 %% There is nothing to packetize: each RTP payload is exactly one Opus

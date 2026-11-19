@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 8837 §5 Table 1, and the TOS byte the operating system puts on
 %% the wire for it (read back with recvtos / recvtclass, independently
 %% of our code).

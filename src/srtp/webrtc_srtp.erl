@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SRTP and SRTCP crypto contexts (RFC 3711, RFC 7714), keyed from
 %% DTLS-SRTP (RFC 5764).
 %%

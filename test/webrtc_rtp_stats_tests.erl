@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtp_stats (RFC 3550 Appendix A.1, A.3, A.8, §6.4.1).
 -module(webrtc_rtp_stats_tests).
 -include_lib("eunit/include/eunit.hrl").

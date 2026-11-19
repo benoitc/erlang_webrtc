@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Session-level logic of the ICE agent: nomination policy of the
 %% controlling agent (RFC 8445 §8.1.1), checklist failure with the RFC

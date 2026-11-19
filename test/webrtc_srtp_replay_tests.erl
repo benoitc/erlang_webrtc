@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Boundary tests for the SRTP replay window (RFC 3711 §3.3.2).
 -module(webrtc_srtp_replay_tests).
 -include_lib("eunit/include/eunit.hrl").

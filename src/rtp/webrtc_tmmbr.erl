@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Temporary maximum media stream bit rate limits of one media
 %% stream we send (RFC 5104 §3.5.4, §4.2), as a sans-IO state.
 %%

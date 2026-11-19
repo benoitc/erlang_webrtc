@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP send side: per stream queues, scheduler, fragmentation and
 %% transmission (RFC 9260 §6.1, §6.9, RFC 8260 §2.2.2 and §3.2).
 %%

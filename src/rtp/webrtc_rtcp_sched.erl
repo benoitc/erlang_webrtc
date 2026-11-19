@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTCP transmission scheduler of a media session: when regular
 %% reports go out (RFC 3550 §6.3 and Appendix A.7 with the RTP/AVPF rules
 %% of RFC 4585 §3.5) and whether feedback can be sent now under the RTCP

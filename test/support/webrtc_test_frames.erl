@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Encoded video for the frame buffer tests: the files of
 %% test/corpora/frames (made by ffmpeg, see its README), cut into
 %% frames, packetized with our packetizers and run through a buffer.

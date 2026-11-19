@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP retransmission payload format (RFC 4588 §4).
 %%
 %% A retransmission packet carries the original sequence number (OSN)

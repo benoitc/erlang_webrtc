@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Token bucket that holds one media stream to a bit rate, as a
 %% sans-IO engine: the limit a peer set with TMMBR (RFC 5104 §4.2.1.2,
 %% RFC 8834 §5.1.6).

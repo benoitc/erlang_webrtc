@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTCP transmission interval (RFC 3550 §6.2, §6.3 and Appendix
 %% A.7) with the RTP/AVPF rules of RFC 4585 §3.4 and §3.5 and the reduced
 %% minimum interval required by RFC 8834 §5.1.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_circuit_breaker (RFC 8083 §4.1 to §4.3).
 -module(webrtc_circuit_breaker_tests).
 -include_lib("eunit/include/eunit.hrl").

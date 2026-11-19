@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Media session of one BUNDLE transport, as a sans-IO engine:
 %% SRTP/SRTCP protection, RTP demultiplexing to transceivers, RTCP
 %% reports, NACK-based retransmission (RFC 4585, RFC 4588) and keyframe

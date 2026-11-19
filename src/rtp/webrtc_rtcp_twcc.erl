@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Transport-wide congestion control feedback, RTPFB FMT 15
 %% (draft-holmer-rmcat-transport-wide-cc-extensions-01 §3.1).
 %%

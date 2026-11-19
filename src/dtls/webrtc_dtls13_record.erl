@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc DTLS 1.3 record layer (RFC 9147 §4): demultiplexing of
 %% DTLSPlaintext and DTLSCiphertext records (§4.1), the unified header,
 %% AEAD protection with the TLS 1.3 nonce and inner plaintext

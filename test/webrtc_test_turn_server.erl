@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Test-only TURN server (RFC 8656 server side, UDP) used by the
 %% in-memory network. Long-term credentials with a nonce, optional
 %% PASSWORD-ALGORITHMS (SHA-256), allocations, permissions, channels,

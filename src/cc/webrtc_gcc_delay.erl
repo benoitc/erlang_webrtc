@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Delay-based over-use detection of Google Congestion Control
 %% (draft-ietf-rmcat-gcc-02 §5.1 to §5.4).
 %%

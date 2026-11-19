@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Local candidates of the ICE agent: host candidates supplied by
 %% the owner, server-reflexive candidates from STUN servers (RFC 8445

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP stream identifier (`a=rid', RFC 8851) and simulcast
 %% (`a=simulcast', RFC 8853) attribute values, used through
 %% `webrtc_sdp_rtp'.

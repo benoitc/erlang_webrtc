@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Conformance tests for rid and simulcast negotiation in JSEP
 %% (RFC 9429 §5.2.1, §5.3.1, §5.8.3, RFC 8851 §6, RFC 8853 §5.3).
 -module(webrtc_jsep_simulcast_tests).

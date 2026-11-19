@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtcp_ccfb (RFC 8888 congestion control feedback).
 -module(webrtc_rtcp_ccfb_tests).
 -include_lib("eunit/include/eunit.hrl").

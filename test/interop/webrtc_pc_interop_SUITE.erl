@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Peer connection interoperability: an Erlang peer connection against
 %% independent implementations (Pion, aiortc, Chromium, Firefox) through
 %% the adapters of interop/. Both offer/answer roles, data channels and

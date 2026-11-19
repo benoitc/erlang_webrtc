@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO multicast DNS responder for the `<uuid>.local' names of
 %% our own host candidates (draft-ietf-mmusic-mdns-ice-candidates §3.1).
 %%

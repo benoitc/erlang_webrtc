@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 6904: encrypted RTP header extension elements.
 -module(webrtc_srtp_hdrext_tests).
 -include_lib("eunit/include/eunit.hrl").

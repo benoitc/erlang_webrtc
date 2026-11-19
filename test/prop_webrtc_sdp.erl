@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Property tests for webrtc_sdp and webrtc_sdp_candidate.
 -module(prop_webrtc_sdp).
 -include_lib("proper/include/proper.hrl").

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Dynamic supervisor of the peer connections. Each child is
 %% the subtree of one peer connection (`webrtc_peer_sup'), temporary: a
 %% crash of one peer connection does not affect the others and is not

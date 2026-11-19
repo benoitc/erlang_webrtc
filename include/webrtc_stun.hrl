@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% STUN message representation (RFC 8489).
 -ifndef(WEBRTC_STUN_HRL).
 -define(WEBRTC_STUN_HRL, true).

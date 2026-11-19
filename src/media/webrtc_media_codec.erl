@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc A codec plugin decodes the frames a transceiver receives and
 %% encodes what the application sends on it, and reports the W3C
 %% decoder and encoder statistics. This library stays pure Erlang; a

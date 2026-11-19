@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc FlexFEC (RFC 8627): parity FEC repair packets on their own RTP
 %% stream, protecting the packets of a source stream named in the repair
 %% packet's CSRC list (§4.2.1).

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% FlexFEC (RFC 8627): repair payloads from protect/2, read back by
 %% decode/2, give lost source packets back through webrtc_ulpfec.
 -module(webrtc_flexfec_tests).

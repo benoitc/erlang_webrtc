@@ -1,4 +1,9 @@
-%% @private Statistics a codec plugin or the application reports
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
+%% @doc Statistics a codec plugin or the application reports
 %% (`webrtc:report_media_stats/4'): the W3C members each kind of object
 %% takes, and how a report merges into what is kept. Counters add up,
 %% the other members replace the previous value; an unknown member or a

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Seeded network impairment for tests, plugged into a peer
 %% connection with the `outbound_filter' option:
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The DTLS 1.3 ticket table: its key lives and dies with it, and it
 %% holds at most 10,000 entries (RFC 8446 §8).
 -module(webrtc_dtls_tickets_tests).

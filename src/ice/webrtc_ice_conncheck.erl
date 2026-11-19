@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Outgoing connectivity checks of the ICE agent (RFC 8445 §7.2):
 %% sending Binding requests and processing their responses (role

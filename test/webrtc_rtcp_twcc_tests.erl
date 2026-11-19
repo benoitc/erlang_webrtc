@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for transport-wide CC feedback
 %% (draft-holmer-rmcat-transport-wide-cc-extensions-01 §3.1).
 -module(webrtc_rtcp_twcc_tests).

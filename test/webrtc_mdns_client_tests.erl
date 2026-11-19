@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Transport side of host name candidates
 %% (draft-ietf-mmusic-mdns-ice-candidates-03 §3.1, §3.2; RFC 8839 §5.1).
 -module(webrtc_mdns_client_tests).

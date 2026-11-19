@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc DTLS endpoint for WebRTC (RFC 9147 DTLS 1.3 and RFC 6347 DTLS
 %% 1.2, RFC 5764, RFC 8842), as a sans-IO engine (see
 %% docs/ARCHITECTURE.md). Both versions are offered by default; the

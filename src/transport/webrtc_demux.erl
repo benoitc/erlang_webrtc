@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Classify a datagram received on a WebRTC transport by its first
 %% byte (RFC 7983 §7 as updated by RFC 9443 §3).
 %%

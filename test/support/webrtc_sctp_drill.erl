@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Test-only interpreter for the packetdrill scripts of the ETSI SCTP
 %% conformance tests (ETSI TS 102 369, test/sctp_etsi), run against the
 %% sans-IO association webrtc_sctp_assoc on a fake clock.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Keep secrets out of logs and process status. The peer
 %% connection and transport states hold the DTLS private key, ICE and
 %% TURN credentials, DTLS traffic secrets and SRTP keys; OTP prints a

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% ULPFEC (RFC 5109) in RED (RFC 2198) against GStreamer's rtpulpfecenc
 %% and rtpredenc, an implementation independent of libwebrtc, over plain
 %% RTP on UDP: VP8 packets protected by GStreamer, some dropped, rebuilt

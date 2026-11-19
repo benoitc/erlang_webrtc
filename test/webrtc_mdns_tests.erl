@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The mDNS resolver process against a fake responder on loopback ports
 %% (the group address and port are configurable for tests), and the
 %% responder for our own names (draft-ietf-mmusic-mdns-ice-candidates §3.1).

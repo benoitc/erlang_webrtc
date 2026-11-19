@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 5104 §3.5.4: the bounding set of TMMBR tuples and the state of
 %% the limits on one stream we send.
 -module(webrtc_tmmbr_tests).

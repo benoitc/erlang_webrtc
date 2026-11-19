@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP State Cookie (RFC 9260 §5.1.3, §5.1.5).
 %%
 %% The cookie carries everything needed to build the association when

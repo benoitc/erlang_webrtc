@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.3 engine (RFC 9147): inbound records with epoch and
 %% record number reconstruction, replay protection, the ACK mechanism
 %% (§7) with selective retransmission (§5.8), flights and timers.

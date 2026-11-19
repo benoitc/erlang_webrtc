@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Host name candidates, on the transport side.
 %%
 %% Remote candidates whose address is a name wait here, bounded, while a

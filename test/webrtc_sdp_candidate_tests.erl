@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for the standalone candidate codec (RFC 8839 §5.1, RFC 6544).
 -module(webrtc_sdp_candidate_tests).
 -include_lib("eunit/include/eunit.hrl").

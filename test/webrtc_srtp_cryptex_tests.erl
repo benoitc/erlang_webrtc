@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 % RFC 9335 Appendix A: cryptex test vectors, ROC 0.
 -module(webrtc_srtp_cryptex_tests).
 -include_lib("eunit/include/eunit.hrl").

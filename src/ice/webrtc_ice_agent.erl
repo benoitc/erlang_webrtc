@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Sans-IO ICE agent (RFC 8445), full or lite, with trickle ICE
 %% (RFC 8838), the RFC 8863 failure rule, consent freshness (RFC 7675)
 %% and relayed candidates through TURN (RFC 8656).

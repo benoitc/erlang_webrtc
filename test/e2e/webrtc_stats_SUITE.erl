@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% The W3C statistics (webrtc_stats) of a call between two of our peers:
 %% every member is one of its dictionary's, every required member is
 %% there, every id a report refers to exists, and the counters of the

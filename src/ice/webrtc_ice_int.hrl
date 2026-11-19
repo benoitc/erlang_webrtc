@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Internal state shared by the webrtc_ice_* modules. Not part of the
 %% public API: use the accessors of webrtc_ice_agent.
 -include("webrtc_ice.hrl").

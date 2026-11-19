@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% ICE-TCP (RFC 6544) between two agents with only TCP host candidates.
 %% The test plays the owners: it opens the connections the agents ask
 %% for, accepts them on the other side and carries the framed packets.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Congestion control in webrtc_media: transport-wide sequence numbers
 %% on outgoing packets, feedback generation and consumption, the pacer
 %% on the send path, REMB and the RTCP timeout circuit breaker.

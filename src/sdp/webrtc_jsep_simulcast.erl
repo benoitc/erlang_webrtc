@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private RTP stream identifiers (RFC 8851) and simulcast (RFC 8853)
 %% for JSEP (RFC 9429 §5.2.1, §5.3.1, §5.8, §5.9).
 %%

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private The supervision subtree of one peer connection: the peer
 %% connection process, significant, and its transports, added by it
 %% with `start_transport/2'. When the peer connection ends, however it

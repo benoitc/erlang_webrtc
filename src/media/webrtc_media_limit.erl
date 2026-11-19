@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc TMMBR and TMMBN in the media engine (RFC 5104 §4.2, required by
 %% RFC 8834 §5.1.6), when `ccm tmmbr' is negotiated.
 %%

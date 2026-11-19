@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Internal records of the SCTP association engine. Not a public API.
 %%
 %% TSNs are kept "unwrapped" (64-bit monotonic integers) inside the

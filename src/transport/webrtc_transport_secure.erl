@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Secure side of the transport process: the DTLS association
 %% (created from the negotiated parameters, started once ICE has a
 %% valid pair, ended when the remote identity changes or DTLS closes),

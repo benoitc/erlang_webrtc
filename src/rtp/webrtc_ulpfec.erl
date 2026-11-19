@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc ULPFEC (RFC 5109): generic forward error correction of RTP
 %% packets by XOR, as WebRTC sends it inside video RED (RFC 8854 §5.2).
 %%

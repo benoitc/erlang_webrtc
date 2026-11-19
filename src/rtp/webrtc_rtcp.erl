@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTCP compound packet codec (RFC 3550 §6).
 %%
 %% `decode/1' splits a compound packet into its individual packets and

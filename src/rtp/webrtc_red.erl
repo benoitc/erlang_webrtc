@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc RTP payload for redundant data (RFC 2198).
 %%
 %% A RED payload is a list of block headers, then the blocks in the same

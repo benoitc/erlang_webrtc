@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_sctp_chunk and webrtc_sctp_param (RFC 9260 §3,
 %% RFC 3758, RFC 4820, RFC 6525, RFC 8260, RFC 9653).
 -module(webrtc_sctp_chunk_tests).

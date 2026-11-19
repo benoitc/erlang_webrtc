@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Documentation kept in sync with the code.
 %%
 %% The option tables of docs/REFERENCE.md must list exactly the keys the

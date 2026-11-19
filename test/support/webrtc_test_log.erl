@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% A logger handler for the tests: every log event, formatted as the
 %% default handler would print it, goes to a process as {log, Text}.
 -module(webrtc_test_log).

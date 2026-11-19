@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc DTLS 1.2 record layer (RFC 6347 §4.1): record framing, AEAD
 %% protection and the anti-replay window (§4.1.2.6).
 %%

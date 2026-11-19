@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private What the frame buffer needs from each payload format: per
 %% packet, whether it starts a frame, whether the frame is a key frame
 %% and the references it carries; per frame, the joined data and the

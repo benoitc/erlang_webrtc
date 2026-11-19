@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Receiver-side NACK generator (sans-IO).
 %%
 %% Feed every received RTP sequence number of one stream with

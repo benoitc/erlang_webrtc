@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_pacer: timing, priorities, bounded queue, burst cap.
 -module(webrtc_pacer_tests).
 -include_lib("eunit/include/eunit.hrl").

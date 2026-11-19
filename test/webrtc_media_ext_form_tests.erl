@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RFC 8285 §6: without a=extmap-allow-mixed on both sides, a stream
 %% uses one header extension form throughout (§4.1.2); with it, each
 %% packet takes the form its elements need.

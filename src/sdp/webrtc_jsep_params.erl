@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Negotiated parameters (`webrtc_jsep:negotiated/1') from a
 %% local and a remote description: the contract between negotiation and
 %% the transport (ICE, DTLS, per-mid media and the data channel).

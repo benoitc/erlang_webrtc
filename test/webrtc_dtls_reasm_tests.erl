@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Handshake reassembly under hostile fragmentation (RFC 6347 §4.2.3,
 %% RFC 9147 §5.5): held memory and work stay bounded.
 -module(webrtc_dtls_reasm_tests).

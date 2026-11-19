@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SCTP receive side: TSN tracking, SACK generation, reassembly and
 %% ordered delivery (RFC 9260 §6.2, §6.6, §6.7, §6.9, RFC 3758 §3.6,
 %% RFC 8260 §2.2.3, RFC 6525 §5.2.2).

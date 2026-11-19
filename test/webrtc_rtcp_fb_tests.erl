@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for RTCP feedback messages: generic NACK, PLI, SLI (RFC 4585),
 %% TMMBR/TMMBN, FIR (RFC 5104) and REMB.
 -module(webrtc_rtcp_fb_tests).

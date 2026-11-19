@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Construction of offers and answers (RFC 9429 §5.2, §5.3) as
 %% `#sdp{}' records. Never manipulates SDP text.
 -module(webrtc_jsep_build).

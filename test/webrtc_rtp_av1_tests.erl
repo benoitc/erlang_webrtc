@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtp_av1 key frame detection.
 -module(webrtc_rtp_av1_tests).
 -include_lib("eunit/include/eunit.hrl").

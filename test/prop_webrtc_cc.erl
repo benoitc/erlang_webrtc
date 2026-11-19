@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% PropEr properties for congestion control: the pacer never sends
 %% more than its budget plus the burst allowance and never loses or
 %% duplicates a packet; transport-wide feedback reports every packet

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% SLI and RPSI between two media sessions (RFC 4585 §6.3.2, §6.3.3,
 %% RFC 8834 §5.1.3, §5.1.4): only where `nack sli' / `nack rpsi' was
 %% negotiated.

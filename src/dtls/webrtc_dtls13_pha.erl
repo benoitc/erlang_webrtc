@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.3 post-handshake client authentication (RFC 8446
 %% §4.6.2, §4.2.6; RFC 9147 §5.8.4).
 %%

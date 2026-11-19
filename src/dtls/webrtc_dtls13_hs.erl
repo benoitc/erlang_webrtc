@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.3 handshake (RFC 9147 §5, RFC 8446 §4), client side
 %% and the helpers shared with `webrtc_dtls13_server'. Full handshake
 %% with (EC)DHE and certificates only: no PSK, no resumption, no 0-RTT.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc STUN and TURN server URIs (RFC 7064, RFC 7065) and the W3C
 %% RTCIceServer list that carries them.
 %%

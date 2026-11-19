@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Test helper: in-process signaling between Erlang peer
 %% connections owned by the calling process.
 -module(webrtc_test_signal).

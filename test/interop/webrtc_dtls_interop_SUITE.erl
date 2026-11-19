@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% DTLS interoperability against independent implementations: OTP ssl
 %% (DTLS 1.2 only), the OpenSSL command line tool (DTLS 1.2 and, with
 %% OpenSSL 4, DTLS 1.3) and, at the peer connection level, Chromium,

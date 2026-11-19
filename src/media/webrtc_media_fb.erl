@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Slice loss (SLI) and reference picture selection (RPSI)
 %% indications, RFC 4585 §6.3.2 and §6.3.3, used as RFC 8834 §5.1.3 and
 %% §5.1.4 ask once `nack sli' or `nack rpsi' is negotiated.

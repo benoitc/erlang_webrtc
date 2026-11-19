@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Frame assembly and jitter buffer (webrtc_frame_buffer): frames of
 %% real encoders (test/corpora/frames) packetized by our packetizers,
 %% then reordered, repeated, lost and repaired.

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc Throughput of two SCTP associations wired back to back with no
 %% loss and a 1 ms link. Measures the CPU cost of the engine, not a
 %% network.

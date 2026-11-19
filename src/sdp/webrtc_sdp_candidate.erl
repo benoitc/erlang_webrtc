@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc ICE candidate attribute codec (RFC 8839 §5.1, RFC 6544 §4.5).
 %%
 %% Used for `a=candidate' lines and for trickle ICE signaling, where a

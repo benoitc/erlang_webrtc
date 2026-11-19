@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Transports of a session description (RFC 9143, RFC 9429
 %% §5.2.1, §5.3.1): every BUNDLE group shares one transport, named by
 %% its tag (the first of its mids), and every active m= section outside

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for Google Congestion Control (webrtc_gcc, webrtc_gcc_delay,
 %% webrtc_gcc_aimd): unit behaviour of each part, then convergence of
 %% the whole send path (webrtc_cc) over the simulated bottleneck of

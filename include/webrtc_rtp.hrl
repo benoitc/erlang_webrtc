@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% RTP packet representation (RFC 3550 §5.1).
 -ifndef(WEBRTC_RTP_HRL).
 -define(WEBRTC_RTP_HRL, true).

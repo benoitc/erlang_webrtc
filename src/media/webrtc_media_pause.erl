@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Media session side of RTP stream pause and resume (RFC 7728):
 %% PAUSE-RESUME feedback in and out, the requests we make, the PAUSED
 %% repeats of regular reports and the events for the application.

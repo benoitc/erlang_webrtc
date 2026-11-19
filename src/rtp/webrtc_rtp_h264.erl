@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc H.264 RTP payload format (RFC 6184): packetization-mode 1
 %% (non-interleaved: single NAL unit packets, STAP-A and FU-A) and
 %% packetization-mode 2 (interleaved: STAP-B, MTAP16, MTAP24, FU-A and

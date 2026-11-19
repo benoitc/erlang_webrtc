@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for webrtc_rtcp_interval (RFC 3550 §6.3, A.7; RFC 4585 §3.5; RFC 8834 §5.1).
 -module(webrtc_rtcp_interval_tests).
 -include_lib("eunit/include/eunit.hrl").

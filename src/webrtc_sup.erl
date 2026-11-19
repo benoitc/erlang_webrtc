@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Top-level supervisor. Peer connections are started under
 %% `webrtc_pc_sup' and are independent of each other. `webrtc_registry'
 %% owns the `webrtc_transports' table (`{PeerConnection, Transport}'

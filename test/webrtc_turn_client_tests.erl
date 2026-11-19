@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Tests for the sans-IO TURN client (RFC 8656) against the test TURN
 %% server, and for ChannelData framing.
 -module(webrtc_turn_client_tests).

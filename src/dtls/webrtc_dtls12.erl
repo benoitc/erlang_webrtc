@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private DTLS 1.2 record layer, flights and timers (RFC 6347 §4.1,
 %% §4.2.3, §4.2.4): record protection and replay protection, records of
 %% the next epoch held until ChangeCipherSpec, flight retransmission with

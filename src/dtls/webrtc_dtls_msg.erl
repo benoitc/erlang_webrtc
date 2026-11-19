@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc DTLS 1.2 handshake message codec (RFC 6347 §4.2.2, RFC 5246 §7.4)
 %% with the extensions WebRTC needs: supported_groups and
 %% ec_point_formats (RFC 8422), signature_algorithms, use_srtp

@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% Receive a browser's camera as frames: the page sends a video track
 %% and opens a data channel; Erlang counts the frames it gets and tells
 %% the page once a second over the channel.

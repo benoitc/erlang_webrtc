@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Media session receive path: SRTP unprotect, demultiplexing to transceivers and
 %% simulcast layers, RTX, NACK generation and RTCP processing.
 %% Internal module of `webrtc_media'.

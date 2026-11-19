@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private Handshake message reassembly shared by DTLS 1.2 (RFC 6347
 %% §4.2.3) and DTLS 1.3 (RFC 9147 §5.5). Fragments may overlap; all
 %% fragments of one message must use the same type, length and epoch.

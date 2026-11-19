@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @private
 %% @doc Incoming connectivity checks of the ICE agent (RFC 8445 §7.3):
 %% short-term credential authentication (RFC 8489 §9.1.3), 400, 401,

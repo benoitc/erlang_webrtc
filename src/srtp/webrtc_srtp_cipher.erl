@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc SRTP and SRTCP packet transforms: AES-CM with HMAC-SHA1
 %% (RFC 3711 §4.1.1, §4.2.1) and AES-GCM (RFC 7714 §8, §9).
 %%

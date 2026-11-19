@@ -1,3 +1,8 @@
+%%% -*- erlang -*-
+%%%
+%%% Copyright (c) 2026 Enki Multimedia and Benoit Chesneau
+%%% Apache License 2.0
+%%%
 %% @doc TURN ChannelData framing (RFC 8656 §12.4).
 %%
 %% A ChannelData message is a 4-byte header (channel number, length of

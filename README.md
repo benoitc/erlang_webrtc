@@ -22,7 +22,7 @@ rebar3 dialyzer
 You receive an offer from a browser through your signaling channel and answer it.
 
 ```erlang
-{ok, Pc} = webrtc:new_peer_connection(#{stun_servers => [{{74,125,250,129}, 19302}]}),
+{ok, Pc} = webrtc:new_peer_connection(#{ice_servers => [#{urls => [<<"stun:stun.l.google.com:19302">>]}]}),
 ok = webrtc:set_remote_description(Pc, offer, OfferSdp),
 {ok, AnswerSdp} = webrtc:create_answer(Pc, #{}),
 ok = webrtc:set_local_description(Pc, answer, AnswerSdp),
@@ -35,7 +35,7 @@ Events arrive in the owner process (the caller by default):
 loop(Pc) ->
     receive
         {webrtc, Pc, {ice_candidate, Cand, Mid}} ->
-            %% send Cand to the browser
+            %% send Cand and Mid to the browser
             loop(Pc);
         {webrtc, Pc, {datachannel_open, Id, Label, _Proto, _Opts}} ->
             io:format("channel ~s open~n", [Label]),
@@ -46,7 +46,9 @@ loop(Pc) ->
         {webrtc, Pc, {rtp, Mid, Packet}} ->
             loop(Pc);
         {webrtc, Pc, {connection_state, closed}} ->
-            ok
+            ok;
+        {webrtc, Pc, _} ->
+            loop(Pc)
     end.
 ```
 
@@ -72,124 +74,37 @@ You give the servers as a browser would, with `stun:`, `turn:` and `turns:` URIs
 - A URI that cannot be used (a name that does not resolve, `stuns:`, TURN over DTLS) arrives as `{webrtc, Pc, {ice_server_error, Url, Reason}}`; the others are used.
 - For `turns:` with your own CA, add `tls_options => [{cacerts, [Der]}]` to the entry.
 
-## Make an offer
-
-```erlang
-{ok, Pc} = webrtc:new_peer_connection(),
-{ok, _AudioId} = webrtc:add_transceiver(Pc, audio, #{}),
-ok = webrtc:create_data_channel(Pc, <<"chat">>, #{}),
-{ok, Offer} = webrtc:create_offer(Pc, #{}),
-ok = webrtc:set_local_description(Pc, offer, Offer),
-%% send Offer, receive Answer
-ok = webrtc:set_remote_description(Pc, answer, Answer).
-```
-
-## Send and forward media
-
-The library moves RTP payloads and frames; encoding and decoding are up to you or a codec plugin (see below).
-
-```erlang
-ok = webrtc:send_rtp(Pc, <<"0">>, OpusFrame, #{timestamp => Ts, codec => <<"opus">>}).
-```
-
-Forward a packet received on one peer connection to another (SFU style). SSRC and sequence numbers are rewritten for the outgoing stream:
-
-```erlang
-{webrtc, In, {rtp, _Mid, Pkt}} -> webrtc:send_rtp_packet(Out, <<"1">>, Pkt).
-```
-
-Video FEC is negotiated by default: FlexFEC (RFC 8627) on its own stream, or ULPFEC in RED (RFC 8854 §5.2) with peers that do not have FlexFEC, such as browsers. Lost packets are rebuilt from FEC packets the sender adds after each frame. The sender adds them as the peer reports loss; `video_fec => 0.5` on `new_peer_connection/1` fixes one FEC packet for two media packets, `0.0` turns them off.
-
-Ask the sender for a keyframe when a new receiver joins:
-
-```erlang
-ok = webrtc:request_keyframe(In, <<"1">>).
-```
-
-Ask a peer to send less on a transceiver, for example to pass on the bandwidth of a SIP leg (TMMBR, RFC 5104; both sides need `ccm tmmbr`, which browsers do not negotiate). The rate counts RTP headers and payload; `infinity` lifts the limit:
-
-```erlang
-ok = webrtc:request_max_bitrate(In, <<"1">>, 300000).
-```
-
-When a peer limits what you send, you get the payload rate it allows; the connection holds the stream to it, so keep the encoder under it:
-
-```erlang
-{webrtc, Pc, {max_bitrate, <<"1">>, Bps}} -> set_encoder_rate(Bps).
-```
-
-## Receive frames
-
-To decode or record what a peer sends, ask for frames instead of packets. The packets of each frame are put in order, joined and released at their playout time; a frame that cannot be completed is dropped and a key frame is asked for.
-
-```erlang
-{ok, _} = webrtc:add_transceiver(Pc, video, #{frames => true}),
-%% or for every transceiver, those a remote offer creates included:
-{ok, Pc} = webrtc:new_peer_connection(#{frames => true}),
-
-{webrtc, Pc, {frame, _Mid, #{data := Data, keyframe := Key, width := W, height := H}}} -> decode(Data).
-```
-
-`data` is a VP8 or VP9 frame, an H.264 access unit in Annex B, or an AV1 temporal unit; audio frames are the payloads. `#{min_delay => Ms, max_delay => Ms}` instead of `true` bounds the delay.
-
-Send an encoded frame the same way; it is split into RTP payloads for its codec:
-
-```erlang
-ok = webrtc:send_frame(Pc, <<"1">>, Vp8Frame, #{timestamp => Ts, keyframe => true}).
-```
-
-## Decode and encode with a codec plugin
-
-The library does no media coding. A codec plugin, a module with the `webrtc_media_codec` behaviour, usually a separate package with native code, decodes the frames a transceiver receives and encodes what you send, and reports the W3C decoder and encoder statistics.
-
-```erlang
--module(my_vp8).
--behaviour(webrtc_media_codec).
--export([init/3, decode/2, encode/2, info/1]).
-
-init(video, #{name := <<"VP8">>}, Opts) -> {ok, my_vp8_nif:new(Opts)}.
-decode(#{data := Frame}, D) -> {ok, [my_vp8_nif:decode(D, Frame)], #{framesDecoded => 1}, D}.
-encode({Picture, Ts}, E) ->
-    {Frame, Key} = my_vp8_nif:encode(E, Picture),
-    {ok, [#{data => Frame, keyframe => Key, timestamp => Ts}], #{framesEncoded => 1}, E}.
-info(_) -> #{implementation => <<"libvpx">>}.
-```
-
-```erlang
-{ok, _} = webrtc:add_transceiver(Pc, video, #{frames => true, codec_plugin => {my_vp8, #{}}}),
-ok = webrtc:send_media(Pc, <<"1">>, {Picture, Ts}),
-{webrtc, Pc, {decoded, _Mid, Picture}} -> show(Picture).
-```
-
-`codec_plugins => #{video => {my_vp8, #{}}}` with `frames => true` on `new_peer_connection/1` sets it for transceivers a remote offer creates. A plugin that raises is turned off for its transceiver and you get `{codec_plugin_error, Mid, Reason}`.
-
-If you code media yourself, report the statistics instead; counters add up, other members replace:
-
-```erlang
-webrtc:report_media_stats(Pc, <<"1">>, inbound, #{framesDecoded => 1, totalDecodeTime => 0.004}),
-webrtc:report_media_stats(Pc, <<"1">>, source, #{width => 1280, height => 720, frames => 1}).
-```
-
-## Read the statistics
-
-You get the W3C statistics, the ones a browser's `getStats()` returns, as a map from stats id to the members of each dictionary.
-
-```erlang
-Report = webrtc:get_stats(Pc, #{format => w3c}),
-[#{packetsSent := Sent}] = [S || _ := #{type := <<"outbound-rtp">>} = S <- Report].
-```
-
-The frame members of received streams come from the frame buffer when you ask for frames; the decoder, encoder, media-source and media-playout members from a codec plugin or `report_media_stats/4`. [docs/compliance/stats.md](docs/compliance/stats.md) lists every member.
-
 ## Documentation
 
+Start here:
+
+- [docs/CONCEPTS.md](docs/CONCEPTS.md): the WebRTC terms the code and the docs use.
+- [examples](examples): pages that talk to Erlang, ready to run.
+
+Guides, task by task:
+
+- [Talk to a browser over a data channel](docs/guides/data-channels.md)
+- [Send media to a browser](docs/guides/send-media.md): transceivers, `send_rtp`, `send_frame`, directions, making the offer.
+- [Forward media between peers](docs/guides/forward-media.md): SFU relaying, simulcast layers, TMMBR.
+- [Receive frames and write a codec plugin](docs/guides/frames-and-codec-plugins.md): frames, codec plugins, device capture.
+- [Read the statistics](docs/guides/statistics.md): W3C and internal formats.
+- [Bandwidth and QoS](docs/guides/bandwidth-and-qos.md): congestion control, circuit breakers, DSCP, FEC.
+
+Reference and internals:
+
+- [docs/REFERENCE.md](docs/REFERENCE.md): every option and event.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): layers, processes, how a packet travels.
-- [docs/guides/data-channels.md](docs/guides/data-channels.md): talk to a browser over a data channel.
 - [docs/DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md): where things live and how to add a feature.
 - [docs/TESTING.md](docs/TESTING.md): test layers, interop adapters, reproducing failures.
-- [docs/COMPLIANCE.md](docs/COMPLIANCE.md) and [docs/INTEROP.md](docs/INTEROP.md).
+- [docs/COMPLIANCE.md](docs/COMPLIANCE.md) and [docs/INTEROP.md](docs/INTEROP.md): what is implemented, and against what it is tested.
 - [docs/adr](docs/adr): design decisions.
+
+Project:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 
-Apache 2.0.
+Apache 2.0, see [LICENSE](LICENSE).

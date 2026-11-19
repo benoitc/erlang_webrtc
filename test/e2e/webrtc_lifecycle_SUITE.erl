@@ -132,8 +132,14 @@ slow_signaling_bounded(_Config) ->
 
 %% A TURN server over TCP that never answers: its connect worker is
 %% linked to the transport and ends with it, on close and on kill.
+%% The TURN server is a local socket that accepts the TCP connection and
+%% never answers the TLS handshake, so the worker is still running when
+%% the transport ends, wherever the test runs.
 connect_workers_end(_Config) ->
-    Turn = [#{urls => [<<"turn:10.255.255.1:3478?transport=tcp">>], username => <<"u">>, credential => <<"p">>}],
+    {ok, L} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}, {backlog, 16}]),
+    {ok, Port} = inet:port(L),
+    Url = iolist_to_binary(["turns:127.0.0.1:", integer_to_list(Port), "?transport=tcp"]),
+    Turn = [#{urls => [Url], username => <<"u">>, credential => <<"p">>}],
     lists:foreach(
         fun(How) ->
             {ok, A} = webrtc:new_peer_connection(#{loopback => true, ice_servers => Turn}),
@@ -152,7 +158,8 @@ connect_workers_end(_Config) ->
             try webrtc:close(A) catch exit:_ -> ok end
         end,
         [close, kill]
-    ).
+    ),
+    gen_tcp:close(L).
 
 %%====================================================================
 %% Back to the baseline
@@ -309,6 +316,8 @@ other_node(_Config) ->
     %% Long names on the loopback address: a short host name may not
     %% resolve on the test host.
     Started = node() =:= nonode@nohost,
+    %% Distribution needs epmd, which a CI runner does not start.
+    _ = Started andalso epmd(),
     case not Started orelse net_kernel:start('lifecycle_main@127.0.0.1', #{name_domain => longnames}) of
         {error, R} ->
             {skip, {no_distribution, R}};
@@ -316,6 +325,12 @@ other_node(_Config) ->
             try other_node1() after net_kernel:stop() end;
         _ ->
             other_node1()
+    end.
+
+epmd() ->
+    case os:find_executable("epmd") of
+        false -> false;
+        Epmd -> os:cmd(Epmd ++ " -daemon"), true
     end.
 
 other_node1() ->

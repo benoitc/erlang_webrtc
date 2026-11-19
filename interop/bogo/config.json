@@ -1,0 +1,18 @@
+{
+  "DisabledTests": {
+    "*-TLS1-*": "DTLS 1.0 is not supported (RFC 8996 deprecates it)",
+    "*-TLS1": "DTLS 1.0 is not supported (RFC 8996 deprecates it)",
+    "*-RSA_WITH_*": "Static RSA key exchange is not offered: RFC 9325 §4.1 requires forward secrecy, WebRTC uses ECDHE (RFC 8827 §6.5)",
+    "*_CBC_*": "Only AEAD suites are offered (RFC 9325 §4.2; WebRTC requires AES-GCM, RFC 8827 §6.5)",
+    "AppDataBeforeHandshake-DTLS*": "Records that cannot be valid are silently discarded (RFC 6347 §4.1.2.7) rather than aborting the handshake",
+    "AppDataBeforeTLS13KeyChange-DTLS*": "Records that cannot be valid are silently discarded (RFC 6347 §4.1.2.7, RFC 9147 §4.5.2) rather than aborting the handshake",
+    "SendInvalidRecordType-DTLS": "Records of an unknown type are silently discarded (RFC 6347 §4.1.2.7) rather than aborting the connection",
+    "WrongMessageType-NewSessionTicket-DTLS": "DTLS 1.2 session tickets are not offered, so the runner never sends the NewSessionTicket this test alters",
+    "TrailingMessageData-NewSessionTicket-DTLS": "DTLS 1.2 session tickets are not offered, so the runner never sends the NewSessionTicket this test alters",
+    "UnencryptedEncryptedExtensions-DTLS": "A plaintext record after handshake keys exist is silently discarded (RFC 9147 §4.5.2) rather than ending the handshake",
+    "DTLS-Retransmit-BothTimers-TLS13*": "BoringSSL acknowledges a copy of the HelloRetryRequest; RFC 9147 §7.1 says that flight is acknowledged by the next one and SHOULD NOT be ACKed, and a stateless server's copy says nothing of our flight (§5.1)",
+    "DTLS-Retransmit-PartialProgress-Client-TLS13*": "BoringSSL keeps resending its ClientHello after a complete ServerHello; RFC 9147 §7.2 requires a record that responds to a flight to be taken as an implicit acknowledgement of it",
+    "KeyUpdate-Requested-DTLS": "Asked to update, we acknowledge the KeyUpdate before sending ours, in the order of RFC 9147 Figure 14 and as OpenSSL requires; the runner expects the ACK only on BoringSSL's ACK timer, which this test never fires"
+  },
+  "MaxACKBuffer": 73
+}

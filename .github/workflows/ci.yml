@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  protocol:
+    name: Build, conformance tests, static analysis
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.25'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            _build
+            ~/.cache/rebar3
+          key: otp29-${{ hashFiles('rebar.lock', 'rebar.config') }}
+      - run: rebar3 compile
+      - run: rebar3 eunit
+      - run: rebar3 proper -n 200
+      - run: rebar3 xref
+      - run: rebar3 dialyzer
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: protocol-logs
+          path: _build/test/logs
+
+  e2e:
+    name: Erlang to Erlang over UDP (${{ matrix.arch }})
+    needs: protocol
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.25'
+      - run: rebar3 ct --dir test/e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-logs-${{ matrix.arch }}
+          path: _build/test/logs
+
+  interop:
+    name: Interop (OTP ssl, OpenSSL, Pion, aiortc, browsers, ${{ matrix.arch }})
+    needs: protocol
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: '29'
+          rebar3-version: '3.25'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # OpenSSL 4 for the DTLS 1.3 interop cases (the runners ship 3.0).
+      # Built once per architecture and cached; the rpath keeps the
+      # system libcrypto that Erlang's crypto links to untouched.
+      - name: Cache OpenSSL 4
+        id: openssl4
+        uses: actions/cache@v4
+        with:
+          path: ~/openssl4
+          key: openssl-4.1.0-${{ matrix.arch }}
+      - name: Build OpenSSL 4
+        if: steps.openssl4.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-4.1.0/openssl-4.1.0.tar.gz | tar xz
+          cd openssl-4.1.0
+          ./Configure --prefix=$HOME/openssl4 --libdir=lib no-docs no-tests "-Wl,-rpath,$HOME/openssl4/lib"
+          make -j"$(nproc)"
+          make install_sw
+      - name: Put OpenSSL 4 first in PATH
+        run: |
+          echo "$HOME/openssl4/bin" >> "$GITHUB_PATH"
+          "$HOME/openssl4/bin/openssl" version
+      # mbedTLS 3 example programs for the DTLS 1.2 connection ID cases
+      # (RFC 9146); DTLS-SRTP is off in its default configuration.
+      - name: Cache mbedTLS
+        id: mbedtls
+        uses: actions/cache@v4
+        with:
+          path: ~/mbedtls
+          key: mbedtls-3.6.6-${{ matrix.arch }}
+      - name: Build mbedTLS programs
+        if: steps.mbedtls.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.6/mbedtls-3.6.6.tar.bz2 | tar xj
+          cd mbedtls-3.6.6
+          python3 scripts/config.py set MBEDTLS_SSL_DTLS_SRTP
+          python3 scripts/config.py set MBEDTLS_SSL_DTLS_CONNECTION_ID
+          cmake -B build -DENABLE_TESTING=OFF -DENABLE_PROGRAMS=ON
+          cmake --build build -j"$(nproc)" --target ssl_server2 ssl_client2
+          mkdir -p $HOME/mbedtls
+          cp build/programs/ssl/ssl_server2 build/programs/ssl/ssl_client2 $HOME/mbedtls/
+      - name: Point the suites at mbedTLS
+        run: echo "MBEDTLS_PROGRAMS=$HOME/mbedtls" >> "$GITHUB_ENV"
+      # GStreamer's rtpredenc and rtpreddec (RED, RFC 2198) and its video
+      # encoders and payloaders, independent of libwebrtc; ffmpeg decodes
+      # the frames we put together. The Python bindings drive its RFC 6051
+      # header extension (interop/gst/rtp_ntp.py).
+      - name: Install GStreamer and ffmpeg
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly gstreamer1.0-plugins-bad ffmpeg \
+            python3-gi gir1.2-gstreamer-1.0 gir1.2-gst-plugins-base-1.0
+          gst-inspect-1.0 rtpredenc | head -1
+          gst-inspect-1.0 rtphdrextntp64 | head -1
+      - name: Build peer adapters
+        run: make -C interop all
+      - name: Install headless browsers
+        run: cd interop/browser && npm ci && npx playwright install --with-deps chromium firefox
+      - name: Run interop suites
+        run: rebar3 ct --dir test/interop
+      - name: Report skipped peers
+        if: always()
+        run: grep -rh "SKIPPED\|skip" _build/test/logs/*/suite.summary || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interop-logs-${{ matrix.arch }}
+          path: _build/test/logs

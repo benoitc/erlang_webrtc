@@ -1,0 +1,11 @@
+{application, webrtc, [
+    {description, "WebRTC protocol stack in pure Erlang"},
+    {vsn, "0.1.0"},
+    {registered, [webrtc_sup]},
+    {mod, {webrtc_app, []}},
+    {applications, [kernel, stdlib, crypto, public_key, ssl]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache-2.0"]},
+    {links, [{"GitHub", "https://github.com/benoitc/erlang_webrtc"}]}
+]}.

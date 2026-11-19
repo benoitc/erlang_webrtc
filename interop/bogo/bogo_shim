@@ -1,0 +1,8 @@
+#!/bin/sh
+# Entry point the BoGo runner starts (-shim-path). Runs webrtc_bogo_shim
+# with the stack in WEBRTC_EBIN, by default the one `rebar3 compile` built.
+DIR=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$DIR/../.." && pwd)
+EBIN=${WEBRTC_EBIN:-$ROOT/_build/default/lib/webrtc/ebin}
+exec erl -noshell -noinput +A0 -pa "$EBIN" -pa "$DIR/ebin" \
+    -run webrtc_bogo_shim start -extra "$@"

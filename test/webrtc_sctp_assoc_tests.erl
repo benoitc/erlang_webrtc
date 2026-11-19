@@ -572,6 +572,61 @@ heartbeat_failure_test() ->
     {ok, N3} = ?NET:run_until(fun(X) -> closed(a, X) =/= [] end, 10 * ?MINUTE, N2),
     ?assertEqual([max_retransmissions], closed(a, N3)).
 
+%% RFC 9260 §6.3.3 E2: the timer doubles, up to RTO.Max (C7) and the
+%% `max_backoff' ceiling; the ceiling never shortens an RTO the RTT
+%% measurements gave.
+backoff_test_() ->
+    B = fun webrtc_sctp_ack:backoff/3,
+    [?_assertEqual(2000, B(1000, 60000, infinity)),
+     ?_assertEqual(60000, B(40000, 60000, infinity)),
+     ?_assertEqual(2000, B(1000, 60000, 3000)),
+     ?_assertEqual(3000, B(2000, 60000, 3000)),
+     ?_assertEqual(3000, B(3000, 60000, 3000)),
+     ?_assertEqual(5000, B(5000, 60000, 3000)),
+     ?_assertEqual(1500, B(1000, 1500, 3000))].
+
+%% With a 3 s ceiling, 60 s of total loss is about 20 retransmissions,
+%% not 5, so the path is tried again every 3 s once it comes back.
+retransmission_backoff_cap_test() ->
+    Opts = #{max_backoff => 3000, max_retransmissions => infinity},
+    N0 = established(Opts, Opts, #{}),
+    N1 = ?NET:set(loss, 1.0, N0),
+    N2 = send(a, 0, <<"held">>, #{}, N1),
+    N3 = ?NET:run(60000, N2),
+    ?assertEqual(3000, stat(a, rto, N3)),
+    ?assert(stat(a, t3_expirations, N3) >= 18),
+    N4 = ?NET:set(loss, 0.0, N3),
+    N5 = wait_messages(b, 1, N4),
+    ?assertEqual([{0, 53, <<"held">>}], received(b, N5)).
+
+%% `max_retransmissions => infinity': the association waits for the
+%% path to come back, however long it takes; the owner ends it.
+unlimited_retransmissions_test() ->
+    Opts = #{max_backoff => 3000, max_retransmissions => infinity},
+    N0 = established(Opts, Opts, #{}),
+    N1 = ?NET:set(loss, 1.0, N0),
+    N2 = send(a, 0, <<"later">>, #{}, N1),
+    N3 = ?NET:run(30 * ?MINUTE, N2),
+    ?assertEqual([], closed(a, N3)),
+    ?assert(stat(a, t3_expirations, N3) > 500),
+    N4 = ?NET:set(loss, 0.0, N3),
+    N5 = wait_messages(b, 1, N4),
+    ?assertEqual([{0, 53, <<"later">>}], received(b, N5)),
+    ?assertEqual([], closed(a, N5)).
+
+%% The ceiling applies to T1-init too, while Max.Init.Retransmits still
+%% ends the handshake (§5.1, a MUST): 8 retransmissions in about 25 s.
+handshake_backoff_cap_test() ->
+    Opts = #{max_backoff => 3000},
+    N0 = connect(a, pair(Opts, Opts, #{loss => 1.0})),
+    {ok, N1} = ?NET:run_until(fun(X) -> closed(a, X) =/= [] end, 30000, N0),
+    ?assertEqual([handshake_timeout], closed(a, N1)),
+    ?assertEqual(8, stat(a, init_retransmissions, N1)).
+
+backoff_options_test_() ->
+    [?_assertError({badarg, max_backoff}, ?A:new(#{max_backoff => 0})),
+     ?_assertError({badarg, max_retransmissions}, ?A:new(#{max_retransmissions => -1}))].
+
 handshake_timeout_test() ->
     N0 = connect(a, pair(#{}, #{}, #{loss => 1.0})),
     {ok, N1} = ?NET:run_until(fun(X) -> closed(a, X) =/= [] end, 30 * ?MINUTE, N0),

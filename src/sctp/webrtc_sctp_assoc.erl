@@ -44,8 +44,11 @@
 %% `receive_buffer' (advertised window, default 1 MiB), `send_buffer'
 %% (bytes queued and not yet sent, default 8 MiB), `max_message_size'
 %% (largest incoming message, default 256 KiB), `rto_initial',
-%% `rto_min', `rto_max' (ms, defaults 1000, 1000, 60000), `max_burst'
-%% (4), `max_retransmissions' (Association.Max.Retrans, 10),
+%% `rto_min', `rto_max' (ms, defaults 1000, 1000, 60000), `max_backoff'
+%% (ms or `infinity', the default: the ceiling of the doubling after a
+%% timer expires, see webrtc_sctp_ack:backoff/3), `max_burst'
+%% (4), `max_retransmissions' (Association.Max.Retrans, 10, or
+%% `infinity': never give up on the peer, the owner ends the association),
 %% `max_init_retransmissions' (8), `cookie_lifetime' (ms, 60000),
 %% `heartbeat_interval' (ms or `infinity', 30000), `sack_delay' (ms,
 %% at most 500, default 200), `sack_frequency' (2), `interleaving'
@@ -133,8 +136,9 @@ cfg(O) ->
         rto_initial = opt(rto_initial, O, 1000, fun pos/1),
         rto_min = opt(rto_min, O, 1000, fun pos/1),
         rto_max = opt(rto_max, O, 60000, fun pos/1),
+        max_backoff = opt(max_backoff, O, infinity, fun(V) -> V =:= infinity orelse pos(V) end),
         max_burst = opt(max_burst, O, 4, fun pos/1),
-        assoc_max_retrans = opt(max_retransmissions, O, 10, fun nonneg/1),
+        assoc_max_retrans = opt(max_retransmissions, O, 10, fun(V) -> V =:= infinity orelse nonneg(V) end),
         max_init_retrans = opt(max_init_retransmissions, O, 8, fun nonneg/1),
         cookie_life = opt(cookie_lifetime, O, 60000, fun pos/1),
         hb_interval = opt(heartbeat_interval, O, 30000, fun(V) -> V =:= infinity orelse pos(V) end),
@@ -345,7 +349,7 @@ t2_expired(Now, #assoc{t2 = {D, Rto}, cfg = C, state = St} = A) when Now >= D ->
         #assoc{state = closed} = A1 ->
             A1;
         A1 ->
-            Rto1 = min(2 * Rto, C#cfg.rto_max),
+            Rto1 = webrtc_sctp_ack:backoff(Rto, C#cfg.rto_max, C#cfg.max_backoff),
             A2 = A1#assoc{t2 = {Now + Rto1, Rto1}},
             case St of
                 shutdown_sent ->
@@ -423,7 +427,12 @@ heartbeat(_Now, A) ->
 %% Association.Max.Retrans (§8.1): the peer is considered unreachable.
 %% An ABORT still goes out, in case only the other direction is broken.
 incr_error(#assoc{error_count = E, cfg = C} = A) ->
-    case E + 1 > C#cfg.assoc_max_retrans of
+    %% `infinity' (a SHOULD of §8.1 not applied): the owner ends the
+    %% association instead. WebRTC transports end it when ICE consent
+    %% or DTLS ends, so a long outage the path survives does not close
+    %% the data channels (RFC 8831 §6.2 still sees the peer unreachable
+    %% through that path), as libwebrtc and Pion do.
+    case C#cfg.assoc_max_retrans =/= infinity andalso E + 1 > C#cfg.assoc_max_retrans of
         true -> webrtc_sctp_out:terminate(max_retransmissions, webrtc_sctp_out:abort_peer(A));
         false -> A#assoc{error_count = E + 1}
     end.

@@ -9,13 +9,14 @@ The first release: a WebRTC stack in pure Erlang, with no native code and no dep
 ### Connections
 
 - Peer connections negotiate offers and answers as browsers do, including renegotiation, rollback and provisional answers.
-- ICE finds a path through NATs with STUN and TURN servers given as browser-style URIs, over UDP, TCP or TLS, and with ICE-TCP. It accepts the hidden `.local` addresses browsers send by default, restarts on its own when the path stops working, and can run as ICE lite.
+- ICE finds a path through NATs with STUN and TURN servers given as browser-style URIs, over UDP, TCP or TLS, and with ICE-TCP. It accepts the hidden `.local` addresses browsers send by default, can restart on its own when the path stops working if you ask it to, and can run as ICE lite.
 - DTLS 1.3 is used by default, with fallback to DTLS 1.2. Certificates are checked against the fingerprints in the session description.
 - Media and data share one network path by default (BUNDLE). Sessions that use several paths, or none bundled, also work.
 
 ### Data channels
 
 - Reliable, unordered and partially reliable channels, large messages, channel priorities, and a signal when a full send buffer has room again.
+- After a network outage, channels resume within seconds of the path coming back, and they stay open as long as the connection does. The retransmission timers can be changed.
 
 ### Audio and video
 

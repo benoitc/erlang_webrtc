@@ -257,26 +257,37 @@ media_actions(Acts, St) ->
 start_sctp(#st{data = Data, dtls_role = Role} = St) ->
     LocalMax = maps:get(local_max_message_size, Data, 262144),
     Overhead = webrtc_dtls:record_overhead(St#st.dtls),
+    Base = #{
+        local_port => maps:get(local_port, Data, 5000),
+        remote_port => maps:get(remote_port, Data, 5000),
+        %% The limit we announced in SDP bounds incoming messages
+        %% (RFC 8841 §6); the window holds at least two of them.
+        max_message_size => LocalMax,
+        receive_buffer => max(1048576, 2 * LocalMax),
+        %% 1200 byte datagrams minus the DTLS record overhead of the
+        %% negotiated version and suite are safe on any path (RFC 8261
+        %% §5); PLPMTUD probes up to what fits a 1500 byte IPv6
+        %% packet (40 byte IP and 8 byte UDP headers, RFC 8899).
+        mtu => 1200 - Overhead,
+        max_mtu => 1500 - 48 - Overhead,
+        %% DTLS protects every packet: CRC32c may be skipped with
+        %% peers that accept it (RFC 9653 §5.1).
+        zero_checksum => true,
+        %% Timers for WebRTC, which the `sctp' option may change. The
+        %% doubling after a timer expires stops at 3 s, so a path that
+        %% comes back is used again within seconds (RFC 9260 §6.3.3 E2
+        %% allows a ceiling; libwebrtc uses 3 s). The association does
+        %% not give up on its own: it ends with ICE consent or DTLS, as
+        %% in libwebrtc, Firefox and Pion (a SHOULD of RFC 9260 §8.1 not
+        %% applied). The handshake keeps Max.Init.Retransmits (8, a
+        %% MUST of §5.1): about 25 s of attempts at that ceiling.
+        max_backoff => 3000,
+        max_retransmissions => infinity
+    },
     D0 = webrtc_dcep:new(#{
         role => Role,
         max_message_size => maps:get(remote_max_message_size, Data, 65536),
-        sctp => #{
-            local_port => maps:get(local_port, Data, 5000),
-            remote_port => maps:get(remote_port, Data, 5000),
-            %% The limit we announced in SDP bounds incoming messages
-            %% (RFC 8841 §6); the window holds at least two of them.
-            max_message_size => LocalMax,
-            receive_buffer => max(1048576, 2 * LocalMax),
-            %% 1200 byte datagrams minus the DTLS record overhead of the
-            %% negotiated version and suite are safe on any path (RFC 8261
-            %% §5); PLPMTUD probes up to what fits a 1500 byte IPv6
-            %% packet (40 byte IP and 8 byte UDP headers, RFC 8899).
-            mtu => 1200 - Overhead,
-            max_mtu => 1500 - 48 - Overhead,
-            %% DTLS protects every packet: CRC32c may be skipped with
-            %% peers that accept it (RFC 9653 §5.1).
-            zero_checksum => true
-        }
+        sctp => maps:merge(Base, St#st.sctp_opts)
     }),
     {D1, Acts} = webrtc_dcep:connect(webrtc_transport:now_ms(), D0),
     St1 = dcep_actions(Acts, St#st{dcep = D1}),

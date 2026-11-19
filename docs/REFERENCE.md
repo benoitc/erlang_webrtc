@@ -20,7 +20,7 @@ You pass these in the map of `webrtc:new_peer_connection/1`. Every key is option
 | `ice_resolver` | `fun((srv \| inet \| inet6, Name) -> {ok, list()} \| {error, term()})` | DNS lookups | Replaces the DNS lookups of `ice_servers` names: SRV answers as `[{Priority, Weight, Port, Target}]`, others as `[IP]`. Meant for tests. |
 | `ice_lite` | `boolean()` | `false` | Run as an ICE-Lite agent, for a server with a public address. A lite agent is always the controlled side. |
 | `ice_pacing` | integer, ms, at least 5 | `50` | Interval between connectivity checks (Ta). A value other than 50 is announced with `a=ice-pacing`; both sides use the higher one. Anything below 5 returns `{error, {badarg, ice_pacing}}`. |
-| `ice_auto_restart` | `disconnected \| failed \| false` | `disconnected` | Restart ICE by itself when the selected path stops working: after `ice_restart_delay` of trouble (`disconnected`), only once consent is lost (`failed`), or never (`false`). Up to 3 restarts per incident; meanwhile the connection is reported `disconnected`, not `failed`. |
+| `ice_auto_restart` | `disconnected \| failed \| false` | `false` | Restart ICE by itself when the selected path stops working: after `ice_restart_delay` of trouble (`disconnected`), only once consent is lost (`failed`), or never (`false`, as browsers do: the application decides, with `restart_ice/1`). A restart needs a new offer and answer: send them on `negotiation_needed`, or use the `signaling` option. Up to 3 restarts per incident; meanwhile the connection is reported `disconnected`, not `failed`. |
 | `ice_restart_delay` | ms | `2000` | Delay before an automatic restart. The controlled side waits three times as long, so the controlling side normally restarts first. |
 | `signaling` | `fun((offer \| answer, Sdp) -> any())` | none | Sends a description to the peer. When set, ICE restarts run without you: the connection creates and applies the restart offer, answers restart offers you pass to `set_remote_description/3`, and hands each description to the function. It runs in a helper process. |
 | `addresses` | `[{IP, Port}]` | every usable interface that is up and not loopback, port 0 | Local addresses to bind. |
@@ -34,6 +34,7 @@ You pass these in the map of `webrtc:new_peer_connection/1`. Every key is option
 | `outbound_filter` | `{Fun, State}` | none | Test hook that sees every outgoing datagram and can delay, drop or mark it. `Fun(Dest, Bin, State)` or `Fun(Dest, Bin, Tos, State)` returns `{[{DelayMs, Bin} \| {DelayMs, Bin, Ecn}], NewState}`. Not for production. |
 | `certificate` | result of `webrtc_dtls_cert:generate/1` | a fresh ECDSA P-256 certificate, valid 30 days | DTLS certificate; its SHA-256 fingerprint goes in the SDP. |
 | `dtls` | `map()` | `#{}` | DTLS options, see [DTLS options](#dtls-options). |
+| `sctp` | `map()` | `#{}` | SCTP timers of the data channels, see [SCTP options](#sctp-options). |
 | `srtp_profiles` | `[integer()]` | `[16#0007, 16#0008, 16#0001, 16#0002]` | SRTP protection profiles offered in DTLS, most preferred first: AES-GCM 128 and 256, then AES-CM with an 80 and a 32 bit tag. |
 | `cryptex` | `boolean()` | `true` | Offer and accept encrypted CSRC lists and header extensions (RFC 9335). Media is sent that way only when every section negotiated it. |
 | `encrypt_header_extensions` | `accept \| offer \| false` | `accept` | RFC 6904 encrypted header extensions: `accept` answers an encrypted offer encrypted but offers only the clear form, `offer` offers both forms, `false` neither offers nor accepts them. |
@@ -81,6 +82,19 @@ The `dtls` map:
 | `connection_id` | `true` or `binary()` | off | Offer and accept a DTLS connection ID (RFC 9147 for 1.3, RFC 9146 for 1.2). With DTLS 1.3 records move to a spare connection ID after an ICE restart or a new selected pair. |
 | `resumption` | `boolean()` | `false` | Issue DTLS 1.3 tickets and resume the next association between the same certificates with them. |
 | `ticket_lifetime` | seconds | `7200` | Lifetime of the tickets issued. |
+
+### SCTP options
+
+The `sctp` map changes the timers of the SCTP association that carries the data channels. The defaults are those of browsers: a timer that expires doubles up to 3 s, not up to 60 s, so a path that comes back after an outage is used again within seconds; and the association never gives up on its own, it ends when ICE consent or DTLS ends.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `max_backoff` | ms or `infinity` | `3000` | Ceiling of the doubling after a retransmission timer expires (data, INIT, COOKIE ECHO, SHUTDOWN). Never below the RTO measured on the path. `infinity` doubles up to `rto_max`, as RFC 9260 suggests. |
+| `max_retransmissions` | `non_neg_integer()` or `infinity` | `infinity` | Association.Max.Retrans: consecutive errors after which the peer is unreachable and the association closes (`{sctp_closed, max_retransmissions}`). RFC 9260 suggests 10. |
+| `max_init_retransmissions` | `non_neg_integer()` | `8` | Max.Init.Retransmits: retransmissions of INIT and COOKIE ECHO before the setup fails, about 25 s with the default ceiling. |
+| `rto_initial`, `rto_min`, `rto_max` | ms | `1000`, `1000`, `60000` | RTO.Initial, RTO.Min and RTO.Max of RFC 9260. |
+
+A bad value returns `{error, {badarg, sctp}}`.
 
 ### Congestion control options
 

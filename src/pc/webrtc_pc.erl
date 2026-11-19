@@ -315,13 +315,16 @@ restart_ice_creds(St) ->
 troubled(St) ->
     [S || S <- [St#st.ice_state | [I || _ := #{ice := I} <- St#st.extra]], S =:= disconnected orelse S =:= failed].
 
-%% `ice_auto_restart': `disconnected' (default) restarts after
-%% `ice_restart_delay' ms disconnected, `failed' once consent is lost,
-%% `false' never. The controlling side restarts first; the controlled
-%% side waits three times as long, so the peer's restart offer normally
-%% comes first (no glare).
+%% `ice_auto_restart': `false' (default) never, as browsers and the
+%% W3C API leave ICE restarts to the application; `disconnected'
+%% restarts after `ice_restart_delay' ms disconnected, `failed' once
+%% consent is lost. A restart needs a new offer and answer: without the
+%% `signaling' option the owner must send them on `negotiation_needed'.
+%% The controlling side restarts first; the controlled side waits three
+%% times as long, so the peer's restart offer normally comes first (no
+%% glare).
 auto_restart(#st{opts = O} = St) ->
-    Policy = maps:get(ice_auto_restart, O, disconnected),
+    Policy = maps:get(ice_auto_restart, O, false),
     Bad = troubled(St),
     Delay = maps:get(ice_restart_delay, O, 2000) * case St#st.ice_role of controlled -> 3; _ -> 1 end,
     Due =
@@ -346,7 +349,7 @@ auto_restart(#st{opts = O} = St) ->
 
 %% While restarts remain, a failed ICE transport is only disconnected.
 recovering(#st{opts = O, auto_restarts = N}) ->
-    maps:get(ice_auto_restart, O, disconnected) =/= false andalso N < ?MAX_AUTO_RESTARTS.
+    maps:get(ice_auto_restart, O, false) =/= false andalso N < ?MAX_AUTO_RESTARTS.
 
 terminate(_Reason, St) ->
     _ = close_now(St),
@@ -573,7 +576,7 @@ ensure_transport(Type, #st{transport = undefined} = St) ->
         maps:with(
             [stun_servers, turn_servers, server_fallbacks, addresses, loopback, consent, nomination, outbound_filter, congestion_control, mdns,
                 rtcp_report_interval, ice_tcp, video_fec,
-                mdns_host_candidates, mdns_expose_public, dtls, srtp_profiles],
+                mdns_host_candidates, mdns_expose_public, dtls, sctp, srtp_profiles],
             St#st.opts
         ),
         #{

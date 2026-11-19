@@ -118,11 +118,29 @@ new_pc(#{codecs := Codecs} = Opts) when is_map(Codecs) ->
     %% RFC 5761 §4: with RTP and RTCP on one port, payload types 64..95
     %% would read as RTCP packet types.
     case [Pt || _ := Cs <- Codecs, is_list(Cs), #{pt := Pt} <- Cs, Pt >= 64, Pt =< 95] of
-        [] -> webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts));
+        [] -> start_pc(Opts);
         [Pt | _] -> {error, {badarg, {payload_type, Pt}}}
     end;
 new_pc(Opts) ->
-    webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
+    start_pc(Opts).
+
+start_pc(Opts) ->
+    case valid_sctp(maps:get(sctp, Opts, #{})) of
+        true -> webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts));
+        false -> {error, {badarg, sctp}}
+    end.
+
+%% The SCTP settings an application may change (docs/REFERENCE.md,
+%% "SCTP options"); the transport fills in the others.
+valid_sctp(S) when is_map(S) ->
+    Pos = fun(V) -> is_integer(V) andalso V > 0 end,
+    Check = #{rto_initial => Pos, rto_min => Pos, rto_max => Pos,
+              max_backoff => fun(V) -> V =:= infinity orelse Pos(V) end,
+              max_retransmissions => fun(V) -> V =:= infinity orelse (is_integer(V) andalso V >= 0) end,
+              max_init_retransmissions => fun(V) -> is_integer(V) andalso V >= 0 end},
+    lists:all(fun({K, V}) -> case Check of #{K := F} -> F(V); _ -> false end end, maps:to_list(S));
+valid_sctp(_) ->
+    false.
 
 %% @doc Add a transceiver. `Opts': `direction' (default `sendrecv'),
 %% `stream_id', `track_id', the simulcast layers `send_encodings' and

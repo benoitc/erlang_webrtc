@@ -87,7 +87,7 @@ Options of `send_rtp/4`:
 ok = webrtc:send_frame(Pc, VideoMid, Vp8Frame, #{timestamp => Ts, keyframe => true}),
 ```
 
-Set `keyframe => true` on key frames: VP9 and AV1 signal it in the payload, and its packets get the lower drop precedence. Pass `codec => <<"H264">>` when several video codecs are negotiated; the default is the first. To packetize yourself, use `send_rtp/4` with `marker => true` on the last packet of each frame.
+Set `keyframe => true` on key frames: VP9 and AV1 signal it in the payload, and its packets get the lower drop precedence. Pass `codec => <<"H264">>` when several video codecs are negotiated; the default is the first. To have the peer send and receive a codec first, offer it first with `webrtc:prefer_codec/2` (see [Codecs](../REFERENCE.md#codecs)). To packetize yourself, use `send_rtp/4` with `marker => true` on the last packet of each frame.
 
 ### Answer keyframe requests
 

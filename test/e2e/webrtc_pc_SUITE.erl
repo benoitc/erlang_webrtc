@@ -37,6 +37,7 @@
     candidates_before_local_description/1,
     fingerprint_change_refused/1,
     max_message_size_wired/1,
+    preferred_codec_sent/1,
     loss_indications/1,
     dscp_marking/1,
     dscp_tcp_connection/1,
@@ -84,6 +85,7 @@ all() ->
         candidates_before_local_description,
         fingerprint_change_refused,
         max_message_size_wired,
+        preferred_codec_sent,
         loss_indications,
         dscp_marking,
         dscp_tcp_connection,
@@ -1291,6 +1293,28 @@ loss_indications(_Config) ->
     {error, badarg} = webrtc:send_slice_loss(B, <<"1">>, [{8192, 0, 0}]),
     %% Audio negotiated neither.
     {error, not_negotiated} = webrtc:send_slice_loss(B, <<"0">>, [{0, 1, 0}]),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% prefer_codec/2: A offers AV1 first and its rtx with it, the others
+%% after; B, on the defaults, answers in the offer's order (RFC 3264
+%% §6.1), so A sends AV1 and B gets AV1 frames, with RTX negotiated.
+preferred_codec_sent(_Config) ->
+    {ok, Video} = webrtc:prefer_codec(<<"AV1">>, webrtc:default_codecs(video)),
+    {error, {unknown_codec, <<"H265">>}} = webrtc:prefer_codec(<<"H265">>, webrtc:default_codecs(video)),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true, codecs => #{video => Video}}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{}),
+    {_Offer, Answer} = ?S:connect(A, B),
+    %% The answer lists AV1 first and keeps its rtx and the others.
+    {match, [First]} = re:run(Answer, "m=video [0-9]+ [A-Z/]+ ([0-9]+)", [{capture, all_but_first, binary}]),
+    ?assertEqual(<<"45">>, First),
+    ?assertMatch({_, _}, binary:match(Answer, <<"a=fmtp:46 apt=45">>)),
+    ?assertMatch({_, _}, binary:match(Answer, <<" VP8/90000">>)),
+    [ok = webrtc:send_frame(A, <<"0">>, D, #{timestamp => I * 3000, keyframe => K})
+     || {I, #{expect := D, key := K}} <- lists:enumerate(webrtc_test_frames:frames(av1))],
+    {ok, {frame, _, #{codec := Codec}}} = ?S:wait(B, fun({frame, <<"0">>, _}) -> true; (_) -> false end, 5000),
+    ?assertEqual(<<"av1">>, string:lowercase(Codec)),
     webrtc:close(A),
     webrtc:close(B).
 

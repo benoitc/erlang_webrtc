@@ -2,6 +2,10 @@
 
 All notable changes are listed here, newest first. Each release section is also its release notes.
 
+## Unreleased
+
+- `webrtc:default_codecs/1` returns the codecs a peer connection offers by default, and `webrtc:prefer_codec/2` moves one codec, with its retransmission entry, to the front of such a list. Use them with the `codecs` option to offer AV1 or H.264 first, without reaching into internal modules.
+
 ## 0.1.0 (2026-11-19)
 
 The first release: a WebRTC stack in pure Erlang, with no native code and no dependency beyond OTP. You can use it to build servers that talk to browsers and other WebRTC stacks, such as SFUs, media gateways, data channel services and test peers. Signaling, media coding and routing stay in your application.

@@ -273,3 +273,11 @@ Merged after the status above, and checked against this review:
 - #68 gave data channels the browsers' SCTP timers and turned automatic ICE restarts off by default. Its new `sctp` option is in REFERENCE.md and the sync test, its requirements in `compliance/sctp.md` (SCTP-57, DT-9, DT-10) and `compliance/ice.md`, and its changes in the CHANGELOG.
 
 Nothing new for the documentation plan. The release goes ahead with the open items listed in the status.
+
+## Before the 0.2.0 release
+
+Merged since 0.1.0: #70 (Hex and ex_doc configuration, demo link, license headers) and #74 (padding no longer drops AV1 and H.264 frames, VP9 corpus in profile 0, LICENSE wording, `webrtc:default_codecs/1` and `webrtc:prefer_codec/2`). Their docs are in place: REFERENCE.md ("Codecs"), the send-media guide, FRAME-10 in `compliance/rtp.md`, the CHANGELOG.
+
+One change to the decisions above: since #70 the API docs list every module, grouped by subsystem, with `webrtc` and `webrtc_media_codec` under "Public API", instead of the two public modules only.
+
+Open, not blocking (maintainer's decision, 2026-11-19): the pages of internal modules do not say they may change between releases; only the "Public API" group marks the stable ones.

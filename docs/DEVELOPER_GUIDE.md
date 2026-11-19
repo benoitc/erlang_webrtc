@@ -17,11 +17,11 @@ This page is for contributors. It says where each protocol lives, how the engine
 | SDP grammar | `src/sdp/webrtc_sdp*.erl` |
 | Offer/answer rules | `src/sdp/webrtc_jsep*.erl` |
 | rid and simulcast negotiation | `src/sdp/webrtc_jsep_simulcast.erl` |
-| Media session API | `src/transport/webrtc_media.erl` |
-| Media receive path: demux, RTX, NACK generation, RTCP processing | `src/transport/webrtc_media_in.erl` |
-| Media send path: pacing, TWCC sequence, retransmission, RTCP reports | `src/transport/webrtc_media_out.erl` |
+| Media session API | `src/media/webrtc_media.erl` |
+| Media receive path: demux, RTX, NACK generation, RTCP processing | `src/media/webrtc_media_in.erl` |
+| Media send path: pacing, TWCC sequence, retransmission, RTCP reports | `src/media/webrtc_media_out.erl` |
 | Congestion control, pacer, circuit breakers | `src/cc/` |
-| Simulcast layers on receive (rid, repaired-rid) | `src/transport/webrtc_media_rid.erl` |
+| Simulcast layers on receive (rid, repaired-rid) | `src/media/webrtc_media_rid.erl` |
 | Transport process: API, gen_server callbacks, the single timer | `src/transport/webrtc_transport.erl` |
 | Sockets, received datagrams, ICE actions | `src/transport/webrtc_transport_net.erl` |
 | DTLS lifecycle, SRTP keys, media actions, SCTP and data channels | `src/transport/webrtc_transport_secure.erl` |

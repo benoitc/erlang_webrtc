@@ -2,7 +2,7 @@
 %% the retransmission buffers (RFC 4585 §3.4, RFC 4588 §5).
 -module(webrtc_media_rtt_tests).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("webrtc/src/transport/webrtc_media.hrl").
+-include_lib("webrtc/src/media/webrtc_media.hrl").
 
 path_rtt_test() ->
     N0 = webrtc_nack:new(#{}),

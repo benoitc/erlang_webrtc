@@ -17,6 +17,7 @@
     unreliable_channel_under_loss/1,
     media_recovers_with_nack/1,
     blackhole_and_recovery/1,
+    long_outage_recovery/1,
     path_mtu_1400/1
 ]).
 
@@ -32,6 +33,7 @@ all() ->
         unreliable_channel_under_loss,
         media_recovers_with_nack,
         blackhole_and_recovery,
+        long_outage_recovery,
         path_mtu_1400
     ].
 
@@ -55,10 +57,7 @@ pair(Config, Impair) ->
     Seed = ?config(seed, Config),
     Mk = fun(N) ->
         F = webrtc_impair:filter(Impair#{seed => Seed + N}),
-        %% At 30% loss consent responses go missing for 10 s now and
-        %% then, and an automatic ICE restart would wait for an offer
-        %% the test never sends.
-        {ok, Pc} = webrtc:new_peer_connection(#{loopback => true, ice_auto_restart => false, outbound_filter => F}),
+        {ok, Pc} = webrtc:new_peer_connection(#{loopback => true, outbound_filter => F}),
         Pc
     end,
     {Mk(0), Mk(1)}.
@@ -113,10 +112,7 @@ close(A, B) ->
 handshake_under_30pct_loss(Config) ->
     %% ICE retransmits checks, DTLS retransmits flights, SCTP retransmits
     %% INIT and COOKIE: the connection still comes up.
-    %% Each SCTP and DCEP exchange then fails about half the time, and
-    %% the retransmission timer doubles from 1 s (RFC 9260 §6.3.3): a
-    %% few losses in a row take the channel past 30 s.
-    {A, B, Id} = setup_channel(Config, #{loss => 0.3}, 120000),
+    {A, B, Id} = setup_channel(Config, #{loss => 0.3}),
     ordered_transfer(A, B, Id, 20, 100),
     close(A, B).
 
@@ -218,6 +214,24 @@ rtp_payloads(B, Acc) ->
     after 0 ->
         Acc
     end.
+
+%% A 20 s outage: SCTP retransmits at most every 3 s (the WebRTC
+%% ceiling of the timer doubling), so a message queued during the outage
+%% arrives within seconds of the path coming back. Doubling up to RTO.Max
+%% would leave it waiting for the next retransmission, up to 15 s later.
+long_outage_recovery(Config) ->
+    Hole = webrtc_impair:blackhole(),
+    {A, B, Id} = setup_channel(Config, #{blackhole => Hole}),
+    webrtc_impair:set_blackhole(Hole, true),
+    ok = send_retry(A, Id, <<"queued">>),
+    timer:sleep(20000),
+    webrtc_impair:set_blackhole(Hole, false),
+    T0 = erlang:monotonic_time(millisecond),
+    ?assertEqual([<<"queued">>], collect(B, 1, 10000, [])),
+    Waited = erlang:monotonic_time(millisecond) - T0,
+    ct:log("delivered ~p ms after the outage", [Waited]),
+    ?assert(Waited < 4500),
+    close(A, B).
 
 blackhole_and_recovery(Config) ->
     Hole = webrtc_impair:blackhole(),

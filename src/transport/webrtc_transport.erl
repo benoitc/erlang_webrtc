@@ -138,6 +138,7 @@ init(#{pc := Pc, app := App, cert := Cert} = Opts) ->
                 }),
                 srtp_profiles = maps:get(srtp_profiles, Opts, [16#0007, 16#0008, 16#0001, 16#0002]),
                 dtls_opts = maps:with([connection_id, resumption, ticket_lifetime], maps:get(dtls, Opts, #{})),
+                sctp_opts = maps:get(sctp, Opts, #{}),
                 filter = maps:get(outbound_filter, Opts, undefined),
                 mdns = webrtc_mdns_client:new(
                     (maps:get(mdns, Opts, #{}))#{

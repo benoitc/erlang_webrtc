@@ -9,7 +9,17 @@
 
 -include("webrtc_sctp_assoc.hrl").
 
--export([handle_sack/3, handle_cum_ack/3, handle_t3/2, rtt_sample/2, unwrap/2]).
+-export([handle_sack/3, handle_cum_ack/3, handle_t3/2, rtt_sample/2, unwrap/2, backoff/3]).
+
+%% @doc The timer after an expiry (RFC 9260 §6.3.3 E2): twice `Rto',
+%% bounded by RTO.Max (rule C7) and by `MaxBackoff' when set. The cap
+%% stops the doubling, it never brings the timer under an RTO the RTT
+%% measurements gave, so a long path keeps its timer. WebRTC stacks cap
+%% it at a few seconds so that a recovered path is used again quickly
+%% (libwebrtc: 3 s).
+-spec backoff(pos_integer(), pos_integer(), pos_integer() | infinity) -> pos_integer().
+backoff(Rto, RtoMax, infinity) -> min(2 * Rto, RtoMax);
+backoff(Rto, RtoMax, MaxBackoff) -> min(min(2 * Rto, RtoMax), max(MaxBackoff, Rto)).
 
 %% @doc Map a 32-bit wire TSN to the unwrapped TSN closest to `Ref'
 %% (serial number arithmetic, RFC 1982 with SERIAL_BITS = 32).
@@ -312,7 +322,7 @@ handle_t3(Now, #snd{mtu = Mtu} = S0) ->
         cwnd = Mtu,
         pba = 0,
         fr_exit = undefined,
-        rto = min(S0#snd.rto * 2, S0#snd.rto_max),
+        rto = backoff(S0#snd.rto, S0#snd.rto_max, S0#snd.max_backoff),
         rtt_probe = undefined,
         t3 = undefined
     },

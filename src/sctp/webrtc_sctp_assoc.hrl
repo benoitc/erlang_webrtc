@@ -23,8 +23,11 @@
     rto_initial = 1000 :: pos_integer(),
     rto_min = 1000 :: pos_integer(),
     rto_max = 60000 :: pos_integer(),
+    %% Ceiling of the doubling after a timer expires (RFC 9260 §6.3.3
+    %% E2), below RTO.Max; never below the RTO from RTT measurements.
+    max_backoff = infinity :: pos_integer() | infinity,
     max_burst = 4 :: pos_integer(),
-    assoc_max_retrans = 10 :: non_neg_integer(),
+    assoc_max_retrans = 10 :: non_neg_integer() | infinity,
     max_init_retrans = 8 :: non_neg_integer(),
     cookie_life = 60000 :: pos_integer(),
     hb_interval = 30000 :: pos_integer() | infinity,
@@ -123,6 +126,7 @@
     rto :: pos_integer(),
     rto_min :: pos_integer(),
     rto_max :: pos_integer(),
+    max_backoff = infinity :: pos_integer() | infinity,
     rtt_probe = undefined :: undefined | {non_neg_integer(), integer()},
     t3 = undefined :: undefined | integer(),
     %% Zero window probing (RFC 9260 §6.1 A).

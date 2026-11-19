@@ -445,7 +445,7 @@ t1_expired(Now, #assoc{t1 = {Kind, D, Rto, N}, cfg = C} = A) when Now >= D ->
             A1 = case Kind of cookie -> webrtc_sctp_out:abort_peer(A); init -> A end,
             webrtc_sctp_out:terminate(handshake_timeout, A1);
         false ->
-            Rto1 = min(2 * Rto, C#cfg.rto_max),
+            Rto1 = webrtc_sctp_ack:backoff(Rto, C#cfg.rto_max, C#cfg.max_backoff),
             A1 = webrtc_sctp_out:bump(init_retransmissions, A#assoc{
                 t1 = {Kind, Now + Rto1, Rto1, N + 1}
             }),

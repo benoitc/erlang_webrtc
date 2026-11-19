@@ -63,7 +63,8 @@ new(#cfg{} = C) ->
         os = C#cfg.os,
         rto = C#cfg.rto_initial,
         rto_min = C#cfg.rto_min,
-        rto_max = C#cfg.rto_max
+        rto_max = C#cfg.rto_max,
+        max_backoff = C#cfg.max_backoff
     }.
 
 %% @doc Enter the established state: initial TSN, peer window and

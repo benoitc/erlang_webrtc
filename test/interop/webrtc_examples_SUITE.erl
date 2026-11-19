@@ -68,8 +68,10 @@ browser_video(Config) ->
 browser_relay(Config) ->
     Url = start_example(browser_relay, Config),
     try
-        Out = open_pages(Config, [Url ++ "?role=receive", Url ++ "?role=send"], "receiving: 640x480"),
-        ?assertMatch({_, _}, binary:match(Out, <<"[1] receiving: 640x480">>))
+        %% The sender may start below the size it captures while its
+        %% bandwidth estimate grows: any size shows the relay works.
+        Out = open_pages(Config, [Url ++ "?role=receive", Url ++ "?role=send"], "receiving: "),
+        ?assertMatch({match, _}, re:run(Out, "\\[1\\] receiving: [1-9][0-9]*x[1-9][0-9]*"))
     after
         browser_relay:stop()
     end.

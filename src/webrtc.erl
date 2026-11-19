@@ -2,88 +2,18 @@
 %%
 %% A peer connection is a process. The process that creates it (or the
 %% `owner' option) receives every event as `{webrtc, Pc, Event}':
-%%
-%% <ul>
-%% <li>`negotiation_needed'</li>
-%% <li>`{signaling_state, State}'</li>
-%% <li>`{ice_candidate, Candidate, Mid}': a local candidate to send to
-%%     the peer (`Candidate' is `<<"candidate:...">>' or
-%%     `end_of_candidates').</li>
-%% <li>`{ice_gathering_state, new | gathering | complete}'</li>
-%% <li>`{ice_connection_state, State}'</li>
-%% <li>`{connection_state, new | connecting | connected | disconnected
-%%     | failed | closed}'</li>
-%% <li>`{ice_restart, disconnected | consent_lost}': the connection
-%%     restarted ICE by itself (`ice_auto_restart'); a
-%%     `negotiation_needed' follows, so send the new offer, unless the
-%%     `signaling' option sends it for you.</li>
-%% <li>`{track, Mid, audio | video}': the remote side sends media on
-%%     this transceiver.</li>
-%% <li>`{ssrc_changed, Mid, Old, New}': the peer sent with one of our
-%%     SSRCs, so ours changed (RFC 3550 §8.2); a BYE went out for the old
-%%     one.</li>
-%% <li>`{rtp, Mid, #rtp{}}': an RTP packet (see `webrtc_rtp.hrl').</li>
-%% <li>`{rtp, Mid, Rid, #rtp{}}': an RTP packet of the simulcast layer
-%%     `Rid' (RFC 8853) of a transceiver that receives several layers.
-%%     Retransmissions arrive already decapsulated on their layer.</li>
-%% <li>`{keyframe_request, Mid}': the remote side asked for a keyframe.</li>
-%% <li>`{keyframe_request, Mid, Rid}': the same, for one simulcast layer
-%%     we send.</li>
-%% <li>`{stream_paused, Mid}', `{stream_resumed, Mid}': the remote side
-%%     asked us to pause or resume what we send on the transceiver
-%%     (RFC 7728); `send_rtp' returns `{error, paused}' meanwhile. With a
-%%     rid for one simulcast layer.</li>
-%% <li>`{remote_paused, Mid}', `{remote_resumed, Mid}',
-%%     `{pause_refused, Mid}': answers to `request_pause/2,3' and
-%%     `request_resume/2,3', with a rid for one simulcast layer.</li>
-%% <li>`{rtcp, Mid, Packet}': congestion feedback (REMB, TWCC).</li>
-%% <li>`{slice_loss, Mid, Entries}', `{reference_picture, Mid, Pt, Bits}'
-%%     (with the rid after `Mid' for a simulcast layer): the remote
-%%     decoder lost slices (SLI) or asks for a reference picture (RPSI),
-%%     RFC 8834 §5.1.3, §5.1.4. Repair or change the reference in your
-%%     encoder; a codec plugin gets them in `feedback/2'.</li>
-%% <li>`{dscp_disabled, Dscp}': the path drops packets marked `Dscp'
-%%     (RFC 8835 §4.2): the flows that used it now go unmarked.</li>
-%% <li>`{bandwidth_estimate, Bps}': the congestion controller changed
-%%     the target bitrate for all media sent on the connection; adapt
-%%     the encoders to it.</li>
-%% <li>`{max_bitrate, Mid, Bps}', `{max_bitrate, Mid, Rid, Bps}': the
-%%     peer limited what the stream may send with TMMBR (RFC 5104), in
-%%     payload bits per second, or lifted the limit (`infinity'). The
-%%     connection holds the stream to it, queuing and at worst dropping
-%%     packets; keep the encoder under it.</li>
-%% <li>`{circuit_breaker, Mid, Reason}': an RTP circuit breaker of
-%%     RFC 8083 triggered for the stream (`rtcp_timeout',
-%%     `media_timeout' or `congestion'). The transceiver's RTP streams
-%%     are halted (RFC 8083 §4.5): `send_rtp' returns
-%%     `{error, {circuit_breaker, Reason}}' until `resume_stream/2'.
-%%     RTCP keeps flowing.</li>
-%% <li>`{datachannel_open, Id, Label, Protocol, Opts}'</li>
-%% <li>`{channel_message, Id, text | binary, Data}'</li>
-%% <li>`{datachannel_closed, Id}', `{buffered_amount_low, Id}'</li>
-%% <li>`{datachannel_error, Id, message_too_large}': the peer sent a
-%%     message over our `max_message_size'; the channel is closed.</li>
-%% <li>`{datachannel_error, Id, invalid_stream_id}': a channel created
-%%     before the connection on an id beyond the streams negotiated
-%%     with the peer; it is closed.</li>
-%% <li>`{datachannel_open_failed, Label, Reason}': a channel created
-%%     before the connection could not be opened once it came up.</li>
-%% <li>`{dtls_error, Reason}'</li>
-%% </ul>
-%%
-%% Simulcast: a transceiver added with `send_encodings' offers one layer
-%% per encoding; send on a layer with the `rid' option of `send_rtp/4'
-%% and `send_rtp_packet/4'. When the remote side offers simulcast, the
-%% answer accepts its layers and each one is delivered with its rid. The
-%% negotiated layers are in `transceivers/1' (`send_encodings') and in
-%% the `{rtp, Mid, Rid, _}' events. A layer that the answer removed is
-%% not sent: `send_rtp' returns `{error, not_sending}' for it.
+%% signaling and ICE (`negotiation_needed', `{ice_candidate, Candidate,
+%% Mid}', ...), connection state, data channels (`{channel_message, Id,
+%% Type, Data}', ...), media (`{rtp, Mid, Packet}', `{frame, Mid,
+%% Frame}', ...) and congestion (`{bandwidth_estimate, Bps}', ...).
 %%
 %% Signaling is the application's business: exchange the SDP returned by
 %% `create_offer/2' and `create_answer/2' and the candidates of
-%% `ice_candidate' events by any means. Pass the mid of the event to
-%% `add_ice_candidate/3' on the other side: when the sections are not
-%% all bundled, it names the transport of the candidate.
+%% `ice_candidate' events by any means, and pass the mid of each
+%% candidate to `add_ice_candidate/3' on the other side.
+%%
+%% This module and the `webrtc_media_codec' behaviour are the public
+%% API. See docs/REFERENCE.md for every option and event.
 -module(webrtc).
 
 -export([
@@ -145,128 +75,11 @@
 new_peer_connection() ->
     new_peer_connection(#{}).
 
-%% @doc Create a peer connection. Options:
-%% <ul>
-%% <li>`owner': pid receiving events (default: the caller).</li>
-%% <li>`stun_servers': `[{IP, Port}]'.</li>
-%% <li>`turn_servers': `[#{address => {IP, Port}, username => U,
-%%     password => P}]', reached over UDP. With `transport => tcp' or
-%%     `tls' the server is reached over a TCP or TLS connection
-%%     (RFC 8656 §3.1; the relay itself is UDP). For TLS the server
-%%     certificate is verified against the system CA store and
-%%     `hostname' (default: the IP address); `tls_options' (`ssl'
-%%     client options) replace these defaults, for example
-%%     `[{cacerts, [Der]}]'.</li>
-%% <li>`ice_servers': the W3C RTCIceServer list, `[#{urls => [Uri],
-%%     username => U, credential => C}]', with `stun:', `turn:' and
-%%     `turns:' URIs (RFC 7064, RFC 7065), for example
-%%     `<<"turn:turn.example.com?transport=tcp">>'. Names are resolved
-%%     when the peer connection starts (SRV records first when the URI
-%%     has no port, RFC 5928), within `ice_server_timeout' ms (default
-%%     2000); a URI that cannot be used is reported as
-%%     `{ice_server_error, Url, Reason}'. The servers are added to
-%%     `stun_servers' and `turn_servers', eight in all at most.</li>
-%% <li>`ice_lite': run as an ICE-Lite agent (servers with a public
-%%     address).</li>
-%% <li>`ice_pacing': the interval between connectivity checks (Ta) in
-%%     ms, at least 5, default 50. Another value is announced with
-%%     `a=ice-pacing', and both sides use the higher of the two (RFC
-%%     8445 §14.2).</li>
-%% <li>`rtcp_mux_policy': `negotiate' (default) or `require', which
-%%     adds `a=rtcp-mux-only' to offers (RFC 8858). RTP and RTCP are
-%%     always multiplexed; codecs on payload types 64..95 are refused
-%%     (RFC 5761 §4).</li>
-%% <li>`ice_auto_restart': restart ICE when the selected path stops
-%%     working, since RFC 8445 §8.1.1 allows no second nomination in an
-%%     ICE session. `disconnected' (default) restarts after
-%%     `ice_restart_delay' ms (default 2000) of consent trouble,
-%%     `failed' only once consent is lost (30 s), `false' never. The
-%%     controlling side restarts first, the controlled side after three
-%%     times the delay if no restart offer came. Up to 3 restarts per
-%%     incident; meanwhile the connection is reported `disconnected'
-%%     rather than `failed'. DTLS and data channels survive the restart
-%%     (RFC 8842).</li>
-%% <li>`signaling': `fun((offer | answer, Sdp) -> any())' that sends a
-%%     description to the peer. When set, the connection runs ICE
-%%     restarts without you: it creates and applies the offer of an
-%%     automatic restart, answers every restart offer you pass to
-%%     `set_remote_description/3', and hands each description to the
-%%     function. Only pass the peer's descriptions to
-%%     `set_remote_description/3' and relay candidates as usual; they
-%%     arrive after the description they belong to. On glare the
-%%     controlled side rolls its own offer back. The function runs in a
-%%     helper process and may call either peer connection.</li>
-%% <li>`addresses': local `[{IP, Port}]' to bind, default every
-%%     interface; `loopback' (boolean) to use only 127.0.0.1.</li>
-%% <li>`certificate': `webrtc_dtls_cert:generate/1' result, default a
-%%     fresh ECDSA P-256 certificate.</li>
-%% <li>`max_message_size': data channel limit announced in SDP.</li>
-%% <li>`congestion_control': initial options of the estimator, pacer and
-%%     circuit breakers (`start_bitrate', `min_bitrate', `max_bitrate',
-%%     `pacing', `probing', `pacing_factor', `rtcp_timeout',
-%%     `circuit_breaker_hold', ...), see `webrtc_cc'.</li>
-%% <li>`ice_tcp': also gather TCP host candidates (RFC 6544), default
-%%     `false': a passive one listening next to every UDP host address
-%%     and an active one, both below the UDP candidates in priority.
-%%     They connect peers whose UDP is blocked; DTLS, SRTP and SCTP then
-%%     run over the TCP connection.</li>
-%% <li>`rtcp_report_interval': the shortest interval between regular
-%%     RTCP reports in ms (the local T_rr_interval of RFC 4585 §3.5.3,
-%%     default 1000, 0 for the RFC 3550 interval alone). Feedback is not
-%%     bound by it.</li>
-%% <li>`codecs', `extensions': the codecs and RTP header extensions to
-%%     negotiate, as maps keyed by `audio' and `video' (default
-%%     `webrtc_jsep_caps:default_codecs/1' and
-%%     `webrtc_jsep_caps:default_extensions/1').</li>
-%% <li>`mdns_host_candidates': signal host candidates with a random
-%%     `<uuid>.local' name answered by multicast DNS instead of the
-%%     address (draft-ietf-mmusic-mdns-ice-candidates), default
-%%     `false'. Remote `.local' and DNS names are always resolved.</li>
-%% <li>`mdns_expose_public': with `mdns_host_candidates', a host address
-%%     a STUN server mapped to itself is public and later gatherings
-%%     signal it as it is (draft-ietf-mmusic-mdns-ice-candidates
-%%     §3.1.2.2), default `true'; the finding is dropped when the STUN
-%%     servers change.</li>
-%% <li>`mdns': resolver options, see `webrtc_mdns' (`max_pending',
-%%     `schedule', `group', `listen', `group6', `listen6', ...).</li>
-%% <li>`bundle': offer every m= section in one BUNDLE group (RFC 9143),
-%%     default `true'. With `false' every section gets its own ICE and
-%%     DTLS transport; relay candidates with `add_ice_candidate/3' and
-%%     the mid of their `ice_candidate' event. Answers follow the offer
-%%     whatever this option says, and later offers keep the transports
-%%     the last answer set.</li>
-%% <li>`dtls': DTLS options; `connection_id' (`true' or a binary) offers
-%%     and accepts a connection ID (DTLS 1.3, RFC 9147 §9; DTLS 1.2,
-%%     RFC 9146), default off: ICE already follows address changes and
-%%     browsers do not use it. With DTLS 1.3, records move to a spare CID
-%%     of the peer after an ICE restart or a new selected pair (RFC 9146
-%%     §8); DTLS 1.2 has no way to change it.
-%%     `resumption' (default false) issues DTLS 1.3 tickets and resumes
-%%     with them the next association between the same certificates,
-%%     skipping the certificate messages (each side's certificate is the
-%%     one of the ticket, checked against the SDP fingerprints);
-%%     `ticket_lifetime' (s, default 7200).</li>
-%% <li>`encrypt_header_extensions': RFC 6904 encrypted header extension
-%%     elements (the audio level, RFC 8834 §5.2.2). `accept' (default)
-%%     answers an encrypted offer encrypted but offers the clear form
-%%     only, as aiortc and Chromium mishandle the encrypted one; `offer'
-%%     offers both forms; `false' neither offers nor accepts them.
-%%     `transceivers/1' reports the negotiated ids.</li>
-%% <li>`srtp_profiles': SRTP protection profile ids offered in DTLS,
-%%     most preferred first (default AES-GCM 128 and 256, then
-%%     AES-CM 80 and 32).</li>
-%% <li>`cryptex': offer and accept encrypted CSRC lists and RTP header
-%%     extensions (RFC 9335), default `true'. Media is sent that way
-%%     when every section of the connection negotiated it.</li>
-%% <li>`video_fec': FEC packets sent per video packet, FlexFEC (RFC
-%%     8627) or ULPFEC in RED (RFC 5109, RFC 8854 §5.2), whichever the
-%%     peer negotiates, FlexFEC first: `auto'
-%%     (default: twice the fraction lost the peer reports, at most 0.5,
-%%     none without loss) or a number, 0.0 to send none.</li>
-%% <li>`frames': the `frames' option of transceivers added without it,
-%%     those a remote offer creates included (see
-%%     `add_transceiver/3'), default `false'.</li>
-%% </ul>
+%% @doc Create a peer connection. Every option is optional: `owner',
+%% the ICE servers (`stun_servers', `turn_servers', `ice_servers'),
+%% local addresses, DTLS, codecs and extensions, congestion control,
+%% `frames' and `codec_plugins', and more. See docs/REFERENCE.md
+%% ("Peer connection options") for every key, its type and default.
 -spec new_peer_connection(map()) -> {ok, pc()} | {error, term()}.
 new_peer_connection(Opts) ->
     maybe
@@ -312,41 +125,19 @@ new_pc(Opts) ->
     webrtc_pc_sup:start_child(maps:merge(#{owner => self()}, Opts)).
 
 %% @doc Add a transceiver. `Opts': `direction' (default `sendrecv'),
-%% `stream_id', `track_id' and `send_encodings', the simulcast layers to
-%% send (RFC 8853), most preferred first: a list of `#{rid => Rid,
-%% restrictions => [{Name, Value}]}' where `restrictions' are RFC 8851
-%% §5 restrictions such as `{<<"max-width">>, <<"640">>}'. Returns
-%% `{error, invalid_encodings}' for duplicate or malformed rids.
-%% `recv_rids' lists the simulcast layers to ask the peer for, as rids
-%% or `#{rid => Rid, paused => true}' for a layer that starts paused
-%% (resume it with `request_resume/3'). A transceiver without
-%% `send_encodings' answering an offer that asks to receive simulcast
-%% sends the offered layers.
-%%
-%% `frames': `true' or `#{min_delay => Ms, max_delay => Ms}' delivers
-%% `{frame, Mid, Frame}' (`{frame, Mid, Rid, Frame}' for a simulcast
-%% layer) instead of `{rtp, Mid, Packet}': the packets of each frame put
-%% in order, joined and released at their playout time, a key frame
-%% asked for when one is lost (see `webrtc_frame_buffer'). `Frame' is
-%% `#{timestamp, keyframe, data, codec}', with `width' and `height' for
-%% video. `data' is the encoded frame: VP8 and VP9 frames, H.264 in
-%% Annex B, AV1 temporal units in the low overhead bitstream format.
-%% With RFC 6051 negotiated, `ntp_time' is the capture time on the
-%% sender's clock (microseconds since the Unix epoch).
-%%
-%% `priority' (`very_low', `low' (default), `medium', `high'), also per
-%% encoding in `send_encodings', marks the packets with the DSCP of
-%% RFC 8837 (EF for audio, AF4x for video, LE at `very_low', none at
-%% `low'); `interactive => false' uses AF3x for video nobody answers
-%% live. The packets of a key frame get the lower drop precedence.
+%% `stream_id', `track_id', the simulcast layers `send_encodings' and
+%% `recv_rids', `frames', `codec_plugin', `priority' and `interactive'.
+%% See docs/REFERENCE.md ("Transceiver options").
 -spec add_transceiver(pc(), audio | video, map()) -> {ok, pos_integer()} | {error, term()}.
 add_transceiver(Pc, Kind, Opts) ->
     call(Pc, {add_transceiver, Kind, Opts}).
 
+%% @doc Change the direction of transceiver `Id'; renegotiate to apply it.
 -spec set_direction(pc(), pos_integer(), sendrecv | sendonly | recvonly | inactive) -> ok | {error, term()}.
 set_direction(Pc, Id, Dir) ->
     call(Pc, {set_direction, Id, Dir}).
 
+%% @doc Stop transceiver `Id'; renegotiate to apply it.
 -spec stop_transceiver(pc(), pos_integer()) -> ok | {error, term()}.
 stop_transceiver(Pc, Id) ->
     call(Pc, {stop_transceiver, Id}).
@@ -358,29 +149,31 @@ transceivers(Pc) ->
 
 %% @doc Create a data channel. `Opts': `ordered', `max_retransmits',
 %% `max_packet_life_time', `protocol', `negotiated', `id' and
-%% `priority' (`very_low', `low' (default), `medium', `high' or a DCEP
-%% value 0..65535): channels share the association in proportion to
-%% it (RFC 8831 §6.4), and the peer is told it. Returns
-%% `{ok, Id}' when the id is known (association up, or a pre-negotiated
-%% channel); otherwise `ok', the channel is opened as soon as the
-%% association is up and the `datachannel_open' event carries its id.
+%% `priority' (see docs/REFERENCE.md, "Data channel options"). Returns
+%% `{ok, Id}' when the id is known (association up, or a negotiated
+%% channel); otherwise `ok', and the `datachannel_open' event carries
+%% the id.
 -spec create_data_channel(pc(), binary(), map()) -> ok | {ok, non_neg_integer()} | {error, term()}.
 create_data_channel(Pc, Label, Opts) ->
     call(Pc, {create_data_channel, Label, Opts}).
 
-%% @doc Create an offer (SDP binary). `Opts': none yet.
+%% @doc Create an offer (SDP binary). `Opts' is not read yet.
 -spec create_offer(pc(), map()) -> {ok, binary()} | {error, term()}.
 create_offer(Pc, Opts) ->
     call(Pc, {create_offer, Opts}).
 
+%% @doc Create an answer (SDP binary) to the remote offer. `Opts' is
+%% not read yet.
 -spec create_answer(pc(), map()) -> {ok, binary()} | {error, term()}.
 create_answer(Pc, Opts) ->
     call(Pc, {create_answer, Opts}).
 
+%% @doc Apply a local description (`rollback' takes `undefined').
 -spec set_local_description(pc(), sdp_type(), binary() | undefined) -> ok | {error, term()}.
 set_local_description(Pc, Type, Sdp) ->
     call(Pc, {set_local_description, Type, Sdp}).
 
+%% @doc Apply the peer's description (`rollback' takes `undefined').
 -spec set_remote_description(pc(), sdp_type(), binary() | undefined) -> ok | {error, term()}.
 set_remote_description(Pc, Type, Sdp) ->
     call(Pc, {set_remote_description, Type, Sdp}).
@@ -573,26 +366,33 @@ set_congestion_control(Pc, Opts) when is_map(Opts) ->
 resume_stream(Pc, Mid) when is_binary(Mid) ->
     transport(Pc, Mid, fun(T) -> webrtc_transport:resume_stream(T, Mid) end).
 
+%% @doc Send a text or binary message on data channel `Id'.
 -spec send_data(pc(), non_neg_integer(), text | binary, iodata()) -> ok | {error, term()}.
 send_data(Pc, Id, Type, Data) ->
     transport(Pc, data, fun(T) -> webrtc_transport:send_data(T, Id, Type, iolist_to_binary(Data)) end).
 
+%% @doc Close data channel `Id'.
 -spec close_data_channel(pc(), non_neg_integer()) -> ok | {error, term()}.
 close_data_channel(Pc, Id) ->
     transport(Pc, data, fun(T) -> webrtc_transport:close_channel(T, Id) end).
 
+%% @doc The current local description, or `undefined'.
 -spec local_description(pc()) -> binary() | undefined.
 local_description(Pc) -> call(Pc, local_description).
 
+%% @doc The current remote description, or `undefined'.
 -spec remote_description(pc()) -> binary() | undefined.
 remote_description(Pc) -> call(Pc, remote_description).
 
+%% @doc The JSEP signaling state, as in `{signaling_state, State}' events.
 -spec signaling_state(pc()) -> atom().
 signaling_state(Pc) -> call(Pc, signaling_state).
 
+%% @doc The connection state, as in `{connection_state, State}' events.
 -spec connection_state(pc()) -> atom().
 connection_state(Pc) -> call(Pc, connection_state).
 
+%% @doc Internal statistics; see get_stats/2 for the W3C ones.
 -spec get_stats(pc()) -> map().
 get_stats(Pc) -> call(Pc, get_stats).
 
@@ -603,6 +403,7 @@ get_stats(Pc) -> call(Pc, get_stats).
 get_stats(Pc, #{format := w3c}) -> call(Pc, {get_stats, w3c});
 get_stats(Pc, _) -> get_stats(Pc).
 
+%% @doc Close the peer connection. Returns `ok' if it is already gone.
 -spec close(pc()) -> ok.
 close(Pc) ->
     try

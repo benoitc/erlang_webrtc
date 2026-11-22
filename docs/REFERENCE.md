@@ -199,7 +199,11 @@ It returns `{error, not_sending}` when the transceiver does not send (or the lay
 
 ### `send_media/4`
 
-`webrtc:send_media(Pc, Mid, Raw, Opts)` encodes with the transceiver's codec plugin. Option: `rid`. Without a plugin it returns `{error, no_codec_plugin}`. See [frames and codec plugins](guides/frames-and-codec-plugins.md).
+`webrtc:send_media(Pc, Mid, Raw, Opts)` encodes with the transceiver's codec plugin. Option: `rid`. Without a plugin it returns `{error, no_codec_plugin}`; when the plugin could not encode this picture and goes on, `{error, {encode, Reason}}`; once the plugin is off, `{error, {codec_plugin, Reason}}`. See [frames and codec plugins](guides/frames-and-codec-plugins.md).
+
+### `set_target_bitrate/3,4`
+
+`webrtc:set_target_bitrate(Pc, Mid, Bps)` gives the encoder of the transceiver's codec plugin a bit rate: its `control/2` gets `{target_bitrate, Bps}`, at once or when it starts. Split `{bandwidth_estimate, Bps}` between your encoders and call it for each. `set_target_bitrate(Pc, Mid, Bps, #{rid => Rid})` sets one simulcast layer's encoder. Returns `{error, no_codec_plugin}` without a plugin, `{error, not_sending}` when the transceiver does not send.
 
 ### Calls that take only `rid`
 

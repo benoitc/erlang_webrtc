@@ -60,6 +60,9 @@
     %% The next VP8 and VP9 picture ID of send_frame, and the codec
     %% plugin encoding what send_media gets.
     picture_id = 0 :: 0..16#7FFF,
+    %% Decoding order number of the next H.264 NAL unit in packetization
+    %% mode 2 (RFC 6184 §5.5).
+    h264_don = 0 :: 0..65535,
     %% ULPFEC: the packets of the frame being sent, as protected.
     fec_group = [] :: [{0..65535, binary()}],
     %% FlexFEC (RFC 8627): the repair stream and its sequence numbers.

@@ -2,6 +2,10 @@
 
 All notable changes are listed here, newest first. Each release section is also its release notes.
 
+## Unreleased
+
+- H.264 frames were packetized for packetization mode 1 whatever mode was negotiated, which a peer that accepts mode 0 or mode 2 alone cannot depacketize. Each mode now gets the packet types it allows. In mode 0, a frame with a NAL unit too large for one packet is refused with an error instead of being sent.
+
 ## 0.2.0 (2026-11-19)
 
 - AV1 and H.264 frames were dropped, and key frames asked for again and again, when the peer sent bandwidth probes on the video stream, which it does when RTX is not negotiated. No frame is lost to them now.

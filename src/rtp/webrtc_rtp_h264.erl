@@ -46,6 +46,7 @@
     nal_type/1,
     split_annexb/1,
     packetize/2,
+    packetize_single/2,
     depacketize/1,
     depacketizer_new/0,
     depacketizer_push/3,
@@ -136,6 +137,19 @@ trim_zeros(B) ->
 %% Packetization
 %%====================================================================
 
+%% @doc Packetization mode 0 (§6.2): one single NAL unit packet per NAL
+%% unit, the only packet type the mode allows. A NAL unit larger than
+%% `Mtu' cannot be sent in this mode.
+-spec packetize_single([binary()], pos_integer()) -> {ok, [binary()]} | {error, {nal_unit_too_large, pos_integer()}}.
+packetize_single(Nals, Mtu) when is_integer(Mtu), Mtu > 0 ->
+    Units = [N || N <- Nals, byte_size(N) > 0],
+    case [byte_size(N) || N <- Units, byte_size(N) > Mtu] of
+        [] -> {ok, Units};
+        [Size | _] -> {error, {nal_unit_too_large, Size}}
+    end.
+
+%% @doc Packetization mode 1 (§6.3): small NAL units aggregated in
+%% STAP-A packets, large ones cut into FU-A fragments.
 -spec packetize([binary()], pos_integer()) -> [binary()].
 packetize(Nals, Mtu) when is_integer(Mtu), Mtu > 2 ->
     pack([N || N <- Nals, byte_size(N) > 0], Mtu).

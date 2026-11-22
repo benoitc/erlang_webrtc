@@ -130,7 +130,7 @@ The mids are set when the offer is created, in order (`<<"0">>`, `<<"1">>`, ...)
 
 ## Notes
 
-- `send_rtp/4` and `send_frame/4` return `{error, Reason}` without sending: `not_sending` (the transceiver does not send, or the layer was removed), `unknown_codec`, `paused` (the peer paused the stream, see `{stream_paused, Mid}`), `{circuit_breaker, Reason}` (see [bandwidth and QoS](bandwidth-and-qos.md)), `not_ready`, `closed`. `send_frame/4` also returns `empty_frame`.
+- `send_rtp/4` and `send_frame/4` return `{error, Reason}` without sending: `not_sending` (the transceiver does not send, or the layer was removed), `unknown_codec`, `{nal_unit_too_large, Size}` (H.264 in packetization mode 0, see [send_frame/4](../REFERENCE.md#send_frame4)), `paused` (the peer paused the stream, see `{stream_paused, Mid}`), `{circuit_breaker, Reason}` (see [bandwidth and QoS](bandwidth-and-qos.md)), `not_ready`, `closed`. `send_frame/4` also returns `empty_frame`.
 - `send_rtp/4` sends the payload as it is. Keep it under about 1100 bytes so the packet fits a 1200 byte path; `send_frame/4` does that for you.
 - Adapt your encoder to `{bandwidth_estimate, Bps}` and `{max_bitrate, Mid, Bps}`: see [bandwidth and QoS](bandwidth-and-qos.md).
 - To encode raw pictures and samples with a codec plugin, use `send_media/3`: see [frames and codec plugins](frames-and-codec-plugins.md).

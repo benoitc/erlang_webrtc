@@ -195,7 +195,7 @@ It returns `{error, not_sending}` when the transceiver does not send (or the lay
 
 ### `send_frame/4`
 
-`webrtc:send_frame(Pc, Mid, Frame, Opts)` splits an encoded frame into RTP payloads. Options: `timestamp`, `keyframe` (VP9 and AV1 also signal it in the payload), `codec`, `rid` and `audio_level`, as in `send_rtp/4`. An empty frame returns `{error, empty_frame}`.
+`webrtc:send_frame(Pc, Mid, Frame, Opts)` splits an encoded frame into RTP payloads. Options: `timestamp`, `keyframe` (VP9 and AV1 also signal it in the payload), `codec`, `rid` and `audio_level`, as in `send_rtp/4`. An empty frame returns `{error, empty_frame}`. H.264 is packetized in the negotiated `packetization-mode`: mode 0 sends one NAL unit per packet and returns `{error, {nal_unit_too_large, Size}}`, sending nothing, when a NAL unit does not fit in one packet (keep the encoder's slices under about 1100 bytes); mode 1 aggregates and fragments (STAP-A, FU-A); mode 2 interleaves (STAP-B, FU-B, FU-A).
 
 ### `send_media/4`
 

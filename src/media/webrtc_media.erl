@@ -263,10 +263,21 @@ send_frame(Mid0, Frame, Opts, Now, M) when is_binary(Frame), byte_size(Frame) > 
             case Named of
                 [] ->
                     {error, unknown_codec};
-                [#{name := Name} | _] ->
+                [#{name := Name} = Codec | _] ->
                     Key0 = maps:get(keyframe, Opts, false),
-                    Payloads = payloads(webrtc_frame_codec:codec(Kind, Name), Frame, Key0, Pic),
-                    M1 = M#media{senders = (M#media.senders)#{Key := S#snd{picture_id = (Pic + 1) band 16#7FFF}}},
+                    case payloads(webrtc_frame_codec:codec(Kind, Name), Frame, Key0, Codec, S) of
+                        {error, _} = E ->
+                            E;
+                        {ok, Payloads, S1} ->
+                            M1 = M#media{senders = (M#media.senders)#{Key := S1#snd{picture_id = (Pic + 1) band 16#7FFF}}},
+                            send_payloads(Mid0, Name, Payloads, Opts, Now, M1)
+                    end
+            end
+    end;
+send_frame(_Mid, _Frame, _Opts, _Now, _M) ->
+    {error, empty_frame}.
+
+send_payloads(Mid0, Name, Payloads, Opts, Now, M1) ->
                     N = length(Payloads),
                     Base = maps:with([timestamp, rid, audio_level, keyframe], Opts),
                     lists:foldl(
@@ -280,20 +291,35 @@ send_frame(Mid0, Frame, Opts, Now, M) when is_binary(Frame), byte_size(Frame) > 
                         end,
                         {ok, [], M1},
                         lists:enumerate(Payloads)
-                    )
-            end
-    end;
-send_frame(_Mid, _Frame, _Opts, _Now, _M) ->
-    {error, empty_frame}.
+                    ).
 
 %% Payloads of at most 1100 bytes: the RTP header, extensions and the
 %% SRTP tag fit within a 1200 byte path MTU.
 -define(PAYLOAD_MTU, 1100).
-payloads(vp8, F, _Key, Pic) -> webrtc_rtp_vp8:packetize(F, ?PAYLOAD_MTU, #{picture_id => Pic});
-payloads(vp9, F, Key, Pic) -> webrtc_rtp_vp9:packetize(F, ?PAYLOAD_MTU, #{picture_id => Pic, inter_predicted => not Key});
-payloads(h264, F, _Key, _Pic) -> webrtc_rtp_h264:packetize(webrtc_rtp_h264:split_annexb(F), ?PAYLOAD_MTU);
-payloads(av1, F, Key, _Pic) -> webrtc_rtp_av1:packetize(F, ?PAYLOAD_MTU, #{new_sequence => Key});
-payloads(_, F, _Key, _Pic) -> [F].
+payloads(vp8, F, _Key, _C, #snd{picture_id = Pic} = S) ->
+    {ok, webrtc_rtp_vp8:packetize(F, ?PAYLOAD_MTU, #{picture_id => Pic}), S};
+payloads(vp9, F, Key, _C, #snd{picture_id = Pic} = S) ->
+    {ok, webrtc_rtp_vp9:packetize(F, ?PAYLOAD_MTU, #{picture_id => Pic, inter_predicted => not Key}), S};
+payloads(h264, F, _Key, C, S) ->
+    %% RFC 6184 §6: the packet types the negotiated mode allows; no
+    %% packetization-mode means mode 0 (§8.1).
+    Nals = webrtc_rtp_h264:split_annexb(F),
+    case webrtc_jsep_caps:fmtp(<<"packetization-mode">>, C) of
+        M when M =:= undefined; M =:= <<"0">> ->
+            case webrtc_rtp_h264:packetize_single(Nals, ?PAYLOAD_MTU) of
+                {ok, Ps} -> {ok, Ps, S};
+                {error, _} = E -> E
+            end;
+        <<"2">> ->
+            {Ps, Don} = webrtc_rtp_h264:packetize_interleaved(Nals, ?PAYLOAD_MTU, S#snd.h264_don),
+            {ok, Ps, S#snd{h264_don = Don}};
+        _ ->
+            {ok, webrtc_rtp_h264:packetize(Nals, ?PAYLOAD_MTU), S}
+    end;
+payloads(av1, F, Key, _C, S) ->
+    {ok, webrtc_rtp_av1:packetize(F, ?PAYLOAD_MTU, #{new_sequence => Key}), S};
+payloads(_, F, _Key, _C, S) ->
+    {ok, [F], S}.
 
 %% @doc Encode raw media with the transceiver's codec plugin and send the
 %% frames it returns.

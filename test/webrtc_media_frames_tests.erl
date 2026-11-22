@@ -204,3 +204,72 @@ padding_between_frames_test_() ->
 pt(C, _S) ->
     Name = webrtc_test_frames:name(C),
     hd([Pt || #{name := N, pt := Pt} <- webrtc_jsep_caps:default_codecs(video), N =:= Name]).
+
+%% RFC 6184 §6: send_frame/5 packetizes H.264 in the negotiated
+%% packetization mode. Mode 0 allows single NAL unit packets only
+%% (types 1 to 23, §6.2), mode 2 STAP-B, MTAP and FU packets only
+%% (§6.4); mode 1 aggregates and fragments with STAP-A and FU-A.
+h264_mode(Mode) ->
+    [Base | _] = [C || #{name := <<"H264">>} = C <- webrtc_jsep_caps:default_codecs(video)],
+    Fmtp = lists:keystore(<<"packetization-mode">>, 1, maps:get(fmtp, Base), {<<"packetization-mode">>, Mode}),
+    Fmtp2 = case Mode of
+                <<"2">> -> lists:keystore(<<"sprop-interleaving-depth">>, 1, Fmtp, {<<"sprop-interleaving-depth">>, <<"0">>});
+                _ -> Fmtp
+            end,
+    #{codecs => #{video => [Base#{fmtp => Fmtp2}]}}.
+
+%% The NAL unit types of the payloads B receives for the corpus frames
+%% A sends with send_frame/5, and the access units they give back.
+h264_types(Mode, Frames) ->
+    Opts = h264_mode(Mode),
+    {SA0, SB0} = pair(Opts, Opts),
+    {_, _, Acts} = lists:foldl(
+        fun({I, Frame}, {SA, SB, Acc}) ->
+            {ok, Out, SA1} = webrtc_media:send_frame(<<"1">>, Frame, #{timestamp => 1000 + I * 3000}, I * 33, SA),
+            {SB1, A} = run(I * 33, Out, SB),
+            {SA1, SB1, Acc ++ A}
+        end,
+        {SA0, SB0, []},
+        lists:enumerate(0, Frames)
+    ),
+    [Type || {event, {rtp, <<"1">>, #rtp{payload = <<_:3, Type:5, _/binary>>}}} <- Acts].
+
+annexb(Frames) -> [E || #{expect := E} <- Frames].
+
+%% Every corpus frame, and one with a NAL unit too large for one packet.
+h264_frames() ->
+    Big = <<0, 0, 0, 1, 16#41, (binary:copy(<<16#5A>>, 3000))/binary>>,
+    annexb(webrtc_test_frames:frames(h264)) ++ [Big].
+
+%% A mode 0 encoder keeps every NAL unit within a packet: the corpus
+%% delta frames, and an access unit of the key frame's SPS, PPS and
+%% 636 byte slice, which mode 1 would aggregate in one STAP-A.
+h264_mode0_single_nal_units_test() ->
+    Fits = fun(F) -> lists:all(fun(N) -> byte_size(N) =< 1100 end, webrtc_rtp_h264:split_annexb(F)) end,
+    [Key | _] = annexb(webrtc_test_frames:frames(h264)),
+    Small = iolist_to_binary([[<<0, 0, 0, 1>>, N] || N <- webrtc_rtp_h264:split_annexb(Key), byte_size(N) =< 1100]),
+    Frames = [Small | [F || F <- annexb(webrtc_test_frames:frames(h264)), Fits(F)]],
+    Nals = lists:sum([length(webrtc_rtp_h264:split_annexb(F)) || F <- Frames]),
+    Types = h264_types(<<"0">>, Frames),
+    ?assertEqual(Nals, length(Types)),
+    ?assertEqual([], [T || T <- Types, T < 1 orelse T > 23]),
+    ?assertEqual([24], [T || T <- h264_types(<<"1">>, [Small])]).
+
+%% No packet of mode 0 can carry a NAL unit larger than the payload
+%% size: the frame is refused, nothing is sent.
+h264_mode0_too_large_test() ->
+    Opts = h264_mode(<<"0">>),
+    {SA, _} = pair(Opts, Opts),
+    Big = <<0, 0, 0, 1, 16#41, (binary:copy(<<16#5A>>, 3000))/binary>>,
+    ?assertEqual({error, {nal_unit_too_large, 3001}}, webrtc_media:send_frame(<<"1">>, Big, #{timestamp => 1000}, 0, SA)).
+
+h264_mode1_aggregates_and_fragments_test() ->
+    Types = h264_types(<<"1">>, h264_frames()),
+    ?assert(lists:member(28, Types)),
+    ?assertEqual([], [T || T <- Types, T > 23, T =/= 24, T =/= 28]).
+
+h264_mode2_interleaved_test() ->
+    Types = h264_types(<<"2">>, h264_frames()),
+    ?assertNotEqual([], Types),
+    ?assertEqual([], [T || T <- Types, not lists:member(T, [25, 26, 27, 28, 29])]),
+    ?assert(lists:member(29, Types)).

@@ -51,6 +51,7 @@
     request_keyframe/2,
     send_loss_indication/3,
     request_max_bitrate/3,
+    set_target_bitrate/3,
     request_pause/3,
     set_congestion_control/2,
     resume_stream/2,
@@ -97,6 +98,7 @@ send_media(T, Mid, Raw, Opts) -> gen_server:call(T, {send_media, Mid, Raw, Opts}
 report_media_stats(T, Mid, Dir, Report) -> gen_server:cast(T, {report_media_stats, Mid, Dir, Report}).
 send_rtp_packet(T, Mid, Pkt) -> gen_server:call(T, {send_rtp_packet, Mid, Pkt}).
 request_keyframe(T, Mid) -> gen_server:call(T, {request_keyframe, Mid}).
+set_target_bitrate(T, Key, Bps) -> gen_server:call(T, {set_target_bitrate, Key, Bps}).
 send_loss_indication(T, Key, Fb) -> gen_server:call(T, {send_loss_indication, Key, Fb}).
 request_max_bitrate(T, Mid, Bps) -> gen_server:call(T, {request_max_bitrate, Mid, Bps}).
 request_pause(T, Key, Type) -> gen_server:call(T, {request_pause, Key, Type}).
@@ -223,6 +225,7 @@ call_(Msg, _From, #st{finished = true} = St) when
     element(1, Msg) =:= request_keyframe;
     element(1, Msg) =:= send_loss_indication;
     element(1, Msg) =:= request_max_bitrate;
+    element(1, Msg) =:= set_target_bitrate;
     element(1, Msg) =:= request_pause;
     element(1, Msg) =:= open_channel;
     element(1, Msg) =:= send_data;
@@ -237,6 +240,13 @@ call_({send_frame, Mid, Frame, Opts}, _From, St) ->
 call_({send_media, Mid, Raw, Opts}, _From, St) ->
     %% The plugin may report an error: events go to the owner.
     case webrtc_media:send_media(Mid, Raw, Opts, now_ms(), St#st.media) of
+        {ok, Acts, M1} -> {reply, ok, arm(webrtc_transport_secure:media_actions(Acts, St#st{media = M1}))};
+        %% Recoverable: nothing sent, the plugin's state kept.
+        {error, E, M1} -> {reply, {error, E}, St#st{media = M1}};
+        {error, _} = E -> {reply, E, St}
+    end;
+call_({set_target_bitrate, Key, Bps}, _From, St) ->
+    case webrtc_media:target_bitrate(Key, Bps, St#st.media) of
         {ok, Acts, M1} -> {reply, ok, arm(webrtc_transport_secure:media_actions(Acts, St#st{media = M1}))};
         {error, _} = E -> {reply, E, St}
     end;
@@ -372,6 +382,8 @@ eoc(false, _Now, I) -> {I, []}.
 
 terminate(_Reason, St0) ->
     ets:delete_object(webrtc_transports, {St0#st.pc, self()}),
+    %% The codec plugins end first (webrtc_media_codec terminate/1).
+    ok = webrtc_media:close(St0#st.media),
     ok = webrtc_mdns_client:stop(St0#st.mdns),
     %% close_notify first (it needs the selected pair), then the ICE
     %% agent: it deletes TURN allocations with a zero lifetime Refresh

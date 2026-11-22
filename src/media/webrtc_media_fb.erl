@@ -122,7 +122,10 @@ to_plugin(Fb, #snd{plugin = {Mod, St}, mid = Mid} = S, M) when is_atom(Mod) ->
         true ->
             case webrtc_media:plugin_call(fun() -> Mod:feedback(Fb, St) end) of
                 {ok, St1} -> {[], store(S#snd{plugin = {Mod, St1}}, M)};
-                {error, R} -> {[{event, {codec_plugin_error, Mid, R}}], store(S#snd{plugin = {off, R}}, M)}
+                {error, _, St1} -> {[], store(S#snd{plugin = {Mod, St1}}, M)};
+                {error, R} ->
+                    webrtc_media:plugin_terminate({Mod, St}),
+                    {[{event, {codec_plugin_error, Mid, R}}], store(S#snd{plugin = {off, R}}, M)}
             end
     end;
 to_plugin(_Fb, _S, M) ->

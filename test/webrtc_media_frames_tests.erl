@@ -273,3 +273,160 @@ h264_mode2_interleaved_test() ->
     ?assertNotEqual([], Types),
     ?assertEqual([], [T || T <- Types, not lists:member(T, [25, 26, 27, 28, 29])]),
     ?assert(lists:member(29, Types)).
+
+%%====================================================================
+%% Codec plugins: control/2, recoverable errors, terminate/1
+%%====================================================================
+
+%% A sends video through `APlugin' (a transceiver option); B decodes
+%% with `BPlugin' (for the transceivers A's offer creates).
+plugin_pair(APlugin, BPlugin) ->
+    {ok, _, A0} = webrtc_jsep:add_transceiver(audio, #{}, jsep(#{})),
+    {ok, _, A1} = webrtc_jsep:add_transceiver(video, #{frames => true, codec_plugin => APlugin}, A0),
+    {ok, O, A2} = webrtc_jsep:create_offer(#{}, A1),
+    {ok, A3} = webrtc_jsep:set_local_description(offer, O, A2),
+    {ok, B1} = webrtc_jsep:set_remote_description(offer, wire(O), jsep(#{frames => true, codec_plugins => #{video => BPlugin}})),
+    {ok, Ans, B2} = webrtc_jsep:create_answer(#{}, B1),
+    {ok, B3} = webrtc_jsep:set_local_description(answer, Ans, B2),
+    {ok, A4} = webrtc_jsep:set_remote_description(answer, wire(Ans), A3),
+    #{media := MA} = webrtc_jsep:negotiated(A4),
+    #{media := MB} = webrtc_jsep:negotiated(B3),
+    Profile = srtp_aead_aes_128_gcm,
+    Material = crypto:strong_rand_bytes(webrtc_srtp:key_material_length(Profile)),
+    SA = webrtc_media:set_srtp(Profile, Material, server, 0, webrtc_media:configure(MA, webrtc_media:new(#{cname => <<"a">>}))),
+    SB = webrtc_media:set_srtp(Profile, Material, client, 0, webrtc_media:configure(MB, webrtc_media:new(#{cname => <<"b">>}))),
+    {SA, SB, MA, MB}.
+
+%% A encodes `N' frames with send_media/5; B takes them.
+encode_frames(N, T0, SA0, SB0) ->
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    lists:foldl(
+        fun(I, {SA, SB, Acc}) ->
+            Now = T0 + I * 33,
+            {ok, Out, SA1} = webrtc_media:send_media(<<"1">>, {frame, D, I =:= 0, 1000 + (T0 div 33 + I) * 3000}, #{}, Now, SA),
+            {SB1, A} = run(Now, Out, SB),
+            {SA1, SB1, Acc ++ A}
+        end,
+        {SA0, SB0, []},
+        lists:seq(0, N - 1)).
+
+got(Msg) ->
+    receive Msg -> true after 0 -> false end.
+
+flush_codec() ->
+    receive {codec_control, _} -> flush_codec(); {codec_terminate, _} -> flush_codec(); {codec_feedback, _} -> flush_codec()
+    after 0 -> ok end.
+
+%% Item 2 of #76: a PLI from the peer reaches the encoder.
+control_keyframe_request_test() ->
+    flush_codec(),
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec, #{notify => self()}}, {webrtc_test_codec_plain, #{}}),
+    {SA1, SB1, _} = encode_frames(3, 0, SA0, SB0),
+    {Out, _SB2} = webrtc_media:request_keyframe(<<"1">>, 200, SB1),
+    {_SA2, Acts} = run(200, Out, SA1),
+    ?assert(lists:member({event, {keyframe_request, <<"1">>}}, Acts)),
+    ?assert(got({codec_control, keyframe_request})).
+
+%% Item 1 of #76: the peer's TMMBR limit and the target the application
+%% sets reach the encoder; a target set before the first frame reaches
+%% it when it starts.
+control_bitrate_test() ->
+    flush_codec(),
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec, #{notify => self()}}, {webrtc_test_codec_plain, #{}}),
+    {ok, [], SAt} = webrtc_media:target_bitrate(<<"1">>, 400000, SA0),
+    {SA1, SB1, _} = encode_frames(3, 0, SAt, SB0),
+    ?assert(got({codec_control, {target_bitrate, 400000}})),
+    {ok, [], SA2} = webrtc_media:target_bitrate(<<"1">>, 250000, SA1),
+    ?assert(got({codec_control, {target_bitrate, 250000}})),
+    {ok, Out, _SB2} = webrtc_media:request_max_bitrate(<<"1">>, 300000, 200, SB1),
+    {_SA3, Acts} = run(200, Out, SA2),
+    [Bps] = [B || {event, {max_bitrate, <<"1">>, B}} <- Acts],
+    ?assert(got({codec_control, {max_bitrate, Bps}})),
+    ?assertEqual({error, not_sending}, webrtc_media:target_bitrate(<<"9">>, 1, SA2)).
+
+%% A plugin without control/2 or terminate/1 gets nothing of them and
+%% keeps working.
+control_optional_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec_plain, #{}}, {webrtc_test_codec_plain, #{}}),
+    {SA1, SB1, _} = encode_frames(3, 0, SA0, SB0),
+    {ok, [], SA2} = webrtc_media:target_bitrate(<<"1">>, 400000, SA1),
+    {Out, _} = webrtc_media:request_keyframe(<<"1">>, 200, SB1),
+    {SA3, Acts} = run(200, Out, SA2),
+    ?assertEqual([], [E || {event, {codec_plugin_error, _, _} = E} <- Acts]),
+    {_, _, More} = encode_frames(2, 300, SA3, SB1),
+    ?assertNotEqual([], [F || {event, {frame, <<"1">>, F}} <- More]),
+    _ = webrtc_media:close(SA3).
+
+%% Item 4 of #76: {error, Reason, State} from decode/2 drops that frame
+%% only; the plugin goes on and the drop is counted.
+recoverable_decode_error_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec_plain, #{}}, {webrtc_test_codec, #{decode_error => 1}}),
+    {_, SB1, Acts} = encode_frames(4, 0, SA0, SB0),
+    ?assertEqual([], [E || {event, {codec_plugin_error, _, _} = E} <- Acts]),
+    Decoded = [D || {event, {decoded, <<"1">>, D}} <- Acts],
+    Frames = [F || {event, {frame, <<"1">>, F}} <- Acts],
+    ?assertEqual(length(Frames) - 1, length(Decoded)),
+    #{streams := St} = webrtc_media:stats(SB1),
+    [Reported] = [R || {in, _} := #{reported := R} <- St],
+    ?assertMatch(#{framesDropped := 1}, Reported).
+
+%% {error, Reason, State} from encode/2: send_media/5 returns the error,
+%% the next picture encodes.
+recoverable_encode_error_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec, #{encode_error => 1}}, {webrtc_test_codec_plain, #{}}),
+    {SA1, _, _} = encode_frames(1, 0, SA0, SB0),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    {error, {encode, bad_picture}, SA2} = webrtc_media:send_media(<<"1">>, {frame, D, false, 4000}, #{}, 50, SA1),
+    ?assertMatch({ok, [_ | _], _}, webrtc_media:send_media(<<"1">>, {frame, D, false, 7000}, #{}, 80, SA2)).
+
+%% Item 6 of #76: terminate/1 once, when the transport closes, when the
+%% stream goes in a renegotiation, and when the plugin is turned off; a
+%% raise in it is caught.
+terminate_on_close_test() ->
+    flush_codec(),
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec, #{notify => self()}}, {webrtc_test_codec, #{notify => self()}}),
+    {SA1, SB1, _} = encode_frames(2, 0, SA0, SB0),
+    _ = webrtc_media:close(SA1),
+    ?assert(got({codec_terminate, 2})),
+    _ = webrtc_media:close(SB1),
+    ?assert(got({codec_terminate, 2})),
+    ?assertNot(got({codec_terminate, '_'})).
+
+terminate_on_renegotiation_test() ->
+    flush_codec(),
+    {SA0, SB0, MA, _} = plugin_pair({webrtc_test_codec, #{notify => self()}}, {webrtc_test_codec, #{notify => self()}}),
+    {SA1, SB1, _} = encode_frames(2, 0, SA0, SB0),
+    Audio = [S || #{kind := audio} = S <- MA],
+    SA2 = webrtc_media:configure(Audio, SA1),
+    ?assert(got({codec_terminate, 2})),
+    SB2 = webrtc_media:configure([], SB1),
+    ?assert(got({codec_terminate, 2})),
+    _ = webrtc_media:close(SA2),
+    _ = webrtc_media:close(SB2),
+    ?assertNot(got({codec_terminate, 2})).
+
+terminate_when_off_test() ->
+    flush_codec(),
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec, #{notify => self(), crash => 2}}, {webrtc_test_codec_plain, #{}}),
+    {SA1, _, _} = encode_frames(2, 0, SA0, SB0),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    {ok, Acts, SA2} = webrtc_media:send_media(<<"1">>, {frame, D, false, 9000}, #{}, 90, SA1),
+    ?assertMatch([{event, {codec_plugin_error, <<"1">>, _}}], Acts),
+    ?assert(got({codec_terminate, 2})),
+    _ = webrtc_media:close(SA2),
+    ?assertNot(got({codec_terminate, 2})).
+
+terminate_crash_caught_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec, #{terminate_crash => true}}, {webrtc_test_codec_plain, #{}}),
+    {SA1, _, _} = encode_frames(1, 0, SA0, SB0),
+    ?assertEqual(ok, webrtc_media:close(SA1)).
+
+%% A plugin whose control/2 fails while the bit rates set before it
+%% started are given to it is turned off before it encodes anything.
+control_fails_at_start_test() ->
+    {SA0, _, _, _} = plugin_pair({webrtc_test_codec, #{control_error => true}}, {webrtc_test_codec_plain, #{}}),
+    {ok, [], SA1} = webrtc_media:target_bitrate(<<"1">>, 400000, SA0),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    {ok, Acts, SA2} = webrtc_media:send_media(<<"1">>, {frame, D, true, 1000}, #{}, 0, SA1),
+    ?assertEqual([{event, {codec_plugin_error, <<"1">>, refused}}], Acts),
+    ?assertEqual({error, {codec_plugin, refused}}, webrtc_media:send_media(<<"1">>, {frame, D, false, 4000}, #{}, 33, SA2)).

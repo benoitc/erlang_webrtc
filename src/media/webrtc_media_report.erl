@@ -21,6 +21,8 @@
 members(inbound) ->
     #{
         framesDecoded => counter, keyFramesDecoded => counter, framesRendered => counter, qpSum => counter,
+        %% Added to the frame buffer's own count (webrtc_stats).
+        framesDropped => counter,
         totalDecodeTime => counter, totalInterFrameDelay => counter, totalSquaredInterFrameDelay => counter,
         pauseCount => counter, totalPausesDuration => counter, freezeCount => counter,
         totalFreezesDuration => counter, totalProcessingDelay => counter, totalSamplesReceived => counter,

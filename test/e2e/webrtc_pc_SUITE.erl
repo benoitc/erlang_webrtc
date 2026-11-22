@@ -39,6 +39,7 @@
     max_message_size_wired/1,
     frames_without_rtx/1,
     preferred_codec_sent/1,
+    codec_plugin_control/1,
     loss_indications/1,
     dscp_marking/1,
     dscp_tcp_connection/1,
@@ -88,6 +89,7 @@ all() ->
         max_message_size_wired,
         frames_without_rtx,
         preferred_codec_sent,
+        codec_plugin_control,
         loss_indications,
         dscp_marking,
         dscp_tcp_connection,
@@ -1347,6 +1349,30 @@ preferred_codec_sent(_Config) ->
      || {I, #{expect := D, key := K}} <- lists:enumerate(webrtc_test_frames:frames(av1))],
     {ok, {frame, _, #{codec := Codec}}} = ?S:wait(B, fun({frame, <<"0">>, _}) -> true; (_) -> false end, 5000),
     ?assertEqual(<<"av1">>, string:lowercase(Codec)),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% The encoder's codec plugin hears what concerns it (control/2): the
+%% target bit rate the application sets, and a key frame the peer asks
+%% for. A transceiver without a plugin has no encoder to set.
+codec_plugin_control(_Config) ->
+    Me = self(),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{frames => true, codec_plugin => {webrtc_test_codec, #{notify => Me}}}),
+    {ok, _} = webrtc:add_transceiver(A, audio, #{}),
+    ?S:connect(A, B),
+    ok = webrtc:set_target_bitrate(A, <<"0">>, 600000),
+    {error, no_codec_plugin} = webrtc:set_target_bitrate(A, <<"1">>, 1),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    [ok = webrtc:send_media(A, <<"0">>, {frame, D, I =:= 0, I * 3000}) || I <- lists:seq(0, 2)],
+    receive {codec_control, {target_bitrate, 600000}} -> ok after 2000 -> ct:fail(no_target_bitrate) end,
+    ok = webrtc:set_target_bitrate(A, <<"0">>, 300000),
+    receive {codec_control, {target_bitrate, 300000}} -> ok after 2000 -> ct:fail(no_second_target_bitrate) end,
+    {ok, _} = ?S:wait(B, fun({frame, <<"0">>, _}) -> true; (_) -> false end, 5000),
+    ok = webrtc:request_keyframe(B, <<"0">>),
+    receive {codec_control, keyframe_request} -> ok after 3000 -> ct:fail(no_keyframe_request) end,
+    {ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>} end, 1000),
     webrtc:close(A),
     webrtc:close(B).
 

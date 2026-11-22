@@ -349,9 +349,15 @@ inbound(Tid, Ssrc, Rx, Streams, Kinds, Media) ->
               _ ->
                   #{}
           end,
-    [maps:merge(maps:merge(maps:merge(Base, Fec), compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined))))),
-                maps:get(reported, S, #{}))
-     | Remote].
+    Derived = maps:merge(maps:merge(Base, Fec), compact(maps:merge(audio_members(Kind, S), frame_members(Kind, maps:get(frames, Rx, undefined))))),
+    [with_reported(Derived, maps:get(reported, S, #{})) | Remote].
+
+%% Reported members replace the derived ones, except framesDropped: the
+%% frames a decoder dropped add to those the frame buffer dropped.
+with_reported(#{framesDropped := Buffer} = Derived, #{framesDropped := Decoder} = Reported) ->
+    (maps:merge(Derived, Reported))#{framesDropped => Buffer + Decoder};
+with_reported(Derived, Reported) ->
+    maps:merge(Derived, Reported).
 
 %% The sender's NTP time of the last frame released (RFC 6051 or SR
 %% mapping), moved on by the time since, in ms since the Unix epoch.

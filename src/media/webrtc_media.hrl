@@ -69,6 +69,9 @@
     fec_ssrc :: undefined | non_neg_integer(),
     fec_seq = 0 :: 0..65535,
     plugin :: undefined | {module(), term()} | {off, term()},
+    %% The latest `{max_bitrate, _}' and `{target_bitrate, _}' for the
+    %% plugin's control/2, given again when it starts.
+    ctl = #{} :: #{max_bitrate | target_bitrate => term()},
     %% Header extension form of the stream: `auto' when
     %% extmap-allow-mixed was negotiated, else one form throughout
     %% (RFC 8285 §6).

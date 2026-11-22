@@ -136,18 +136,48 @@ Each output of `decode/2` arrives after its `{frame, Mid, Frame}` event. `send_m
 ok = webrtc:send_media(Pc, Mid, #{picture => Picture, timestamp => Ts}),
 ```
 
-The plugin does not see keyframe requests or bandwidth events; the owner does. Pass them in `Raw`:
+### Follow key frame requests and bitrates
+
+Export `control/2` and the encoder hears what concerns it: `keyframe_request` when the peer asks for a key frame, `{max_bitrate, Bps}` when the peer limits the stream with TMMBR, and `{target_bitrate, Bps}` when you set one. Ignore the events you do not know:
 
 ```erlang
-{webrtc, Pc, {keyframe_request, Mid}} -> put(keyframe, true),
-{webrtc, Pc, {bandwidth_estimate, Bps}} -> put(bitrate, Bps),
+control(keyframe_request, E) -> {ok, E#{force_key => true}};
+control({target_bitrate, Bps}, E) -> {ok, my_vp8_nif:set_bitrate(E, Bps)};
+control({max_bitrate, Bps}, E) -> {ok, E#{ceiling => Bps}};
+control(_, E) -> {ok, E}.
+```
+
+The bandwidth estimate covers the whole connection, so you split it between your encoders and set each one's share:
+
+```erlang
+{webrtc, Pc, {bandwidth_estimate, Bps}} -> ok = webrtc:set_target_bitrate(Pc, VideoMid, Bps * 9 div 10),
+```
+
+A bitrate set before the first `send_media/3` reaches the encoder when it starts. The owner still gets `{keyframe_request, Mid}` and `{max_bitrate, Mid, Bps}`.
+
+### Free native resources
+
+Export `terminate/1` to free what `init/3` took. It runs once, when the stream ends, its transceiver goes in a renegotiation, the plugin is turned off, or the connection closes:
+
+```erlang
+terminate(E) -> my_vp8_nif:free(E).
 ```
 
 ### Report loss to the remote encoder
 
-When the transceiver negotiated `nack sli` or `nack rpsi`, `decode/2` may return a fifth element, a list of `{slice_loss, [{First, Number, PictureId}]}`, `{reference_picture, Pt, Bits}` or `keyframe_request`; the library sends them to the remote encoder. The other way, the remote decoder's reports reach `feedback/2` of your encoding plugin, and the owner as `{slice_loss, Mid, Entries}` and `{reference_picture, Mid, Pt, Bits}`.
+`decode/2` may return a fifth element, a list of what to send the remote encoder: `keyframe_request` asks for a key frame, always; `{slice_loss, [{First, Number, PictureId}]}` and `{reference_picture, Pt, Bits}` go out when the transceiver negotiated `nack sli` or `nack rpsi`. The other way, the remote decoder's reports reach `feedback/2` of your encoding plugin, and the owner as `{slice_loss, Mid, Entries}` and `{reference_picture, Mid, Pt, Bits}`.
 
 ### Handle errors
+
+Return `{error, Reason, State}` for a bad frame or picture you can get past: the plugin goes on with `State`. A decode error counts the frame in `framesDropped`; an encode error makes that `send_media/3` return `{error, {encode, Reason}}`:
+
+```erlang
+decode(#{data := D}, Dec) ->
+    case my_vp8_nif:decode(Dec, D) of
+        {ok, Picture} -> {ok, [Picture], #{framesDecoded => 1}, Dec};
+        {error, corrupt} -> {error, corrupt, Dec}
+    end.
+```
 
 A callback that raises, returns `{error, Reason}` or returns something else turns the plugin off for that stream, and the owner gets:
 
@@ -155,11 +185,11 @@ A callback that raises, returns `{error, Reason}` or returns something else turn
 {webrtc, Pc, {codec_plugin_error, Mid, Reason}} -> logger:warning("plugin off on ~s: ~p", [Mid, Reason]),
 ```
 
-Frames keep coming. After an encoding error, `send_media/3` returns `{error, {codec_plugin, Reason}}`. Without a plugin it returns `{error, no_codec_plugin}`.
+Frames keep coming. Once the plugin is off, `send_media/3` returns `{error, {codec_plugin, Reason}}`. Without a plugin it returns `{error, no_codec_plugin}`.
 
 ### Report statistics
 
-`Stats` are W3C member names of the stream: `framesDecoded`, `keyFramesDecoded`, `totalDecodeTime`, `qpSum`, `totalSamplesReceived`, `concealedSamples` for decoding; `framesEncoded`, `keyFramesEncoded`, `totalEncodeTime`, `targetBitrate`, `qualityLimitationReason` for encoding. Counters add up across calls; other members replace the previous value. `info/1` fills `decoderImplementation` or `encoderImplementation`, and `powerEfficientDecoder` or `powerEfficientEncoder`.
+`Stats` are W3C member names of the stream: `framesDecoded`, `keyFramesDecoded`, `framesDropped` (added to the frames the buffer dropped), `totalDecodeTime`, `qpSum`, `totalSamplesReceived`, `concealedSamples` for decoding; `framesEncoded`, `keyFramesEncoded`, `totalEncodeTime`, `targetBitrate`, `qualityLimitationReason` for encoding. Counters add up across calls; other members replace the previous value. `info/1` fills `decoderImplementation` or `encoderImplementation`, and `powerEfficientDecoder` or `powerEfficientEncoder`.
 
 If you code media yourself, without a plugin, report the same members with `report_media_stats/4`:
 
@@ -214,7 +244,7 @@ In the plugin:
 
 - choose decoder and encoder settings in `init/3` from the negotiated codec: H.264 `profile-level-id` and `packetization-mode`, VP9 `profile-id`, Opus `stereo` and `useinbandfec`;
 - keep the RTP timestamp a decoded frame came with; give encoded frames a timestamp at the codec clock (90 kHz video, 48 kHz Opus, 8 kHz G.711);
-- set a key frame when `Raw` says so, and follow the bitrate the application passes after `{bandwidth_estimate, Bps}`;
+- force a key frame on `keyframe_request` and follow `{target_bitrate, Bps}` and `{max_bitrate, Bps}` in `control/2`; free native contexts in `terminate/1`;
 - keep every queue bounded: drop and count a frame that cannot be decoded, do not retry it.
 
 To test the package:

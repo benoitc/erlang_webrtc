@@ -52,6 +52,8 @@
     send_reference_picture/4,
     send_reference_picture/5,
     request_max_bitrate/3,
+    set_target_bitrate/3,
+    set_target_bitrate/4,
     request_pause/2,
     request_pause/3,
     request_resume/2,
@@ -313,6 +315,21 @@ request_keyframe(Pc, Mid) ->
 request_keyframe(Pc, Mid, Opts) ->
     Key = layer(Mid, Opts),
     transport(Pc, Mid, fun(T) -> webrtc_transport:request_keyframe(T, Key) end).
+
+%% @doc Give the encoder of a transceiver's codec plugin a bit rate, in
+%% bits per second: its `control/2' gets `{target_bitrate, Bps}', now or
+%% when it starts. Split `{bandwidth_estimate, Bps}' between your encoders
+%% and call this for each. Returns `{error, no_codec_plugin}' without a
+%% plugin on the transceiver, `{error, not_sending}' when it does not send.
+-spec set_target_bitrate(pc(), binary(), non_neg_integer()) -> ok | {error, term()}.
+set_target_bitrate(Pc, Mid, Bps) ->
+    set_target_bitrate(Pc, Mid, Bps, #{}).
+
+%% @doc `Opts': `rid' for the encoder of one simulcast layer.
+-spec set_target_bitrate(pc(), binary(), non_neg_integer(), map()) -> ok | {error, term()}.
+set_target_bitrate(Pc, Mid, Bps, Opts) when is_integer(Bps), Bps >= 0 ->
+    Key = layer(Mid, Opts),
+    transport(Pc, Mid, fun(T) -> webrtc_transport:set_target_bitrate(T, Key, Bps) end).
 
 %% @doc Ask the remote sender of a transceiver to keep its streams under
 %% `Bps' bits per second, RTP headers and payload, with TMMBR (RFC 5104

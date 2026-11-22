@@ -127,6 +127,8 @@ expire_idle(Now, #media{last_seen = Seen} = M) ->
 forget(Ssrc, #media{rtx_ssrc = Rtx} = M0) ->
     M = case maps:find(Ssrc, M0#media.receivers) of
             {ok, R} ->
+                %% Its decoder ends with it (webrtc_media_codec terminate/1).
+                webrtc_media:plugin_terminate(R#rcv.plugin),
                 Info = (webrtc_media:receiver_info(Ssrc, R, M0))#{ended => true},
                 Ended = {Ssrc, Info, maps:get({in, Ssrc}, M0#media.streams, #{})},
                 M0#media{ended = lists:sublist([Ended | lists:keydelete(Ssrc, 1, M0#media.ended)], ?MAX_ENDED)};
@@ -596,6 +598,8 @@ decode(Mid, Ssrc, #{codec := Name} = F, M) ->
                     {Mod, St, Name} ->
                         {ok, St};
                     _ ->
+                        %% Another codec now: the previous decoder ends.
+                        webrtc_media:plugin_terminate(Plugin),
                         Codec = hd([C || #{name := N} = C <- maps:get(recv_codecs, Sec, []), N =:= Name] ++ [#{name => Name}]),
                         webrtc_media:plugin_call(fun() -> Mod:init(maps:get(kind, Sec, video), Codec, Opts) end)
                 end,
@@ -607,7 +611,13 @@ decode(Mid, Ssrc, #{codec := Name} = F, M) ->
                         {ok, Outs, Stats, St1, Feedback} when is_list(Feedback) ->
                             %% Loss the decoder found, to send (RFC 8834 §5.1.3, §5.1.4).
                             decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St1, Feedback, M);
+                        {error, _Reason, St1} ->
+                            %% Recoverable: this frame is dropped, the
+                            %% plugin goes on (webrtc_media_codec).
+                            {[], webrtc_media:report_stream(in, Ssrc, inbound, #{framesDropped => 1},
+                                                            set_plugin(Ssrc, {Mod, St1, Name}, M))};
                         {error, Reason} ->
+                            webrtc_media:plugin_terminate({Mod, St0, Name}),
                             {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
                     end;
                 {error, Reason} ->

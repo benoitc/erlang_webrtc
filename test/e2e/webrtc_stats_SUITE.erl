@@ -14,12 +14,12 @@
 
 -export([all/0, init_per_suite/1, end_per_suite/1, init_per_testcase/2, end_per_testcase/2]).
 -export([members_follow_the_dictionaries/1, references_resolve/1, counters_agree/1, internal_format_unchanged/1,
-         derived_members/1, plugin_and_reported_members/1, crashing_plugin/1]).
+         derived_members/1, plugin_and_reported_members/1, crashing_plugin/1, dropping_plugin/1]).
 
 -define(S, webrtc_test_signal).
 
 all() -> [members_follow_the_dictionaries, references_resolve, counters_agree, internal_format_unchanged, derived_members,
-          plugin_and_reported_members, crashing_plugin].
+          plugin_and_reported_members, crashing_plugin, dropping_plugin].
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(webrtc),
@@ -37,6 +37,9 @@ init_per_testcase(plugin_and_reported_members, Config) ->
 init_per_testcase(crashing_plugin, Config) ->
     ?S:flush(),
     [{call, plugin_call(#{crash => 5})} | Config];
+init_per_testcase(dropping_plugin, Config) ->
+    ?S:flush(),
+    [{call, plugin_call(#{decode_error => 3})} | Config];
 init_per_testcase(_TC, Config) ->
     ?S:flush(),
     [{call, call()} | Config].
@@ -284,6 +287,28 @@ crashing_plugin(Config) ->
         ?S:collect(B, fun({codec_plugin_error, _, _}) -> true; (_) -> false end, 100),
     [#{framesDecoded := 5, framesReceived := 12}] =
         [O || _ := #{type := <<"inbound-rtp">>, kind := <<"video">>} = O <- report(B)].
+
+%% A recoverable decode error drops that frame only: the plugin decodes
+%% the others, no error reaches the owner, and framesDropped is the frame
+%% buffer's count plus what the decoder and the application report.
+dropping_plugin(Config) ->
+    {_, B, _, _} = ?config(call, Config),
+    Decoded = ?S:collect(B, fun({decoded, <<"1">>, _}) -> true; (_) -> false end, 1000),
+    ?assertEqual(11, length(Decoded)),
+    [] = ?S:collect(B, fun({codec_plugin_error, _, _}) -> true; (_) -> false end, 100),
+    [#{framesDropped := Before, framesDecoded := 11, framesReceived := 12}] =
+        [O || _ := #{type := <<"inbound-rtp">>, kind := <<"video">>} = O <- report(B)],
+    #{frames_dropped := Buffer} = frame_stats(B),
+    ?assertEqual(Buffer + 1, Before),
+    webrtc:report_media_stats(B, <<"1">>, inbound, #{framesDropped => 2}),
+    timer:sleep(200),
+    [#{framesDropped := After}] = [O || _ := #{type := <<"inbound-rtp">>, kind := <<"video">>} = O <- report(B)],
+    ?assertEqual(Buffer + 3, After).
+
+%% The frame buffer's counters of B's video stream.
+frame_stats(Pc) ->
+    #{transport := #{media := #{streams := St}}} = webrtc:get_stats(Pc),
+    hd([F || {in, _} := #{frames := F} <- St] ++ [#{frames_dropped => 0}]).
 
 %% What the library counts itself: frames from the frame buffer and from
 %% what is sent, header bytes, the RFC 6464 level, the ICE members.

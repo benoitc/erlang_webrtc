@@ -67,7 +67,7 @@ Inherits RTCReceivedRtpStreamStats.
 | framesDecoded |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | keyFramesDecoded |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
 | framesRendered |  | Reported by a codec plugin or `webrtc:report_media_stats/4` |
-| framesDropped |  | Reported with `frames` on the transceiver, from the frame buffer: frames that missed packets or a frame they depend on |
+| framesDropped |  | Reported with `frames` on the transceiver, from the frame buffer: frames that missed packets or a frame they depend on; plus the frames a codec plugin could not decode (a recoverable error, or `framesDropped` in its statistics) and those `report_media_stats/4` reports |
 | frameWidth |  | Reported with `frames` on the transceiver, from the frame buffer: from the last key frame (VP8, VP9 headers, H.264 SPS, AV1 sequence header) |
 | frameHeight |  | Reported with `frames` on the transceiver, from the frame buffer: as frameWidth |
 | framesPerSecond |  | Reported with `frames` on the transceiver, from the frame buffer: frames released in the last second |

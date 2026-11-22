@@ -85,7 +85,10 @@
     handle_timeout/2,
     next_timeout/1,
     stats/1,
-    receiver_info/3
+    receiver_info/3,
+    target_bitrate/3,
+    close/1,
+    plugin_terminate/1
 ]).
 
 -export_type([state/0, sender_key/0]).
@@ -157,6 +160,17 @@ configure(Sections, #media{} = M) ->
         },
         M#media.cc
     ),
+    %% The plugins of the senders and receive sections that go end
+    %% (webrtc_media_codec terminate/1).
+    _ = [plugin_terminate(P) || K := #snd{plugin = P} <- M#media.senders, not is_map_key(K, Senders)],
+    Receivers = maps:map(
+        fun(_, #rcv{mid = Mi, plugin = P} = R) ->
+                case maps:get(codec_plugin, maps:get(Mi, Recv, #{}), undefined) of
+                    undefined when P =/= undefined -> plugin_terminate(P), R#rcv{plugin = undefined};
+                    _ -> R
+                end
+        end,
+        M#media.receivers),
     Cryptex = Sections =/= [] andalso lists:all(fun(S) -> maps:get(cryptex, S, false) end, Sections),
     %% One SRTP context per transport: the encrypted ids of its sections
     %% together (ids are unique within a BUNDLE group).
@@ -175,6 +189,7 @@ configure(Sections, #media{} = M) ->
                  In -> webrtc_srtp:set_encrypted_extensions(RecvEnc, webrtc_srtp:set_cryptex(Cryptex, In))
              end,
         senders = Senders,
+        receivers = Receivers,
         twcc_ids = TwccIds,
         cc = Cc,
         recv = Recv,
@@ -323,8 +338,11 @@ payloads(_, F, _Key, _C, S) ->
 
 %% @doc Encode raw media with the transceiver's codec plugin and send the
 %% frames it returns.
+%% A recoverable encode error (`{error, Reason, State}' from the plugin)
+%% gives `{error, {encode, Reason}, M}': nothing is sent, the plugin's
+%% new state is kept.
 -spec send_media(binary(), term(), map(), integer(), state()) ->
-    {ok, [{send, binary()} | {event, term()}], state()} | {error, term()}.
+    {ok, [{send, binary()} | {event, term()}], state()} | {error, term()} | {error, {encode, term()}, state()}.
 send_media(Mid0, Raw, Opts, Now, M) ->
     Key = case Opts of #{rid := Rid} -> {Mid0, Rid}; _ -> Mid0 end,
     Config = maps:get(codec_plugin, maps:get(Mid0, M#media.recv, #{}), undefined),
@@ -336,9 +354,21 @@ send_media(Mid0, Raw, Opts, Now, M) ->
         {{ok, #snd{plugin = {off, R}}}, _} ->
             {error, {codec_plugin, R}};
         {{ok, #snd{ssrc = Ssrc, kind = Kind, codecs = Cs} = S0}, {Mod, POpts}} ->
-            case plugin_start(S0#snd.plugin, Mod, Kind, [C || #{name := N} = C <- Cs, not webrtc_media_out:is_repair(N)], POpts) of
-                {ok, {Mod, PSt}} ->
-                    case plugin_call(fun() -> Mod:encode(Raw, PSt) end) of
+            case plugin_start(S0, Mod, Kind, [C || #{name := N} = C <- Cs, not webrtc_media_out:is_repair(N)], POpts) of
+                {ok, {Mod, PSt0}} ->
+                    %% A plugin that starts gets the bitrates set so far.
+                    {CtlActs, PSt, Off} = replay(S0, Mod, PSt0),
+                    Result = case Off of
+                                 false -> plugin_call(fun() -> Mod:encode(Raw, PSt) end);
+                                 {off, _} -> Off
+                             end,
+                    case Result of
+                        {off, R} ->
+                            plugin_off(Key, Mid0, R, {Mod, PSt}, M, CtlActs);
+                        {error, R, PSt1} ->
+                            %% Recoverable (webrtc_media_codec): this
+                            %% picture is not sent, the plugin goes on.
+                            {error, {encode, R}, M#media{senders = (M#media.senders)#{Key := S0#snd{plugin = {Mod, PSt1}}}}};
                         {ok, Frames, Stats, PSt1} ->
                             M1 = M#media{senders = (M#media.senders)#{Key := S0#snd{plugin = {Mod, PSt1}}}},
                             M2 = report_stream(out, Ssrc, outbound, maps:merge(Stats, plugin_info(encoder, Mod, PSt1)), M1),
@@ -351,27 +381,47 @@ send_media(Mid0, Raw, Opts, Now, M) ->
                                    (_, E) ->
                                         E
                                 end,
-                                {ok, [], M2},
+                                {ok, CtlActs, M2},
                                 Frames
                             );
                         {error, R} ->
-                            plugin_off(Key, Mid0, R, M)
+                            plugin_off(Key, Mid0, R, {Mod, PSt}, M, CtlActs)
                     end;
                 {error, R} ->
-                    plugin_off(Key, Mid0, R, M)
+                    plugin_off(Key, Mid0, R, S0#snd.plugin, M, [])
             end
     end.
 
-plugin_off(Key, Mid, R, M) ->
+%% A plugin that raised or returned {error, Reason} is turned off for
+%% the stream, after its terminate/1.
+plugin_off(Key, Mid, R, Last, M, Acts) ->
+    plugin_terminate(Last),
     S = maps:get(Key, M#media.senders),
-    {ok, [{event, {codec_plugin_error, Mid, R}}], M#media{senders = (M#media.senders)#{Key := S#snd{plugin = {off, R}}}}}.
+    {ok, Acts ++ [{event, {codec_plugin_error, Mid, R}}], M#media{senders = (M#media.senders)#{Key := S#snd{plugin = {off, R}}}}}.
 
-plugin_start({Mod, _} = P, Mod, _Kind, _Codecs, _Opts) ->
+%% The bitrates set before the plugin started, for its control/2.
+replay(#snd{plugin = {Mod, _}}, Mod, PSt) ->
+    {[], PSt, false};
+replay(#snd{ctl = Ctl}, Mod, PSt) ->
+    lists:foldl(
+        fun(_, {_, _, {off, _}} = Off) ->
+                Off;
+           (Ev, {Acts, St, false}) ->
+                case control_call(Mod, Ev, St) of
+                    {ok, St1} -> {Acts, St1, false};
+                    {off, R} -> {Acts, St, {off, R}}
+                end
+        end,
+        {[], PSt, false},
+        [{K, V} || K <- [max_bitrate, target_bitrate], {ok, V} <- [maps:find(K, Ctl)]]).
+
+plugin_start(#snd{plugin = {Mod, _} = P}, Mod, _Kind, _Codecs, _Opts) ->
     {ok, P};
 plugin_start(_, Mod, Kind, [Codec | _], Opts) ->
     case plugin_call(fun() -> Mod:init(Kind, Codec, Opts) end) of
         {ok, St} -> {ok, {Mod, St}};
-        {error, R} -> {error, R}
+        {error, R} -> {error, R};
+        {error, R, _} -> {error, R}
     end;
 plugin_start(_, _Mod, _Kind, [], _Opts) ->
     {error, no_codec}.
@@ -384,10 +434,117 @@ plugin_call(F) ->
         {ok, _, _, _} = R -> R;
         {ok, _, _, _, _} = R -> R;
         {error, _} = E -> E;
+        %% Recoverable: the plugin goes on with the state it gives.
+        {error, _, _} = E -> E;
         Other -> {error, {bad_return, Other}}
     catch
         C:R:St -> {error, {C, R, St}}
     end.
+
+%% @doc `Mod:control(Event, St)' when the plugin exports it: `{ok, St1}',
+%% also for a recoverable error, or `{off, Reason}'.
+-spec control_call(module(), term(), term()) -> {ok, term()} | {off, term()}.
+control_call(Mod, Ev, St) ->
+    case exported(Mod, control, 2) of
+        false ->
+            {ok, St};
+        true ->
+            case plugin_call(fun() -> Mod:control(Ev, St) end) of
+                {ok, St1} -> {ok, St1};
+                {error, _, St1} -> {ok, St1};
+                {error, R} -> {off, R}
+            end
+    end.
+
+exported(Mod, F, A) ->
+    _ = code:ensure_loaded(Mod),
+    erlang:function_exported(Mod, F, A).
+
+%% @doc A plugin's terminate/1, when it has one: once, when its stream
+%% ends. A raise in it is ignored.
+-spec plugin_terminate(term()) -> ok.
+plugin_terminate({Mod, St}) when is_atom(Mod) ->
+    terminate_call(Mod, St);
+plugin_terminate({Mod, St, _Name}) when is_atom(Mod) ->
+    terminate_call(Mod, St);
+plugin_terminate(_) ->
+    ok.
+
+terminate_call(Mod, St) ->
+    case exported(Mod, terminate, 1) of
+        true -> try Mod:terminate(St) catch _:_ -> ok end, ok;
+        false -> ok
+    end.
+
+%% An event for the encoder of sender `Key' (`control/2'). The bitrates
+%% are kept for a plugin that starts later.
+plugin_control(Key, Ev, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, #snd{} = S0} ->
+            S = case Ev of
+                    {K, V} when K =:= max_bitrate; K =:= target_bitrate -> S0#snd{ctl = (S0#snd.ctl)#{K => V}};
+                    _ -> S0
+                end,
+            case S#snd.plugin of
+                {Mod, St} when is_atom(Mod) ->
+                    case control_call(Mod, Ev, St) of
+                        {ok, St1} ->
+                            {[], put_sender(Key, S#snd{plugin = {Mod, St1}}, M)};
+                        {off, R} ->
+                            plugin_terminate({Mod, St}),
+                            {[{event, {codec_plugin_error, S#snd.mid, R}}], put_sender(Key, S#snd{plugin = {off, R}}, M)}
+                    end;
+                _ ->
+                    {[], put_sender(Key, S, M)}
+            end;
+        error ->
+            {[], M}
+    end.
+
+put_sender(Key, S, M) ->
+    M#media{senders = (M#media.senders)#{Key := S}}.
+
+%% The owner's events that also go to an encoder (webrtc_media_codec):
+%% key frame requests and TMMBR limits.
+controls(M, Acts) ->
+    lists:foldl(
+        fun({event, E} = A, {MA, Acc}) ->
+                case control_event(E) of
+                    {Key, Ev} -> {Extra, MB} = plugin_control(Key, Ev, MA), {MB, Acc ++ [A | Extra]};
+                    none -> {MA, Acc ++ [A]}
+                end;
+           (A, {MA, Acc}) ->
+                {MA, Acc ++ [A]}
+        end,
+        {M, []},
+        Acts).
+
+control_event({keyframe_request, Mid}) -> {Mid, keyframe_request};
+control_event({keyframe_request, Mid, Rid}) -> {{Mid, Rid}, keyframe_request};
+control_event({max_bitrate, Mid, Bps}) -> {Mid, {max_bitrate, Bps}};
+control_event({max_bitrate, Mid, Rid, Bps}) -> {{Mid, Rid}, {max_bitrate, Bps}};
+control_event(_) -> none.
+
+%% @doc The bit rate the application gives the encoder of a transceiver,
+%% or of one simulcast layer with `{Mid, Rid}': `{target_bitrate, Bps}'
+%% to its codec plugin's control/2, now or when it starts.
+-spec target_bitrate(sender_key(), non_neg_integer(), state()) ->
+    {ok, list(), state()} | {error, not_sending | no_codec_plugin}.
+target_bitrate(Key, Bps, M) ->
+    Mid = case Key of {Mi, _} -> Mi; Mi -> Mi end,
+    case {maps:is_key(Key, M#media.senders), maps:get(codec_plugin, maps:get(Mid, M#media.recv, #{}), undefined)} of
+        {false, _} -> {error, not_sending};
+        {true, undefined} -> {error, no_codec_plugin};
+        {true, _} -> {Acts, M1} = plugin_control(Key, {target_bitrate, Bps}, M), {ok, Acts, M1}
+    end.
+
+%% @doc The transport ends: the terminate/1 of every running codec
+%% plugin, encoders and decoders.
+-spec close(state()) -> ok.
+close(#media{senders = Ss, receivers = Rs}) ->
+    _ = [plugin_terminate(P) || _ := #snd{plugin = P} <- Ss],
+    _ = [plugin_terminate(P) || _ := #rcv{plugin = P} <- Rs],
+    ok.
 
 %% @doc decoderImplementation or encoderImplementation and the power
 %% efficiency member from the plugin's info/1.
@@ -599,11 +756,12 @@ handle_packet(Bin, Now, M) ->
 handle_packet(_Bin, _Now, #media{in = undefined} = M, _Ecn) ->
     {M, []};
 handle_packet(Bin, Now, M, Ecn) ->
-    case webrtc_rtp:classify(Bin) of
-        rtp -> webrtc_media_in:rtp_in(Bin, Now, M, Ecn);
-        rtcp -> webrtc_media_in:rtcp_in(Bin, Now, M);
-        unknown -> {webrtc_media_out:count(dropped, M), []}
-    end.
+    {M1, Acts} = case webrtc_rtp:classify(Bin) of
+                     rtp -> webrtc_media_in:rtp_in(Bin, Now, M, Ecn);
+                     rtcp -> webrtc_media_in:rtcp_in(Bin, Now, M);
+                     unknown -> {webrtc_media_out:count(dropped, M), []}
+                 end,
+    controls(M1, Acts).
 
 -spec next_timeout(state()) -> integer() | infinity.
 next_timeout(#media{rtcp = Rtcp, receivers = Rs, cc = Cc} = M) ->
@@ -647,10 +805,10 @@ handle_timeout(Now, M0) ->
             {Repeats, M4a} = webrtc_media_pause:report(M4),
             Fb2 = webrtc_media_limit:repeats(M4a) ++ webrtc_media_sync:requests(Now, M4a),
             {A2, M5} = webrtc_media_out:reports(Now, Pending ++ Repeats ++ Fb2, M4a),
-            {M5, A0 ++ A1 ++ PauseEvents ++ A2};
+            controls(M5, A0 ++ A1 ++ PauseEvents ++ A2);
         {wait, R} ->
             {A2, M4} = webrtc_media_out:send_feedback(Pending, Now, M3#media{rtcp = R, pending_fb = []}),
-            {M4, A0 ++ A1 ++ PauseEvents ++ A2}
+            controls(M4, A0 ++ A1 ++ PauseEvents ++ A2)
     end.
 
 %% The RTCP bandwidth follows the send estimate (both directions are

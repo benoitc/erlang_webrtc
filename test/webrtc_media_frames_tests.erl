@@ -430,3 +430,93 @@ control_fails_at_start_test() ->
     {ok, Acts, SA2} = webrtc_media:send_media(<<"1">>, {frame, D, true, 1000}, #{}, 0, SA1),
     ?assertEqual([{event, {codec_plugin_error, <<"1">>, refused}}], Acts),
     ?assertEqual({error, {codec_plugin, refused}}, webrtc_media:send_media(<<"1">>, {frame, D, false, 4000}, #{}, 33, SA2)).
+
+%%====================================================================
+%% Asynchronous plugins: init/4, deliveries from the plugin's process
+%%====================================================================
+
+%% The deliveries an asynchronous plugin's worker cast to this process
+%% (standing for the transport), applied to `S' in order.
+deliver(S, Now) -> deliver(S, Now, []).
+
+deliver(S, Now, Acc) ->
+    receive
+        {'$gen_cast', {codec_delivery, Dir, Key, Ref, Msg}} ->
+            {A, S1} = webrtc_media:delivery(Dir, Key, Ref, Msg, Now, S),
+            deliver(S1, Now, Acc ++ A)
+    after 200 ->
+        {S, Acc}
+    end.
+
+%% One delivery, kept to replay it later.
+one_delivery() ->
+    receive {'$gen_cast', {codec_delivery, _, _, _, _} = D} -> D after 1000 -> error(no_delivery) end.
+
+counter(S, K) ->
+    #{counters := C} = webrtc_media:stats(S),
+    maps:get(K, C, 0).
+
+%% decode/2 hands the frame over; the worker's outputs and statistics
+%% come later and reach the owner as from a synchronous decoder.
+async_decode_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec_plain, #{}}, {webrtc_test_codec_async, #{}}),
+    {_, SB1, Acts} = encode_frames(4, 0, SA0, SB0),
+    Frames = [F || {event, {frame, <<"1">>, F}} <- Acts],
+    ?assertEqual([], [D || {event, {decoded, _, D}} <- Acts]),
+    {SB2, Later} = deliver(SB1, 200),
+    ?assertEqual(length(Frames), length([D || {event, {decoded, <<"1">>, {size, _}} = D} <- Later])),
+    #{streams := St} = webrtc_media:stats(SB2),
+    [#{framesDecoded := N, decoderImplementation := <<"async VP8">>}] = [R || {in, _} := #{reported := R} <- St],
+    ?assertEqual(length(Frames), N).
+
+%% encode/2 hands the picture over; the frames the worker delivers are
+%% sent and B receives them.
+async_encode_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec_async, #{}}, {webrtc_test_codec_plain, #{}}),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    {ok, [], SA1} = webrtc_media:send_media(<<"1">>, {frame, D, true, 1000}, #{}, 0, SA0),
+    {_SA2, Out} = deliver(SA1, 10),
+    ?assertMatch([_ | _], [X || {send, _} = X <- Out]),
+    {_, Got} = run(10, Out, SB0),
+    ?assertMatch([_], [F || {event, {frame, <<"1">>, F}} <- Got]).
+
+%% decoder_feedback/2 with keyframe_request sends a PLI to the encoder.
+async_decoder_feedback_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec_plain, #{}}, {webrtc_test_codec_async, #{feedback => [keyframe_request]}}),
+    {SA1, SB1, _} = encode_frames(2, 0, SA0, SB0),
+    {_, Later} = deliver(SB1, 200),
+    {_, AtA} = run(200, [X || {send, _} = X <- Later], SA1),
+    ?assert(lists:member({event, {keyframe_request, <<"1">>}}, AtA)).
+
+%% A delivery to an instance that ended is dropped and counted, and does
+%% not reach the instance that started after it on the same stream.
+async_stale_delivery_test() ->
+    {SA0, SB0, MA, _} = plugin_pair({webrtc_test_codec_async, #{}}, {webrtc_test_codec_plain, #{}}),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    {ok, [], SA1} = webrtc_media:send_media(<<"1">>, {frame, D, true, 1000}, #{}, 0, SA0),
+    {codec_delivery, Dir, Key, Ref, Msg} = one_delivery(),
+    %% The sender goes in a renegotiation and comes back: a new instance.
+    Audio = [S || #{kind := audio} = S <- MA],
+    SA2 = webrtc_media:configure(MA, webrtc_media:configure(Audio, SA1)),
+    {ok, [], SA3} = webrtc_media:send_media(<<"1">>, {frame, D, true, 4000}, #{}, 33, SA2),
+    {Stale, SA4} = webrtc_media:delivery(Dir, Key, Ref, Msg, 40, SA3),
+    ?assertEqual([], Stale),
+    ?assertEqual(1, counter(SA4, codec_deliveries_stale)),
+    {SA5, Fresh} = deliver(SA4, 50),
+    ?assertMatch([_ | _], [X || {send, _} = X <- Fresh]),
+    _ = webrtc_media:close(SA5),
+    _ = SB0.
+
+%% A malformed delivery is dropped and counted; the plugin stays on.
+async_bad_delivery_test() ->
+    {SA0, SB0, _, _} = plugin_pair({webrtc_test_codec_async, #{}}, {webrtc_test_codec_plain, #{}}),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    {ok, [], SA1} = webrtc_media:send_media(<<"1">>, {frame, D, true, 1000}, #{}, 0, SA0),
+    {codec_delivery, out, Key, Ref, _} = one_delivery(),
+    {[], SA2} = webrtc_media:delivery(out, Key, Ref, {encoded, [#{data => <<>>}], #{}}, 10, SA1),
+    {[], SA3} = webrtc_media:delivery(out, Key, Ref, nonsense, 10, SA2),
+    ?assertEqual(2, counter(SA3, codec_deliveries_rejected)),
+    {ok, [], SA4} = webrtc_media:send_media(<<"1">>, {frame, D, false, 4000}, #{}, 33, SA3),
+    {_, Out} = deliver(SA4, 40),
+    ?assertMatch([_ | _], [X || {send, _} = X <- Out]),
+    _ = SB0.

@@ -22,6 +22,7 @@
 -include("webrtc_media.hrl").
 
 -export([
+    delivery/5,
     expire_idle/2,
     frame_timeouts/2,
     keyframe_feedback/2,
@@ -584,27 +585,32 @@ frames_feedback(Actions, Ssrc, Events, Now, M1) ->
 
 %% The transceiver's codec plugin decodes the frame (webrtc_media_codec):
 %% its outputs become events, its statistics the stream's.
-decode(Mid, Ssrc, #{codec := Name} = F, M) ->
-    Sec = maps:get(Mid, M#media.recv, #{}),
-    R = maps:get(Ssrc, M#media.receivers),
+decode(Mid, Ssrc, #{codec := Name} = F, M0) ->
+    Sec = maps:get(Mid, M0#media.recv, #{}),
+    R = maps:get(Ssrc, M0#media.receivers),
     case {maps:get(codec_plugin, Sec, undefined), R#rcv.plugin} of
         {undefined, _} ->
-            {[], M};
+            {[], M0};
         {_, {off, _}} ->
-            {[], M};
+            {[], M0};
         {{Mod, Opts}, Plugin} ->
             Started =
                 case Plugin of
                     {Mod, St, Name} ->
-                        {ok, St};
+                        {ok, St, R#rcv.plugin_ref};
                     _ ->
                         %% Another codec now: the previous decoder ends.
                         webrtc_media:plugin_terminate(Plugin),
                         Codec = hd([C || #{name := N} = C <- maps:get(recv_codecs, Sec, []), N =:= Name] ++ [#{name => Name}]),
-                        webrtc_media:plugin_call(fun() -> Mod:init(maps:get(kind, Sec, video), Codec, Opts) end)
+                        Ref = make_ref(),
+                        case webrtc_media:plugin_init(Mod, maps:get(kind, Sec, video), Codec, Opts, {in, Ssrc, Ref}) of
+                            {ok, St} -> {ok, St, Ref};
+                            {error, _} = E -> E
+                        end
                 end,
             case Started of
-                {ok, St0} ->
+                {ok, St0, Ref0} ->
+                    M = set_ref(Ssrc, Ref0, M0),
                     case webrtc_media:plugin_call(fun() -> Mod:decode(F, St0) end) of
                         {ok, Outs, Stats, St1} ->
                             decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St1, [], M);
@@ -621,9 +627,39 @@ decode(Mid, Ssrc, #{codec := Name} = F, M) ->
                             {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
                     end;
                 {error, Reason} ->
-                    {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M)}
+                    {[{event, {codec_plugin_error, Mid, Reason}}], set_plugin(Ssrc, {off, Reason}, M0)}
             end
     end.
+
+set_ref(Ssrc, Ref, M) ->
+    R = maps:get(Ssrc, M#media.receivers),
+    M#media{receivers = (M#media.receivers)#{Ssrc := R#rcv{plugin_ref = Ref}}}.
+
+%% @doc What an asynchronous decoder delivers (webrtc_media_codec): its
+%% outputs and statistics, or feedback for the remote encoder. Dropped
+%% and counted when the instance `Ref' no longer runs on the stream.
+-spec delivery(non_neg_integer(), reference(), term(), integer(), #media{}) -> {list(), #media{}}.
+delivery(Ssrc, Ref, Msg, Now, M) ->
+    case maps:find(Ssrc, M#media.receivers) of
+        {ok, #rcv{plugin = {Mod, St, Name}, plugin_ref = Ref, mid = Mid}} ->
+            case Msg of
+                {decoded, Outs, Stats} when is_list(Outs), is_map(Stats) ->
+                    decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St, [], M);
+                {decoder_feedback, Fbs} when is_list(Fbs) ->
+                    decoder_feedback(Ssrc, Fbs, Now, M);
+                _ ->
+                    {[], webrtc_media_out:count(codec_deliveries_rejected, M)}
+            end;
+        _ ->
+            {[], webrtc_media_out:count(codec_deliveries_stale, M)}
+    end.
+
+%% Feedback a decoder found, as decode/2's fifth element carries it: a
+%% key frame request, and the loss indications the stream negotiated.
+decoder_feedback(Ssrc, Fbs, Now, M) ->
+    Loss = webrtc_media_fb:packets(Ssrc, [F || F <- Fbs, F =/= keyframe_request], M),
+    {Sent, M1} = webrtc_media_out:send_feedback(Loss, Now, M),
+    frames_feedback([request_keyframe || lists:member(keyframe_request, Fbs)], Ssrc, Sent, Now, M1).
 
 decoded(Mid, Ssrc, Mod, Name, Outs, Stats, St1, Feedback, M) ->
     M1 = set_plugin(Ssrc, {Mod, St1, Name}, M),

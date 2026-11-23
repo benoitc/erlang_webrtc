@@ -318,6 +318,10 @@ call_(stats, _From, St) ->
     },
     {reply, Stats, St}.
 
+cast_({codec_delivery, Dir, Key, Ref, Msg}, #st{finished = false} = St) ->
+    %% An asynchronous codec plugin delivers (webrtc_media_codec).
+    {Acts, M} = webrtc_media:delivery(Dir, Key, Ref, Msg, now_ms(), St#st.media),
+    {noreply, arm(webrtc_transport_secure:media_actions(Acts, St#st{media = M}))};
 cast_({report_media_stats, Mid, Dir, Report}, St) ->
     {Bad, M} = webrtc_media:report_stats(Mid, Dir, Report, St#st.media),
     _ = [logger:debug("webrtc: media stats dropped for ~s: ~p", [Mid, B]) || B <- Bad],

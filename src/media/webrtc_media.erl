@@ -88,6 +88,8 @@
     receiver_info/3,
     target_bitrate/3,
     close/1,
+    plugin_init/5,
+    delivery/6,
     plugin_terminate/1
 ]).
 
@@ -354,8 +356,9 @@ send_media(Mid0, Raw, Opts, Now, M) ->
         {{ok, #snd{plugin = {off, R}}}, _} ->
             {error, {codec_plugin, R}};
         {{ok, #snd{ssrc = Ssrc, kind = Kind, codecs = Cs} = S0}, {Mod, POpts}} ->
-            case plugin_start(S0, Mod, Kind, [C || #{name := N} = C <- Cs, not webrtc_media_out:is_repair(N)], POpts) of
-                {ok, {Mod, PSt0}} ->
+            case plugin_start(S0, Key, Mod, Kind, [C || #{name := N} = C <- Cs, not webrtc_media_out:is_repair(N)], POpts) of
+                {ok, {Mod, PSt0}, Ref} ->
+                    S1 = S0#snd{plugin_ref = Ref},
                     %% A plugin that starts gets the bitrates set so far.
                     {CtlActs, PSt, Off} = replay(S0, Mod, PSt0),
                     Result = case Off of
@@ -368,22 +371,11 @@ send_media(Mid0, Raw, Opts, Now, M) ->
                         {error, R, PSt1} ->
                             %% Recoverable (webrtc_media_codec): this
                             %% picture is not sent, the plugin goes on.
-                            {error, {encode, R}, M#media{senders = (M#media.senders)#{Key := S0#snd{plugin = {Mod, PSt1}}}}};
+                            {error, {encode, R}, M#media{senders = (M#media.senders)#{Key := S1#snd{plugin = {Mod, PSt1}}}}};
                         {ok, Frames, Stats, PSt1} ->
-                            M1 = M#media{senders = (M#media.senders)#{Key := S0#snd{plugin = {Mod, PSt1}}}},
+                            M1 = M#media{senders = (M#media.senders)#{Key := S1#snd{plugin = {Mod, PSt1}}}},
                             M2 = report_stream(out, Ssrc, outbound, maps:merge(Stats, plugin_info(encoder, Mod, PSt1)), M1),
-                            lists:foldl(
-                                fun(#{data := D} = F, {ok, Acc, MA}) ->
-                                        case send_frame(Mid0, D, maps:merge(maps:with([rid], Opts), maps:with([timestamp, keyframe], F)), Now, MA) of
-                                            {ok, Out, MB} -> {ok, Acc ++ Out, MB};
-                                            {error, _} = E -> E
-                                        end;
-                                   (_, E) ->
-                                        E
-                                end,
-                                {ok, CtlActs, M2},
-                                Frames
-                            );
+                            send_encoded(Mid0, maps:with([rid], Opts), Frames, Now, CtlActs, M2);
                         {error, R} ->
                             plugin_off(Key, Mid0, R, {Mod, PSt}, M, CtlActs)
                     end;
@@ -391,6 +383,60 @@ send_media(Mid0, Raw, Opts, Now, M) ->
                     plugin_off(Key, Mid0, R, S0#snd.plugin, M, [])
             end
     end.
+
+%% @doc What an asynchronous plugin delivers from its own process
+%% (webrtc_media_codec:decoded/3, encoded/3, decoder_feedback/2), for the
+%% instance `Ref' of the stream `Key': an SSRC for a decoder, a sender
+%% key for an encoder. A delivery to an instance that no longer runs is
+%% dropped and counted (`codec_deliveries_stale'), a malformed one too
+%% (`codec_deliveries_rejected'); neither turns the plugin off.
+-spec delivery(in | out, term(), reference(), term(), integer(), state()) -> {list(), state()}.
+delivery(in, Ssrc, Ref, Msg, Now, M) ->
+    {Acts, M1} = webrtc_media_in:delivery(Ssrc, Ref, Msg, Now, M),
+    %% Its feedback sends PLI, FIR or loss indications; its outputs are
+    %% the owner's events.
+    {M2, Acts2} = controls(M1, [A || A <- Acts, element(1, A) =/= plugin_feedback]),
+    {Acts2, M2};
+delivery(out, Key, Ref, Msg, Now, M) ->
+    case maps:find(Key, M#media.senders) of
+        {ok, #snd{plugin = {Mod, St}, plugin_ref = Ref, ssrc = Ssrc, mid = Mid} = S} ->
+            case Msg of
+                {encoded, Frames, Stats} when is_list(Frames), is_map(Stats) ->
+                    case lists:all(fun valid_frame/1, Frames) of
+                        true ->
+                            M1 = report_stream(out, Ssrc, outbound, maps:merge(Stats, plugin_info(encoder, Mod, St)), M),
+                            Opts = case S#snd.rid of undefined -> #{}; Rid -> #{rid => Rid} end,
+                            case send_encoded(Mid, Opts, Frames, Now, [], M1) of
+                                {ok, Acts, M2} -> {Acts, M2};
+                                {error, _} -> {[], webrtc_media_out:count(codec_deliveries_rejected, M1)}
+                            end;
+                        false ->
+                            {[], webrtc_media_out:count(codec_deliveries_rejected, M)}
+                    end;
+                _ ->
+                    {[], webrtc_media_out:count(codec_deliveries_rejected, M)}
+            end;
+        _ ->
+            {[], webrtc_media_out:count(codec_deliveries_stale, M)}
+    end.
+
+valid_frame(#{data := D, timestamp := Ts}) when is_binary(D), byte_size(D) > 0, is_integer(Ts), Ts >= 0 -> true;
+valid_frame(_) -> false.
+
+%% The frames an encoder returned or delivered, by the payload format of
+%% the stream's codec.
+send_encoded(Mid0, Opts, Frames, Now, Acts0, M) ->
+    lists:foldl(
+        fun(#{data := D} = F, {ok, Acc, MA}) ->
+                case send_frame(Mid0, D, maps:merge(Opts, maps:with([timestamp, keyframe], F)), Now, MA) of
+                    {ok, Out, MB} -> {ok, Acc ++ Out, MB};
+                    {error, _} = E -> E
+                end;
+           (_, E) ->
+                E
+        end,
+        {ok, Acts0, M},
+        Frames).
 
 %% A plugin that raised or returned {error, Reason} is turned off for
 %% the stream, after its terminate/1.
@@ -415,16 +461,33 @@ replay(#snd{ctl = Ctl}, Mod, PSt) ->
         {[], PSt, false},
         [{K, V} || K <- [max_bitrate, target_bitrate], {ok, V} <- [maps:find(K, Ctl)]]).
 
-plugin_start(#snd{plugin = {Mod, _} = P}, Mod, _Kind, _Codecs, _Opts) ->
-    {ok, P};
-plugin_start(_, Mod, Kind, [Codec | _], Opts) ->
-    case plugin_call(fun() -> Mod:init(Kind, Codec, Opts) end) of
-        {ok, St} -> {ok, {Mod, St}};
-        {error, R} -> {error, R};
-        {error, R, _} -> {error, R}
+plugin_start(#snd{plugin = {Mod, _} = P, plugin_ref = Ref}, _Key, Mod, _Kind, _Codecs, _Opts) ->
+    {ok, P, Ref};
+plugin_start(_, Key, Mod, Kind, [Codec | _], Opts) ->
+    Ref = make_ref(),
+    case plugin_init(Mod, Kind, Codec, Opts, {out, Key, Ref}) of
+        {ok, St} -> {ok, {Mod, St}, Ref};
+        {error, R} -> {error, R}
     end;
-plugin_start(_, _Mod, _Kind, [], _Opts) ->
+plugin_start(_, _Key, _Mod, _Kind, [], _Opts) ->
     {error, no_codec}.
+
+%% @doc Start a plugin: init/4 with a handle to deliver results later
+%% when it has one (webrtc_media_codec), init/3 otherwise. `Stream' is
+%% `{in, Ssrc, Ref}' or `{out, SenderKey, Ref}'; the handle names this
+%% transport process.
+-spec plugin_init(module(), audio | video, map(), term(), {in | out, term(), reference()}) -> {ok, term()} | {error, term()}.
+plugin_init(Mod, Kind, Codec, Opts, {Dir, Key, Ref}) ->
+    Init = case exported(Mod, init, 4) of
+               true -> fun() -> Mod:init(Kind, Codec, Opts, webrtc_media_codec:handle(self(), Dir, Key, Ref)) end;
+               false -> fun() -> Mod:init(Kind, Codec, Opts) end
+           end,
+    case plugin_call(Init) of
+        {ok, St} -> {ok, St};
+        {error, R} -> {error, R};
+        {error, R, _} -> {error, R};
+        Other -> {error, {bad_return, Other}}
+    end.
 
 %% @doc Run a plugin callback: a raise becomes an error.
 -spec plugin_call(fun(() -> term())) -> term().

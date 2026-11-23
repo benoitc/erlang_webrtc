@@ -69,6 +69,8 @@
     fec_ssrc :: undefined | non_neg_integer(),
     fec_seq = 0 :: 0..65535,
     plugin :: undefined | {module(), term()} | {off, term()},
+    %% The instance an asynchronous plugin delivers to (init/4 handle).
+    plugin_ref :: undefined | reference(),
     %% The latest `{max_bitrate, _}' and `{target_bitrate, _}' for the
     %% plugin's control/2, given again when it starts.
     ctl = #{} :: #{max_bitrate | target_bitrate => term()},
@@ -125,6 +127,7 @@
     %% The codec plugin decoding the frames, with the codec it was
     %% started for.
     plugin :: undefined | {module(), term(), binary()} | {off, term()},
+    plugin_ref :: undefined | reference(),
     %% ULPFEC recovery (RFC 5109), when ulpfec is negotiated.
     fec :: undefined | webrtc_ulpfec:receiver()
 }).

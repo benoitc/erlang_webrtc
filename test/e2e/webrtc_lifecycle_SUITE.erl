@@ -21,6 +21,7 @@
     application_restart/1,
     stuck_codec_plugin/1,
     plugins_end_with_close/1,
+    async_plugin_workers_end/1,
     abandoned_connections/1,
     short_lived_pairs/1,
     scheduler_stress/1,
@@ -33,7 +34,7 @@
 
 all() ->
     [close_ends_helpers, killed_peer_rows_removed, slow_signaling_bounded, connect_workers_end,
-     owner_death, killed_transport, application_restart, stuck_codec_plugin, plugins_end_with_close, abandoned_connections,
+     owner_death, killed_transport, application_restart, stuck_codec_plugin, plugins_end_with_close, async_plugin_workers_end, abandoned_connections,
      short_lived_pairs, scheduler_stress, other_node].
 
 init_per_suite(Config) ->
@@ -268,6 +269,26 @@ plugins_end_with_close(_Config) ->
     webrtc:close(B),
     Ends = fun Loop(N) -> receive {codec_terminate, _} -> Loop(N + 1) after 1000 -> N end end,
     ?assertEqual(2, Ends(0)),
+    ?assertEqual(ok, back_to(Base, 8000)).
+
+%% An asynchronous plugin's workers end with the connection: close/1
+%% runs terminate/1 of the encoder and the decoder, which stop them, and
+%% nothing is left behind.
+async_plugin_workers_end(_Config) ->
+    Base = baseline(),
+    Me = self(),
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true,
+                                           codec_plugins => #{video => {webrtc_test_codec_async, #{notify => Me}}}}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{frames => true, codec_plugin => {webrtc_test_codec_async, #{notify => Me}}}),
+    ?S:connect(A, B),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    [ok = webrtc:send_media(A, <<"0">>, {frame, D, I =:= 0, I * 3000}) || I <- lists:seq(0, 2)],
+    {ok, _} = ?S:wait(B, fun({decoded, <<"0">>, _}) -> true; (_) -> false end, 5000),
+    Workers = [receive {async_worker, W} -> W after 1000 -> ct:fail(no_worker) end || _ <- [encoder, decoder]],
+    webrtc:close(A),
+    webrtc:close(B),
+    ?assertEqual(ok, wait_dead(Workers, 2000)),
     ?assertEqual(ok, back_to(Base, 8000)).
 
 %% A codec plugin whose decode never returns.

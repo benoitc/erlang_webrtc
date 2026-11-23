@@ -4,6 +4,7 @@ All notable changes are listed here, newest first. Each release section is also 
 
 ## Unreleased
 
+- A codec plugin can now run its codec in a process of its own and deliver the decoded outputs and encoded frames later, so a slow codec no longer holds up the connection's other media and data channels. A plugin opts in by exporting `init/4`; others work as before.
 - A codec plugin can now hear what concerns its encoder: key frame requests from the peer, the peer's bitrate limit, and a target bitrate the application sets with the new `webrtc:set_target_bitrate/3`. It can free its native resources when its stream ends, skip a bad frame or picture without being turned off, and report the frames it dropped. Plugins written for 0.2.0 keep working unchanged.
 - The plugin documentation said a decoder could ask for a key frame only when slice loss indications were negotiated. It always can.
 - H.264 frames were packetized for packetization mode 1 whatever mode was negotiated, which a peer that accepts mode 0 or mode 2 alone cannot depacketize. Each mode now gets the packet types it allows. In mode 0, a frame with a NAL unit too large for one packet is refused with an error instead of being sent.

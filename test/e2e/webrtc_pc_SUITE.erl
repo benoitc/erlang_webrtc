@@ -40,6 +40,7 @@
     frames_without_rtx/1,
     preferred_codec_sent/1,
     codec_plugin_control/1,
+    async_codec_plugin/1,
     loss_indications/1,
     dscp_marking/1,
     dscp_tcp_connection/1,
@@ -90,6 +91,7 @@ all() ->
         frames_without_rtx,
         preferred_codec_sent,
         codec_plugin_control,
+        async_codec_plugin,
         loss_indications,
         dscp_marking,
         dscp_tcp_connection,
@@ -1373,6 +1375,34 @@ codec_plugin_control(_Config) ->
     ok = webrtc:request_keyframe(B, <<"0">>),
     receive {codec_control, keyframe_request} -> ok after 3000 -> ct:fail(no_keyframe_request) end,
     {ok, _} = ?S:wait(A, fun(E) -> E =:= {keyframe_request, <<"0">>} end, 1000),
+    webrtc:close(A),
+    webrtc:close(B).
+
+%% An asynchronous plugin (webrtc_media_codec init/4) encodes in its own
+%% process, 200 ms a picture: every frame still reaches B and is decoded
+%% there, and a data channel message sent meanwhile does not wait for the
+%% encoder, since the transport is never blocked.
+async_codec_plugin(_Config) ->
+    {ok, A} = webrtc:new_peer_connection(#{loopback => true}),
+    {ok, B} = webrtc:new_peer_connection(#{loopback => true, frames => true,
+                                           codec_plugins => #{video => {webrtc_test_codec_async, #{}}}}),
+    {ok, _} = webrtc:add_transceiver(A, video, #{frames => true, codec_plugin => {webrtc_test_codec_async, #{delay => 200}}}),
+    ok = webrtc:create_data_channel(A, <<"chat">>, #{}),
+    ?S:connect(A, B),
+    Id = channel_id(A, <<"chat">>),
+    _ = channel_id(B, <<"chat">>),
+    [#{data := D} | _] = webrtc_test_frames:frames(vp8),
+    T0 = erlang:monotonic_time(millisecond),
+    [ok = webrtc:send_media(A, <<"0">>, {frame, D, I =:= 0, I * 3000}) || I <- lists:seq(0, 4)],
+    Queued = erlang:monotonic_time(millisecond) - T0,
+    ok = webrtc:send_data(A, Id, text, <<"not behind the encoder">>),
+    _ = message(B, <<"not behind the encoder">>),
+    Chat = erlang:monotonic_time(millisecond) - T0,
+    ct:log("send_media returned after ~b ms, the message arrived after ~b ms", [Queued, Chat]),
+    ?assert(Queued < 200),
+    ?assert(Chat < 500),
+    Decoded = ?S:collect(B, fun({decoded, <<"0">>, {size, _}}) -> true; (_) -> false end, 4000),
+    ?assertEqual(5, length(Decoded)),
     webrtc:close(A),
     webrtc:close(B).
 

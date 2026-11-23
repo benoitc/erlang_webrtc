@@ -19,7 +19,8 @@
 %% `{webrtc, Pc, {decoded, Mid, Out}}', after the `{frame, Mid, Frame}'
 %% event. `webrtc:send_media/3' hands raw media to `encode/2' and sends
 %% the frames it returns. The plugin runs in the transport process:
-%% keep each call short, or hand the work to a process of your own.
+%% keep each call short, or run the codec in a process of your own and
+%% deliver later (see "Asynchronous plugins" below).
 %%
 %% `Stats' are W3C members of the stream (`framesDecoded',
 %% `totalDecodeTime', `keyFramesEncoded', ...): counters add up across
@@ -73,9 +74,25 @@
 %%
 %% A plugin may report `framesDropped' for the frames it could not
 %% decode; it adds to those the frame buffer dropped.
+%%
+%% Asynchronous plugins: a plugin that exports `init/4' instead of
+%% `init/3' gets a `handle()'. Its `decode/2' and `encode/2' may return
+%% `{ok, [], Stats, State}' at once and hand the work to a process of its
+%% own, which delivers later with `decoded/3', `encoded/3' and
+%% `decoder_feedback/2'. These never wait. A delivery after the
+%% instance's stream ended, it was turned off, or the connection closed
+%% is dropped and counted (`codec_deliveries_stale'), a malformed one
+%% too (`codec_deliveries_rejected'). Keep a bounded number of frames in
+%% flight, and stop the worker in `terminate/1'.
 -module(webrtc_media_codec).
 
--export_type([codec/0, frame/0, control_event/0]).
+-export([handle/4, decoded/3, encoded/3, decoder_feedback/2]).
+
+-export_type([codec/0, frame/0, control_event/0, handle/0]).
+
+%% Where an asynchronous plugin delivers: one plugin instance on one
+%% stream of one transport. Opaque.
+-opaque handle() :: {webrtc_codec, pid(), in | out, term(), reference()}.
 
 %% The negotiated codec: `name', `clock_rate', `channels', `fmtp'.
 -type codec() :: map().
@@ -108,4 +125,35 @@
 
 -callback terminate(State :: term()) -> term().
 
--optional_callbacks([feedback/2, control/2, terminate/1]).
+%% Called instead of init/3 when the plugin exports it: `Handle' lets
+%% the plugin's own processes deliver results later.
+-callback init(audio | video, codec(), Opts :: term(), handle()) -> {ok, State :: term()} | {error, term()}.
+
+-optional_callbacks([init/3, init/4, feedback/2, control/2, terminate/1]).
+
+%% @private The handle of a plugin instance, made when it starts.
+-spec handle(pid(), in | out, term(), reference()) -> handle().
+handle(Transport, Dir, Key, Ref) ->
+    {webrtc_codec, Transport, Dir, Key, Ref}.
+
+%% @doc Deliver a decoder's outputs and statistics, from any process:
+%% each output reaches the owner as `{decoded, Mid, Out}', as if
+%% decode/2 had returned it. Never waits; dropped when the instance no
+%% longer runs (its stream ended, it was turned off, the connection
+%% closed).
+-spec decoded(handle(), [term()], map()) -> ok.
+decoded({webrtc_codec, T, in, Key, Ref}, Outs, Stats) ->
+    gen_server:cast(T, {codec_delivery, in, Key, Ref, {decoded, Outs, Stats}}).
+
+%% @doc Deliver an encoder's frames and statistics, from any process:
+%% the frames are sent as if encode/2 had returned them. Never waits.
+-spec encoded(handle(), [frame()], map()) -> ok.
+encoded({webrtc_codec, T, out, Key, Ref}, Frames, Stats) ->
+    gen_server:cast(T, {codec_delivery, out, Key, Ref, {encoded, Frames, Stats}}).
+
+%% @doc Deliver what a decoder found after decode/2 returned, as its
+%% fifth element would: `keyframe_request', slice loss, reference
+%% picture. Never waits.
+-spec decoder_feedback(handle(), [webrtc_media_fb:indication() | keyframe_request]) -> ok.
+decoder_feedback({webrtc_codec, T, in, Key, Ref}, Feedback) ->
+    gen_server:cast(T, {codec_delivery, in, Key, Ref, {decoder_feedback, Feedback}}).

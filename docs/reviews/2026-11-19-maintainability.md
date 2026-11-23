@@ -281,3 +281,11 @@ Merged since 0.1.0: #70 (Hex and ex_doc configuration, demo link, license header
 One change to the decisions above: since #70 the API docs list every module, grouped by subsystem, with `webrtc` and `webrtc_media_codec` under "Public API", instead of the two public modules only.
 
 Open, not blocking (maintainer's decision, 2026-11-19): the pages of internal modules do not say they may change between releases; only the "Public API" group marks the stable ones.
+
+## Before the 0.3.0 release
+
+Merged since 0.2.0: #77 (H.264 packetization modes), #78 (codec plugin `control/2`, `terminate/1`, recoverable errors, `framesDropped`, `webrtc:set_target_bitrate/3,4`) and #79 (asynchronous plugins). Their docs came with them: REFERENCE.md, the frames and codec plugins guide, H264-14 in `compliance/rtp.md`, `compliance/stats.md`, the CHANGELOG.
+
+Found and fixed in the release (maintainer's decision, 2026-11-23): ADR 0004 still said a slow plugin delays its connection, and the developer guide's list of test helpers missed the two new test codecs.
+
+Still open: the pages of internal modules do not say they may change between releases.

@@ -200,19 +200,36 @@ webrtc:report_media_stats(Pc, Mid, source, #{width => 1280, height => 720, frame
 
 See [read the statistics](statistics.md).
 
-### Keep the plugin fast
+### Run the codec in its own process
 
-The plugin runs in the transport process: a slow call delays every packet of the connection. For heavy work, hand the frame to a process of your own and report from there:
+The plugin's callbacks run in the transport process: a slow call delays every packet of the connection, media, RTCP and data channels alike. For a codec that takes milliseconds per frame, export `init/4` instead of `init/3`. It gets a handle; give it to a process of your own, return from `decode/2` and `encode/2` at once with no output, and deliver the results from that process:
 
 ```erlang
-init(video, _Codec, #{worker := W}) -> {ok, W}.
+init(video, Codec, Opts, Handle) ->
+    W = spawn_link(fun() -> worker(Handle, my_vp8_nif:new(Codec, Opts)) end),
+    {ok, W}.
 
-decode(Frame, W) ->
-    W ! {decode, Frame},
-    {ok, [], #{}, W}.
+decode(Frame, W) -> W ! {decode, Frame}, {ok, [], #{}, W}.
+encode(Raw, W) -> W ! {encode, Raw}, {ok, [], #{}, W}.
+
+terminate(W) -> exit(W, shutdown).
+
+worker(H, Ctx) ->
+    receive
+        {decode, #{data := D}} ->
+            {ok, Picture} = my_vp8_nif:decode(Ctx, D),
+            webrtc_media_codec:decoded(H, [Picture], #{framesDecoded => 1});
+        {encode, {Picture, Ts}} ->
+            {Frame, Key} = my_vp8_nif:encode(Ctx, Picture),
+            webrtc_media_codec:encoded(H, [#{data => Frame, keyframe => Key, timestamp => Ts}], #{framesEncoded => 1})
+    end,
+    worker(H, Ctx).
 ```
 
-The worker decodes, calls `report_media_stats/4`, which any process may call and which does not wait, and sends the results where you need them.
+- `decoded/3` gives the owner `{decoded, Mid, Out}` for each output, as a synchronous decoder would; `encoded/3` sends the frames as `encode/2`'s result would be sent; `decoder_feedback/2` sends what `decode/2`'s fifth element would (`keyframe_request`, loss indications).
+- They never wait. A delivery after the plugin's stream ended, the plugin was turned off, or the connection closed is dropped and counted (`codec_deliveries_stale` among the internal counters of `get_stats/1`); a malformed one too (`codec_deliveries_rejected`). Neither turns the plugin off.
+- Keep a bounded number of frames in flight: deliveries go through the transport's mailbox. Drop what the worker cannot keep up with and count it in `framesDropped` with `report_media_stats/4`, which any process may call.
+- Stop the worker in `terminate/1`.
 
 ### Capture from a camera and a microphone
 

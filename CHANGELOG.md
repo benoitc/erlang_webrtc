@@ -2,7 +2,7 @@
 
 All notable changes are listed here, newest first. Each release section is also its release notes.
 
-## Unreleased
+## 0.3.0 (2026-11-23)
 
 - A codec plugin can now run its codec in a process of its own and deliver the decoded outputs and encoded frames later, so a slow codec no longer holds up the connection's other media and data channels. A plugin opts in by exporting `init/4`; others work as before.
 - A codec plugin can now hear what concerns its encoder: key frame requests from the peer, the peer's bitrate limit, and a target bitrate the application sets with the new `webrtc:set_target_bitrate/3`. It can free its native resources when its stream ends, skip a bad frame or picture without being turned off, and report the frames it dropped. Plugins written for 0.2.0 keep working unchanged.

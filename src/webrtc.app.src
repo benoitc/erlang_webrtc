@@ -1,6 +1,6 @@
 {application, webrtc, [
     {description, "WebRTC protocol stack in pure Erlang"},
-    {vsn, "0.2.0"},
+    {vsn, "0.3.0"},
     {registered, [webrtc_sup, webrtc_pc_sup, webrtc_registry]},
     {mod, {webrtc_app, []}},
     {applications, [kernel, stdlib, crypto, public_key, ssl]},

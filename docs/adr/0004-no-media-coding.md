@@ -15,6 +15,7 @@ Many applications do not need coding at all: an SFU forwards packets, a recorder
 ## Consequences
 
 - The library stays free of NIFs and of codec dependencies.
-- A plugin runs in the transport process. A slow plugin delays the media of its own connection; a plugin that raises is turned off for its transceiver and reported as `{codec_plugin_error, Mid, Reason}`. The lifecycle suite checks that a stuck plugin does not stop the connection from closing.
+- A plugin's callbacks run in the transport process, so a slow one delays the media of its own connection. A plugin that exports `init/4` avoids this: it runs the codec in its own process and delivers the results later (0.3.0). The lifecycle suite checks that a stuck plugin does not stop the connection from closing.
+- A plugin that raises or returns `{error, Reason}` is turned off for its transceiver and reported as `{codec_plugin_error, Mid, Reason}`; `{error, Reason, State}` loses one frame or picture and keeps it on (0.3.0).
 - The behaviour is part of the public API, with the `webrtc` module.
 - Capturing cameras and microphones is outside the library too; see [the frames and codec plugins guide](../guides/frames-and-codec-plugins.md).

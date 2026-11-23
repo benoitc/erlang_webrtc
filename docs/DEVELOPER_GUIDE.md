@@ -43,7 +43,7 @@ Each row names where to start reading, the tests that cover the area, and the pa
 | Statistics | `src/pc/webrtc_stats.erl` | `src/media/webrtc_media_report.erl`, `src/rtp/webrtc_rtp_stats.erl` | `webrtc_stats_SUITE` | [stats](compliance/stats.md) |
 | Safety: redaction, bounds, lifecycle | `src/webrtc_redact.erl` | `src/webrtc_registry.erl`, the bounds in `src/media/webrtc_media.hrl` | `webrtc_security_SUITE`, `webrtc_lifecycle_SUITE`, `bench/webrtc_soak.erl` | [security](compliance/security.md) |
 
-Test helpers live in `test/support`: `webrtc_impair` (loss, reordering and outages between peers), `webrtc_test_signal` (signaling between two peer connections in a test), `webrtc_test_codec` (a codec plugin), `webrtc_test_turn_udp` (a TURN server) and `webrtc_dtls_sim`.
+Test helpers live in `test/support`: `webrtc_impair` (loss, reordering and outages between peers), `webrtc_test_signal` (signaling between two peer connections in a test), `webrtc_test_codec` (a codec plugin), `webrtc_test_codec_plain` (one with the callbacks of 0.2.0 only), `webrtc_test_codec_async` (one that runs in its own process), `webrtc_test_turn_udp` (a TURN server) and `webrtc_dtls_sim`.
 
 ## The rules
 
